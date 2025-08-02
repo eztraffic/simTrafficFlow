@@ -1,0 +1,492 @@
+:root {
+    --primary-color: #007bff;
+    --primary-hover: #0056b3;
+    --border-color: #ddd;
+    --bg-light: #f8f9fa;
+    --bg-white: #fff;
+    --text-dark: #333;
+    --text-light: #666;
+    --shadow-light: rgba(0, 0, 0, 0.1);
+    --green-signal: #28a745;
+    --yellow-signal: #ffc107;
+    --red-signal: #dc3545;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
+    background-color: var(--bg-light);
+    color: var(--text-dark);
+}
+
+header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 20px;
+    background-color: var(--bg-white);
+    border-bottom: 1px solid var(--border-color);
+    box-shadow: 0 2px 4px var(--shadow-light);
+    flex-shrink: 0;
+}
+
+h1 {
+    margin: 0;
+    font-size: 1.5em;
+    color: var(--primary-color);
+}
+
+#main-container {
+    display: flex;
+    flex-grow: 1;
+    overflow: hidden;
+}
+
+/* Toolbar */
+#toolbar {
+    display: flex;
+    flex-direction: column;
+    padding: 10px;
+    background-color: var(--bg-light);
+    border-right: 1px solid var(--border-color);
+    gap: 10px;
+    flex-shrink: 0; /* 防止工具欄被壓縮 */
+}
+
+.tool-btn, header button {
+    padding: 10px 15px;
+    font-size: 1em;
+    border: 1px solid var(--border-color);
+    border-radius: 5px;
+    background-color: var(--bg-white);
+    color: var(--text-dark);
+    cursor: pointer;
+    transition: all 0.2s;
+    text-align: left;
+    white-space: nowrap; /* 防止按鈕文字換行 */
+}
+
+.tool-btn:hover, header button:hover {
+    background-color: var(--primary-color);
+    color: var(--bg-white);
+    border-color: var(--primary-color);
+}
+
+.tool-btn.active {
+    background-color: var(--primary-hover);
+    color: var(--bg-white);
+    border-color: var(--primary-hover);
+    font-weight: bold;
+}
+
+/* --- START: 新增 #content-area 樣式 --- */
+#content-area {
+    display: flex;
+    flex-grow: 1;
+    overflow: hidden; /* 確保內容不會溢出 */
+}
+/* --- END: 新增 #content-area 樣式 --- */
+
+
+/* Canvas */
+#canvas-container {
+    position: relative;
+    flex-grow: 1;
+    background-color: #e9ecef;
+    cursor: grab;
+}
+
+#canvas-container:active {
+    cursor: grabbing;
+}
+
+#status-bar {
+    position: absolute;
+    bottom: 10px;
+    left: 10px;
+    background-color: rgba(0,0,0,0.6);
+    color: white;
+    padding: 5px 10px;
+    border-radius: 5px;
+    font-size: 0.9em;
+    pointer-events: none;
+}
+
+/* Properties Panel */
+#properties-panel {
+    width: 200px;
+    flex-shrink: 0;
+    background-color: var(--bg-light);
+    border-left: 1px solid var(--border-color);
+    padding: 15px;
+    overflow-y: auto;
+}
+
+#properties-panel h3 {
+    margin-top: 0;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+#properties-content .prop-group {
+    margin-bottom: 20px;
+}
+
+#properties-content label {
+    display: block;
+    font-weight: bold;
+    margin-bottom: 5px;
+    font-size: 0.9em;
+}
+
+#properties-content input[type="text"],
+#properties-content input[type="number"],
+#properties-content select {
+    width: 100%;
+    padding: 8px;
+    box-sizing: border-box;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+}
+
+#properties-content button {
+    width: 100%;
+    padding: 10px;
+    margin-top: 10px;
+}
+
+/* NEW: Flow Origin Properties Panel Styles */
+#flow-origin-properties h5 {
+    margin-top: 0;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border-color);
+}
+#flow-origin-properties .prop-group {
+    margin-bottom: 15px;
+}
+#flow-dest-list {
+    list-style: none;
+    padding: 0;
+    margin-bottom: 10px;
+}
+#flow-dest-list li {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 5px;
+    border-bottom: 1px solid #eee;
+}
+#flow-dest-list li label {
+    flex-basis: 120px;
+    margin-bottom: 0;
+    font-size: 0.85em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+#flow-dest-list li input {
+    width: 60px;
+}
+#flow-dest-list li .delete-dest-btn {
+    padding: 2px 8px;
+    font-size: 1.2em;
+    line-height: 1;
+    background: none;
+    border: none;
+    color: var(--red-signal);
+    cursor: pointer;
+}
+#add-flow-dest-container {
+    display: flex;
+    gap: 10px;
+}
+#add-flow-dest-container select {
+    flex-grow: 1;
+}
+
+/* Modal Styles */
+.modal {
+    display: none;
+    position: fixed;
+    z-index: 1000;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    overflow: auto;
+    background-color: rgba(0,0,0,0.5);
+}
+
+.modal-content {
+    background-color: var(--bg-white);
+    margin: 5% auto;
+    padding: 20px;
+    border: 1px solid #888;
+    width: 80%;
+    max-width: 800px;
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    max-height: 90vh;
+}
+.modal-content.large {
+    max-width: 1200px;
+}
+.modal-body {
+    overflow-y: auto;
+    padding: 15px;
+}
+.modal-footer {
+    padding-top: 15px;
+    text-align: right;
+    border-top: 1px solid var(--border-color);
+}
+.close-button {
+    color: #aaa;
+    float: right;
+    font-size: 28px;
+    font-weight: bold;
+    cursor: pointer;
+    align-self: flex-end;
+}
+
+/* Tabs */
+.tabs { border-bottom: 1px solid var(--border-color); margin-bottom: 15px; }
+.tab-link {
+    background-color: inherit; border: none; outline: none; cursor: pointer;
+    padding: 14px 16px; transition: 0.3s;
+}
+.tab-link:hover { background-color: #f1f1f1; }
+.tab-link.active { border-bottom: 3px solid var(--primary-color); }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+/* TFL Editor Styles */
+#tfl-connections-list, #tfl-groups-list {
+    max-height: 200px;
+    overflow-y: auto;
+    border: 1px solid var(--border-color);
+    padding: 10px;
+    margin-bottom: 10px;
+}
+.tfl-item { display: flex; justify-content: space-between; align-items: center; padding: 5px; }
+.tfl-group-item .delete-group-btn { color: var(--red-signal); cursor: pointer; }
+#tfl-schedule-table-container { max-height: 400px; overflow: auto; }
+#tfl-schedule-table { width: 100%; border-collapse: collapse; }
+#tfl-schedule-table th, #tfl-schedule-table td { border: 1px solid var(--border-color); padding: 8px; text-align: center; }
+#tfl-schedule-table th { background-color: var(--bg-light); }
+.signal-cell { cursor: pointer; width: 80px; font-weight: bold; }
+.signal-green { background-color: var(--green-signal); color: white; }
+.signal-yellow { background-color: var(--yellow-signal); color: var(--text-dark); }
+.signal-red { background-color: var(--red-signal); color: white; }
+
+/* Spawner Editor Styles */
+.spawner-period, .spawner-profile-item {
+    border: 1px solid var(--border-color);
+    padding: 15px;
+    margin-bottom: 15px;
+    border-radius: 5px;
+}
+.spawner-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }
+.spawner-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+.spawner-table th, .spawner-table td { padding: 8px; border: 1px solid var(--border-color); }
+.spawner-table input { width: 90%; }
+
+/* Lane Range Modal Specific Styles */
+#lane-range-modal-content.small {
+    position: absolute; /* Allows positioning next to the cursor */
+    max-width: 320px;
+    margin: 0;
+    box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+}
+
+#lane-range-modal .prop-group {
+    margin-bottom: 15px;
+}
+
+#lane-range-modal .modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+}
+
+/* TFL Editor Styles */
+.tfl-columns {
+    display: flex;
+    gap: 20px;
+}
+.tfl-column {
+    flex: 1;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 15px;
+}
+.tfl-column h4 {
+    margin-top: 0;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 10px;
+    margin-bottom: 10px;
+}
+
+#tfl-group-management, #tfl-connection-assignment {
+    max-height: 250px;
+    overflow-y: auto;
+    margin-bottom: 15px;
+}
+
+.tfl-add-group {
+    display: flex;
+    gap: 10px;
+}
+.tfl-add-group input { flex-grow: 1; }
+
+.tfl-group-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 5px;
+    margin-bottom: 5px;
+}
+.tfl-group-item input {
+    flex-grow: 1;
+    border: 1px solid #ccc;
+    padding: 4px 6px;
+    border-radius: 3px;
+}
+.tfl-group-item .delete-group-btn {
+    color: var(--red-signal);
+    cursor: pointer;
+    font-weight: bold;
+    padding: 0 5px;
+}
+
+.tfl-conn-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 3px;
+    border-bottom: 1px solid #eee;
+}
+.tfl-conn-item label {
+    font-size: 0.9em;
+}
+.tfl-conn-item select {
+    padding: 4px;
+    border-radius: 3px;
+    border: 1px solid #ccc;
+}
+/* 背景鎖定浮動按鈕 */
+#bg-lock-float {
+    position: absolute;
+    bottom: 20px;
+    right: 20px;
+    background-color: rgba(255, 255, 255, 0.9);
+    padding: 8px 12px;
+    border-radius: 6px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    font-size: 0.9em;
+    z-index: 1000;
+    cursor: pointer;
+}
+
+#bg-lock-float label {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    cursor: pointer;
+    user-select: none;
+}
+
+#bg-lock-float input[type="checkbox"] {
+    margin: 0;
+    cursor: pointer;
+}
+
+#bg-lock-float span {
+    color: var(--text-dark);
+}
+
+/* 新增樣式 */
+.tool-btn-secondary {
+    background-color: #6c757d; /* 灰色背景 */
+    color: white;
+    padding: 8px 12px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    width: 100%; /* 佔滿整行 */
+    margin-bottom: 10px; /* 與下方內容間隔 */
+    text-align: left; /* 文字靠左 */
+}
+
+.tool-btn-secondary:hover {
+    background-color: #5a6268;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid #eee;
+    margin: 10px 0;
+}
+
+/* --- START: 響應式佈局 (方案三) --- */
+/* 當視窗高度小於等於 650px 時，套用以下樣式 */
+@media (max-height: 650px) {
+    /* 1. 讓主容器的子元素垂直排列 (工具欄在上方) */
+    #main-container {
+        flex-direction: column;
+    }
+
+    /* 2. 調整工具欄為水平排列 */
+    #toolbar {
+        flex-direction: row; /* 水平排列 */
+        flex-wrap: wrap;     /* 當寬度不足時，按鈕自動換行 */
+        width: 100%;         /* 佔滿整個寬度 */
+        height: auto;        /* 高度由內容決定 */
+        border-right: none;  /* 移除右邊框 */
+        border-bottom: 1px solid var(--border-color); /* 增加下邊框 */
+        padding: 5px;        /* 稍微減少內邊距 */
+        gap: 5px;            /* 稍微減少按鈕間距 */
+    }
+
+    /* 3. 讓水平排列的工具按鈕寬度可以自由伸縮 */
+    #toolbar .tool-btn {
+        /* 
+         * START OF FIX
+         * 原本為 flex: 1 1 auto; 這會使換行後的按鈕伸展填滿寬度。
+         * 修改為 flex: 0 1 auto; 可防止按鈕放大，使其保持內容決定的寬度。
+        */
+        flex: 0 1 auto;
+        /* END OF FIX */
+        padding: 8px 10px; /* 稍微調整按鈕內邊距 */
+        text-align: center; /* 文字居中更美觀 */
+    }
+
+    /* 4. 讓屬性面板的邊框從左邊框改為上邊框 */
+    #properties-panel {
+        border-left: none;
+        border-top: 1px solid var(--border-color);
+    }
+}
+
+/* 為了更好的適應極端小的寬度，我們也可以增加一個寬度斷點 */
+@media (max-width: 768px) {
+    /* 當寬度很窄時，讓內容區域也垂直排列 */
+    #content-area {
+        flex-direction: column;
+    }
+    #properties-panel {
+        width: 100%; /* 佔滿寬度 */
+        height: 200px; /* 給一個固定高度 */
+        flex-shrink: 0;
+        border-left: none;
+        border-top: 1px solid var(--border-color);
+    }
+}
+/* --- END: 響應式佈局 (方案三) --- */

@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<meta name="description" content="微觀車流模擬的路網編輯器，能創造無限多樣的路網形狀。The microscopic traffic flow simulation network editor can create infinitely diverse road network configurations." />	
+    <title>simTrafficFlow Network Editor</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- Konva.js Library -->
+    <script src="konva.min.js"></script>
+</head>
+<body>
+    <header>
+        <h1>simTrafficFlow Network Editor</h1>
+        <div class="header-actions">
+            <button id="importXmlBtn" title="Import from .sim">Import File</button>
+            <button id="exportXmlBtn" title="Export network to .sim file">Export File</button>
+        </div>
+    </header>
+
+    <div id="main-container">
+        <!-- Toolbar for Tools -->
+		<div id="toolbar">
+            <button class="tool-btn active" data-tool="select" title="Select and Modify Elements (V)">✔️ Select</button>
+            <button class="tool-btn" data-tool="add-link" title="Add a new Link (L)">✏️ Add Link</button>
+            <button class="tool-btn" data-tool="connect-lanes" title="Connect lanes at an intersection (C)">🔗 Connect Lanes</button>
+            <button class="tool-btn" data-tool="edit-tfl" title="Edit Traffic Light (T)">🚦 Edit Traffic Light</button>
+            <button class="tool-btn" data-tool="add-flow" title="Add Traffic Flow Origin/Destination (F)">🚗 Add Flow</button>
+            <button class="tool-btn" data-tool="add-background" title="Add Background Image (B)">🖼️ Background</button>
+            <button class="tool-btn" data-tool="measure" title="Measure Distance (M)">📏 Measure</button>			
+            <button class="tool-btn" data-tool="add-road-sign" title="Add Speed Limit Sign (R)">🛑 Speed Sign</button>
+            <button class="tool-btn" data-tool="add-point-detector" title="Add Point Speed Detector (P)">📍 Point Detector</button>
+            <button class="tool-btn" data-tool="add-section-detector" title="Add Section Speed Detector (S)">📡 Section Detector</button>
+        </div>
+
+        <!-- START: 新增的包裝容器 -->
+        <div id="content-area">
+            <!-- Main Canvas Area -->
+            <div id="canvas-container">
+                 <div id="status-bar"></div>
+            </div>
+            <!-- 背景鎖定浮動按鈕 -->
+            <div id="bg-lock-float" style="display: none;">
+                <label>
+                    <input type="checkbox" id="bg-lock-checkbox">
+                    <span>🔒 lock(鎖定背景)</span>
+                </label>
+            </div>		
+
+            <!-- Properties Panel -->
+            <div id="properties-panel">
+                <h3>Properties</h3>
+                <div id="properties-content">
+                    <p>Select an element on the canvas to see its properties.</p>
+					<p>Alt + Left Click: Add a turning point to the road segment</p>
+                </div>
+                <!-- The old flow-origin-properties div is no longer needed -->
+            </div>
+        </div>
+        <!-- END: 新增的包裝容器 -->
+    </div>
+
+    <!-- Modal for Traffic Light Editor -->
+    <div id="traffic-light-modal" class="modal">
+        <div class="modal-content">
+            <span class="close-button">×</span>
+            <h2 id="tfl-modal-title">Traffic Light Editor</h2>
+            <div class="modal-body">
+                <div class="tabs">
+                    <button class="tab-link active" data-tab="tfl-grouping">1. Manage Signal Groups</button>
+                    <button class="tab-link" data-tab="tfl-phasing">2. Phasing Schedule</button>
+                </div>
+                <!-- Grouping Tab -->
+                <div id="tfl-grouping" class="tab-content active">
+                    <div class="tfl-column">
+                        <h4>Signal Groups</h4>
+                        <div id="tfl-group-management">
+                            <!-- Group list will be generated here -->
+                        </div>
+                        <div class="tfl-add-group">
+                            <input type="text" id="tfl-new-group-name" placeholder="New group name (e.g., S1)">
+                            <button id="tfl-add-group-btn">Add Group</button>
+                        </div>
+                    </div>
+                </div>
+                <!-- Phasing Tab -->
+                <div id="tfl-phasing" class="tab-content">
+                    <h4>Phasing Schedule</h4>
+                    <div id="tfl-schedule-table-container">
+                        <table id="tfl-schedule-table">
+                            <thead></thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                    <button id="tfl-add-phase-btn">Add Phase</button>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="tfl-save-btn">Close</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Modal for Vehicle Spawner Editor -->
+    <div id="spawner-modal" class="modal">
+        <div class="modal-content large">
+             <span class="close-button">×</span>
+            <h2 id="spawner-modal-title">Vehicle Spawner Editor</h2>
+            <div class="modal-body">
+                <div class="tabs">
+                    <button class="tab-link active" data-tab="spawner-periods">1. Time Periods</button>
+                    <button class="tab-link" data-tab="spawner-profiles">2. Vehicle Profiles</button>
+                </div>
+                <!-- Spawner Periods Tab -->
+                <div id="spawner-periods" class="tab-content active">
+                    <h4>Time Periods</h4>
+                    <div id="spawner-periods-list"></div>
+                    <button id="spawner-add-period-btn">Add Time Period</button>
+                </div>
+                <!-- Vehicle Profiles Tab -->
+                <div id="spawner-profiles" class="tab-content">
+                     <h4>Reusable Vehicle Profiles</h4>
+                    <div id="spawner-profiles-list"></div>
+                    <button id="spawner-add-profile-btn">Add New Profile</button>
+                </div>
+            </div>
+             <div class="modal-footer">
+                <button id="spawner-save-btn">Save Changes</button>
+            </div>			
+        </div>
+    </div>
+<!-- Modal for Lane Range Selection -->
+    <div id="lane-range-modal" class="modal">
+        <div id="lane-range-modal-content" class="modal-content small">
+             <h4 id="lr-modal-title">Specify Lane Connection Range</h4>
+             <div class="modal-body">
+                <div class="prop-group">
+                    <label for="lr-source-start">Source Start Lane Index</label>
+                    <input type="number" id="lr-source-start" value="0" min="0">
+                </div>
+                <div class="prop-group">
+                    <label for="lr-source-count">Number of Source Lanes</label>
+                    <input type="number" id="lr-source-count" value="1" min="1">
+                </div>
+                 <hr>
+                <div class="prop-group">
+                    <label for="lr-dest-start">Destination Start Lane Index</label>
+                    <input type="number" id="lr-dest-start" value="0" min="0">
+                </div>
+                <div class="prop-group">
+                    <label for="lr-dest-count">Number of Destination Lanes</label>
+                    <input type="number" id="lr-dest-count" value="1" min="1">
+                </div>
+             </div>
+             <div class="modal-footer">
+                <button id="lr-cancel-btn">Cancel</button>
+                <button id="lr-confirm-btn" style="background-color: var(--primary-color); color: white;">Connect</button>
+            </div>
+        </div>
+    </div>	
+
+    <script src="editor.js"></script>
+</body>
+</html>
