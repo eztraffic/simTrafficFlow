@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- The title will be set by JavaScript -->
+    <title data-i18n="appTitle">路網微觀交通模擬</title>
+    <link rel="stylesheet" href="style01.css">
+    <!-- 引入 Chart.js 圖表庫 -->
+    <script src="chart.min.js"></script>
+</head>
+<body>
+    <header>
+        <div class="title-bar">
+            <h1 data-i18n="appTitle">路網微觀交通模擬</h1>
+            <div class="controls">
+                <label for="xmlFileInput" data-i18n="selectFileLabel">選擇路網檔案：</label>
+				<input type="file" id="xmlFileInput" accept=".sim">
+                <!-- START: NEW CODE FOR LANGUAGE SWITCHER -->
+                <div class="lang-switcher">
+                    <select id="langSelector">
+                        <option value="zh-Hant">繁體中文</option>
+                        <option value="en">English</option>
+                    </select>
+                </div>
+                <!-- END: NEW CODE -->
+            </div>
+        </div>
+        <div class="simulation-controls">
+            <button id="startStopButton">請先載入檔案</button>
+            <div class="slider-container">
+                <label for="speedSlider" data-i18n="simSpeedLabel">模擬速度:</label>
+                <input type="range" id="speedSlider" min="1" max="50" value="3">
+                <span id="speedValue">3x</span>
+            </div>
+            <div class="time-display">
+                <span data-i18n="simTimeLabel">模擬時間:</span> <span id="simulationTime">0.00</span>s
+            </div>
+            <div class="toggle-container">
+                <label class="switch-label" for="showPathsToggle" data-i18n="trafficLightToggle">路口燈號:</label>
+                <label class="switch">
+                    <input type="checkbox" id="showPathsToggle">
+                    <span class="slider round"></span>
+                </label>
+            </div>
+            <div class="toggle-container">
+                <label class="switch-label" for="showPointMetersToggle" data-i18n="pointMeterToggle">定點偵測器:</label>
+                <label class="switch">
+                    <input type="checkbox" id="showPointMetersToggle" checked>
+                    <span class="slider round"></span>
+                </label>
+            </div>
+            <div class="toggle-container">
+                <label class="switch-label" for="showSectionMetersToggle" data-i18n="sectionMeterToggle">區間偵測器:</label>
+                <label class="switch">
+                    <input type="checkbox" id="showSectionMetersToggle" checked>
+                    <span class="slider round"></span>
+                </label>
+            </div>
+        </div>
+    </header>
+    <main id="main-content">
+        <!-- 左側統計面板 -->
+        <div id="stats-panel">
+            <h2 data-i18n="statsTitle">統計數據</h2>
+            
+            <div class="chart-container">
+                <h3 data-i18n="vehicleCountChartTitle">車輛數 (輛)</h3>
+                <canvas id="vehicleCountChart"></canvas>
+            </div>
+
+            <div class="chart-container">
+                <h3 data-i18n="avgSpeedChartTitle">平均速度 (km/h)</h3>
+                <canvas id="avgSpeedChart"></canvas>
+            </div>
+
+            <!-- 點偵測器圖表的容器 -->
+            <div id="meter-charts-container"></div>
+            
+            <!-- 區間偵測器圖表的容器 -->
+            <div id="section-meter-charts-container"></div>
+
+            <div id="stats-table-container">
+                 <h3 data-i18n="realtimeStatsTitle">即時數據 (全域)</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th data-i18n="tableHeaderTime">時間 (s)</th>
+                            <th data-i18n="tableHeaderVehicles">車輛數</th>
+                            <th data-i18n="tableHeaderAvgSpeed">平均速度 (km/h)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="statsTableBody">
+                        <!-- 數據將由 JS 動態插入 -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <!-- 右側畫布容器 -->
+        <div id="canvas-container">
+            <canvas id="networkCanvas"></canvas>
+        </div>
+    </main>
+    <script src="script02.js"></script>
+</body>
+</html>
