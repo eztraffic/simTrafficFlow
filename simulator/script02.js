@@ -264,11 +264,23 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         drawTurnPaths(ctx) { ctx.save(); ctx.lineWidth = 2 / scale; for (const nodeId in this.network.nodes) { const node = this.network.nodes[nodeId]; const tfl = this.trafficLights.find(t => t.nodeId === nodeId); for (const transition of node.transitions) { if (transition.bezier && transition.bezier.points) { let signal = 'Green'; if (tfl && transition.turnGroupId) { signal = tfl.getSignalForTurnGroup(transition.turnGroupId); } switch (signal) { case 'Red': ctx.strokeStyle = 'rgba(255, 0, 0, 0.7)'; break; case 'Yellow': ctx.strokeStyle = 'rgba(255, 193, 7, 0.9)'; break; case 'Green': default: ctx.strokeStyle = 'rgba(76, 175, 80, 0.7)'; break; } const [p0, p1, p2, p3] = transition.bezier.points; ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.bezierCurveTo(p1.x, p1.y, p2.x, p2.y, p3.x, p3.y); ctx.stroke(); } } } ctx.restore(); }
 		draw(ctx) {
+            // 1. 正常繪製路網、路上的車輛、以及在路口內的車輛。
+            //    此時，路口內的車輛會先被畫好。
             drawNetwork(this.network, this.network.links, this.vehicles);
+
+            // 2. 繪製燈號轉向路徑 (紅/黃/綠線)。
+            //    這會覆蓋在步驟 1 中已繪製的路口車輛之上。
             if (showTurnPaths) {
                 this.drawTurnPaths(ctx);
             }
+
+            // 3. 繪製其他交通號誌視覺效果 (若有)。
             this.trafficLights.forEach(tfl => tfl.draw(ctx, this.network));
+
+            // 4. 【關鍵步驟】為了讓車輛不被燈號線覆蓋，我們再次繪製所有「在路口內」的車輛。
+            //    這次繪製會將它們呈現在所有先前圖層的上方。
+            const vehiclesInIntersection = this.vehicles.filter(v => v.state === 'inIntersection');
+            vehiclesInIntersection.forEach(v => v.draw(ctx));
         }
 	}
 
@@ -1033,6 +1045,25 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             ctx.restore();
         }
+
+        // [MODIFIED] Draw nodes (intersections) first to act as the bottom layer
+        if (netData.nodes) {
+            Object.values(netData.nodes).forEach(node => {
+                if (node.polygon) {
+                    ctx.fillStyle = '#666666';
+                    ctx.strokeStyle = '#666';
+                    ctx.lineWidth = 1 / scale;
+                    ctx.setLineDash([]);
+                    ctx.beginPath();
+                    ctx.moveTo(node.polygon[0].x, node.polygon[0].y);
+                    for (let i = 1; i < node.polygon.length; i++) ctx.lineTo(node.polygon[i].x, node.polygon[i].y);
+                    ctx.closePath();
+                    ctx.fill();
+                    ctx.stroke();
+                }
+            });
+        }
+        
         const linksToDraw = netData.drawOrder || Object.keys(netData.links);
         for (const linkId of linksToDraw) {
             const link = netData.links[linkId];
@@ -1068,22 +1099,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 vehiclesOnLink[linkId].forEach(v => v.draw(ctx));
             }
         }
-        if (netData.nodes) {
-            Object.values(netData.nodes).forEach(node => {
-                if (node.polygon) {
-                    ctx.fillStyle = '#666666';
-                    ctx.strokeStyle = '#666';
-                    ctx.lineWidth = 1 / scale;
-                    ctx.setLineDash([]);
-                    ctx.beginPath();
-                    ctx.moveTo(node.polygon[0].x, node.polygon[0].y);
-                    for (let i = 1; i < node.polygon.length; i++) ctx.lineTo(node.polygon[i].x, node.polygon[i].y);
-                    ctx.closePath();
-                    ctx.fill();
-                    ctx.stroke();
-                }
-            });
-        }
+
+        // [MODIFIED] The node drawing block was moved above the link drawing block.
+
         if (vehiclesInIntersection.length > 0) {
             vehiclesInIntersection.forEach(v => v.draw(ctx));
         }
@@ -1147,7 +1165,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         ctx.setLineDash([]);
     }
-
     function parseTrafficModel(xmlDoc) {
         return new Promise((resolve, reject) => {
             const links = {}; const nodes = {}; let spawners = []; let trafficLights = [];
