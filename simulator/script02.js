@@ -262,14 +262,15 @@ document.addEventListener('DOMContentLoaded', () => {
             this.vehicles.forEach(vehicle => vehicle.update(dt, this.vehicles, this));
             this.vehicles = this.vehicles.filter(v => !v.finished);
         }
-        drawTurnPaths(ctx) { ctx.save(); ctx.lineWidth = 2 / scale; for (const nodeId in this.network.nodes) { const node = this.network.nodes[nodeId]; const tfl = this.trafficLights.find(t => t.nodeId === nodeId); for (const transition of node.transitions) { if (transition.bezier && transition.bezier.points) { let signal = 'Green'; if (tfl && transition.turnGroupId) { signal = tfl.getSignalForTurnGroup(transition.turnGroupId); } switch (signal) { case 'Red': ctx.strokeStyle = 'rgba(255, 0, 0, 0.7)'; break; case 'Yellow': ctx.strokeStyle = 'rgba(255, 193, 7, 0.9)'; break; case 'Green': default: ctx.strokeStyle = 'rgba(76, 175, 80, 0.7)'; break; } const [p0, p1, p2, p3] = transition.bezier.points; ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.bezierCurveTo(p1.x, p1.y, p2.x, p2.y, p3.x, p3.y); ctx.stroke(); } } } ctx.restore(); }
+        drawTurnPaths(ctx) { ctx.save(); ctx.lineWidth = 2 / scale; for (const nodeId in this.network.nodes) { const node = this.network.nodes[nodeId]; const tfl = this.trafficLights.find(t => t.nodeId === nodeId); for (const transition of node.transitions) { if (transition.bezier && transition.bezier.points) { let signal = 'Green'; if (tfl && transition.turnGroupId) { signal = tfl.getSignalForTurnGroup(transition.turnGroupId); } switch (signal) { case 'Red': ctx.strokeStyle = 'rgba(255, 0, 0, 0.7)'; break; case 'Yellow': ctx.strokeStyle = 'rgba(255, 193, 7, 0.9)'; break; case 'Green': default: ctx.strokeStyle = 'rgba(76, 175, 80, 0.7)'; break; } const [p0, p1, p2, p3] = transition.bezier.points; ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.bezierCurveTo(p1.x, p1.y, p2.x, p2.y, p3.x, p3.y); ctx.stroke(); } } } ctx.restore(); }		
 		draw(ctx) {
             // 1. 正常繪製路網、路上的車輛、以及在路口內的車輛。
-            //    此時，路口內的車輛會先被畫好。
+            //    此時，所有車輛會根據其所在路段的繪製順序 (處理天橋等情況) 被畫好。
+            //    但這個階段，部分車輛可能會被之後繪製的燈號線覆蓋。
             drawNetwork(this.network, this.network.links, this.vehicles);
 
             // 2. 繪製燈號轉向路徑 (紅/黃/綠線)。
-            //    這會覆蓋在步驟 1 中已繪製的路口車輛之上。
+            //    這會覆蓋在步驟 1 中已繪製的圖層之上。
             if (showTurnPaths) {
                 this.drawTurnPaths(ctx);
             }
@@ -277,10 +278,27 @@ document.addEventListener('DOMContentLoaded', () => {
             // 3. 繪製其他交通號誌視覺效果 (若有)。
             this.trafficLights.forEach(tfl => tfl.draw(ctx, this.network));
 
-            // 4. 【關鍵步驟】為了讓車輛不被燈號線覆蓋，我們再次繪製所有「在路口內」的車輛。
-            //    這次繪製會將它們呈現在所有先前圖層的上方。
-            const vehiclesInIntersection = this.vehicles.filter(v => v.state === 'inIntersection');
-            vehiclesInIntersection.forEach(v => v.draw(ctx));
+            // 4. 【關鍵修正】為了讓車輛不被燈號線覆蓋，我們再次繪製所有「物理上在路口內」的車輛。
+            //    這包括中心點在路口內的車輛，以及車身部分進入或尚未完全離開路口的車輛。
+            //    這次重繪會將它們呈現在燈號線等所有先前圖層的上方。
+            const vehiclesToRedraw = this.vehicles.filter(v => {
+                // 情況 A：車輛的中心點在路口內 (state 為 'inIntersection')。
+                if (v.state === 'inIntersection') {
+                    return true;
+                }
+
+                // 情況 B：車輛的中心點在路段上 (state 為 'onLink')，但車身與路口重疊。
+                // 檢查車頭是否已伸入下一個路口。
+                const isEntering = v.distanceOnPath + v.length / 2 > v.currentPathLength;
+                
+                // 檢查車尾是否還留在上一個路口。
+                // (剛切換到新路段時，distanceOnPath 很小)
+                const isExiting = v.distanceOnPath - v.length / 2 < 0;
+
+                return isEntering || isExiting;
+            });
+
+            vehiclesToRedraw.forEach(v => v.draw(ctx));
         }
 	}
 
