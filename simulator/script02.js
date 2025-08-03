@@ -717,7 +717,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 this.angle = Geom.Vec.angle(tangent);
             }
         }
-        draw(ctx) { ctx.save(); ctx.translate(this.x, this.y); ctx.rotate(this.angle); ctx.fillStyle = 'rgba(10, 238, 254, 0.9)'; ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 0.5 / scale; ctx.beginPath(); ctx.rect(-this.length / 2, -this.width / 2, this.length, this.width); ctx.fill(); ctx.stroke(); ctx.restore(); }
+        draw(ctx) { ctx.save(); ctx.translate(this.x, this.y); ctx.rotate(this.angle); ctx.fillStyle = 'rgba(10, 238, 254, 1.0)'; ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 0.5 / scale; ctx.beginPath(); ctx.rect(-this.length / 2, -this.width / 2, this.length, this.width); ctx.fill(); ctx.stroke(); ctx.restore(); }
     }
 
     // --- 檔案處理與模擬啟動 ---
