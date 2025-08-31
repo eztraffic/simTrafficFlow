@@ -4,7 +4,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- START: I18N (Internationalization) Setup ---
     const translations = {
         'zh-Hant': {
-            appTitle: 'simTrafficFlow(路網微觀交通模擬)',
+            appTitle: 'Traffic Flow simulation (路網微觀交通模擬)',
             selectFileLabel: '選擇路網檔案：',
             btnLoadFirst: '請先載入檔案',
             btnStart: '開始模擬',
@@ -1372,3 +1372,4 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // --- END OF FILE script02.js (MODIFIED FOR I18N - FULL VERSION) ---
+
