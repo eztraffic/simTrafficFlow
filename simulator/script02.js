@@ -1,10 +1,10 @@
-// --- START OF FILE script02.js (MODIFIED FOR I18N - FULL VERSION) ---
+// --- START OF FILE script02.js (MODIFIED FOR I18N & WAYPOINT FIX - FULL VERSION) ---
 
 document.addEventListener('DOMContentLoaded', () => {
     // --- START: I18N (Internationalization) Setup ---
     const translations = {
         'zh-Hant': {
-            appTitle: 'Traffic Flow simulation (路網微觀交通模擬)',
+            appTitle: 'simTrafficFlow(路網微觀交通模擬)',
             selectFileLabel: '選擇路網檔案：',
             btnLoadFirst: '請先載入檔案',
             btnStart: '開始模擬',
@@ -264,46 +264,32 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         drawTurnPaths(ctx) { ctx.save(); ctx.lineWidth = 2 / scale; for (const nodeId in this.network.nodes) { const node = this.network.nodes[nodeId]; const tfl = this.trafficLights.find(t => t.nodeId === nodeId); for (const transition of node.transitions) { if (transition.bezier && transition.bezier.points) { let signal = 'Green'; if (tfl && transition.turnGroupId) { signal = tfl.getSignalForTurnGroup(transition.turnGroupId); } switch (signal) { case 'Red': ctx.strokeStyle = 'rgba(255, 0, 0, 0.7)'; break; case 'Yellow': ctx.strokeStyle = 'rgba(255, 193, 7, 0.9)'; break; case 'Green': default: ctx.strokeStyle = 'rgba(76, 175, 80, 0.7)'; break; } const [p0, p1, p2, p3] = transition.bezier.points; ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.bezierCurveTo(p1.x, p1.y, p2.x, p2.y, p3.x, p3.y); ctx.stroke(); } } } ctx.restore(); }		
 		draw(ctx) {
-            // 1. 正常繪製路網、路上的車輛、以及在路口內的車輛。
-            //    此時，所有車輛會根據其所在路段的繪製順序 (處理天橋等情況) 被畫好。
-            //    但這個階段，部分車輛可能會被之後繪製的燈號線覆蓋。
+            // 1. 正常繪製路網
             drawNetwork(this.network, this.network.links, this.vehicles);
 
-            // 2. 繪製燈號轉向路徑 (紅/黃/綠線)。
-            //    這會覆蓋在步驟 1 中已繪製的圖層之上。
+            // 2. 繪製燈號轉向路徑
             if (showTurnPaths) {
                 this.drawTurnPaths(ctx);
             }
 
-            // 3. 繪製其他交通號誌視覺效果 (若有)。
+            // 3. 繪製其他交通號誌視覺效果
             this.trafficLights.forEach(tfl => tfl.draw(ctx, this.network));
 
-            // 4. 【關鍵修正】為了讓車輛不被燈號線覆蓋，我們再次繪製所有「物理上在路口內」的車輛。
-            //    這包括中心點在路口內的車輛，以及車身部分進入或尚未完全離開路口的車輛。
-            //    這次重繪會將它們呈現在燈號線等所有先前圖層的上方。
+            // 4. 重繪路口車輛
             const vehiclesToRedraw = this.vehicles.filter(v => {
-                // 情況 A：車輛的中心點在路口內 (state 為 'inIntersection')。
                 if (v.state === 'inIntersection') {
                     return true;
                 }
-
-                // 情況 B：車輛的中心點在路段上 (state 為 'onLink')，但車身與路口重疊。
-                // 檢查車頭是否已伸入下一個路口。
                 const isEntering = v.distanceOnPath + v.length / 2 > v.currentPathLength;
-                
-                // 檢查車尾是否還留在上一個路口。
-                // (剛切換到新路段時，distanceOnPath 很小)
                 const isExiting = v.distanceOnPath - v.length / 2 < 0;
-
                 return isEntering || isExiting;
             });
-
             vehiclesToRedraw.forEach(v => v.draw(ctx));
         }
 	}
 
     // ===================================================================
-    // Pathfinder, TFL, Spawner 類別 (無變更)
+    // Pathfinder, TFL, Spawner, Vehicle 類別 (保持不變，為節省空間略)
     // ===================================================================
     class Pathfinder { constructor(links, nodes) { this.adj = new Map(); for (const linkId in links) { const link = links[linkId]; if (!this.adj.has(link.source)) this.adj.set(link.source, []); this.adj.get(link.source).push({ linkId: link.id, toNode: link.destination }); } } findRoute(startNodeId, endNodeId) { if (!startNodeId || !endNodeId) return null; const q = [[startNodeId, []]]; const visited = new Set([startNodeId]); while (q.length > 0) { const [currentNodeId, path] = q.shift(); if (currentNodeId === endNodeId) return path; const neighbors = this.adj.get(currentNodeId) || []; for (const neighbor of neighbors) { if (!visited.has(neighbor.toNode)) { visited.add(neighbor.toNode); const newPath = [...path, neighbor.linkId]; q.push([neighbor.toNode, newPath]); } } } return null; } }
     class TrafficLightController { constructor(config) { this.nodeId = config.nodeId; this.schedule = config.schedule; this.lights = config.lights; this.timeShift = config.timeShift || 0; this.cycleDuration = this.schedule.reduce((sum, p) => sum + p.duration, 0); this.turnGroupStates = {}; } update(time) { if (this.cycleDuration <= 0) return; const effectiveTime = time - this.timeShift; let timeInCycle = ((effectiveTime % this.cycleDuration) + this.cycleDuration) % this.cycleDuration; for (const period of this.schedule) { if (timeInCycle < period.duration) { for (const [turnGroupId, signal] of Object.entries(period.signals)) { this.turnGroupStates[turnGroupId] = signal; } return; } timeInCycle -= period.duration; } } getSignalForTurnGroup(turnGroupId) { return this.turnGroupStates[turnGroupId] || 'Green'; } draw(ctx, network) { } }
@@ -313,10 +299,6 @@ document.addEventListener('DOMContentLoaded', () => {
         update(dt, network, vehicleId) { if (!this.active) return null; this.timeInPeriod += dt; if (this.timeInPeriod > this.currentConfig.duration) { this._switchToNextPeriod(); if (!this.active) return null; return null; } this.spawnTimer += dt; if (this.spawnTimer >= this.spawnInterval) { this.spawnTimer -= this.spawnInterval; const destination = this.chooseWithWeight(this.currentConfig.destinations); const profile = this.chooseWithWeight(this.currentConfig.vehicleProfiles); if (!destination || !profile) return null; const route = this.pathfinder.findRoute(this.originNodeId, destination.destinationNodeId); if (!route || route.length === 0) return null; const startLinkId = route[0]; const startLink = network.links[startLinkId]; let startLaneIndex = 0; if (startLink) { const numLanes = Object.keys(startLink.lanes).length; if (numLanes > 0) { startLaneIndex = Math.floor(Math.random() * numLanes); } } return new Vehicle(vehicleId, profile, route, network, startLaneIndex); } return null; }
         chooseWithWeight(items) { if (!items || items.length === 0) return null; const totalWeight = items.reduce((sum, item) => sum + item.weight, 0); if (totalWeight <= 0) return items[0]; let random = Math.random() * totalWeight; for (const item of items) { random -= item.weight; if (random <= 0) return item; } return items[items.length - 1]; }
     }
-
-    // ===================================================================
-    // Vehicle 類別 (無變更)
-    // ===================================================================
     class Vehicle {
         constructor(id, profile, route, network, startLaneIndex = 0, initialState = null) {
             this.id = id;
@@ -1037,7 +1019,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
     // ===================================================================
-    // 繪圖與解析函數 (無變更)
+    // 繪圖與解析函數
     // ===================================================================
     function drawNetwork(netData, links, vehicles = null) {
         if (!netData) return;
@@ -1064,7 +1046,7 @@ document.addEventListener('DOMContentLoaded', () => {
             ctx.restore();
         }
 
-        // [MODIFIED] Draw nodes (intersections) first to act as the bottom layer
+        // Draw nodes (intersections)
         if (netData.nodes) {
             Object.values(netData.nodes).forEach(node => {
                 if (node.polygon) {
@@ -1117,8 +1099,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 vehiclesOnLink[linkId].forEach(v => v.draw(ctx));
             }
         }
-
-        // [MODIFIED] The node drawing block was moved above the link drawing block.
 
         if (vehiclesInIntersection.length > 0) {
             vehiclesInIntersection.forEach(v => v.draw(ctx));
@@ -1245,35 +1225,57 @@ document.addEventListener('DOMContentLoaded', () => {
                         link.dividingLines[i] = { path: [] };
                     }
                 }
+
                 const centerlinePolyline = [];
-                const segments = Array.from(linkEl.querySelectorAll('TrapeziumSegment, Segments > TrapeziumSegment'));
-                segments.forEach(segEl => {
-                    const ls = segEl.querySelector('LeftSide > Start');
-                    const le = segEl.querySelector('LeftSide > End');
-                    const rs = segEl.querySelector('RightSide > Start');
-                    const re = segEl.querySelector('RightSide > End');
-                    const p1 = { x: parseFloat(ls.querySelector('x').textContent), y: -parseFloat(ls.querySelector('y').textContent) };
-                    const p2 = { x: parseFloat(rs.querySelector('x').textContent), y: -parseFloat(rs.querySelector('y').textContent) };
-                    const p3 = { x: parseFloat(re.querySelector('x').textContent), y: -parseFloat(re.querySelector('y').textContent) };
-                    const p4 = { x: parseFloat(le.querySelector('x').textContent), y: -parseFloat(le.querySelector('y').textContent) };
-                    link.geometry.push({ type: 'trapezium', points: [p1, p2, p3, p4] });
-                    [p1, p2, p3, p4].forEach(updateBounds);
-                    const centerStart = Geom.Vec.scale(Geom.Vec.add(p1, p2), 0.5);
-                    const centerEnd = Geom.Vec.scale(Geom.Vec.add(p4, p3), 0.5);
-                    if (centerlinePolyline.length === 0) {
-                        centerlinePolyline.push(centerStart);
-                    }
-                    centerlinePolyline.push(centerEnd);
-                    segEl.querySelectorAll('RoadSigns > SpeedLimitSign').forEach(signEl => {
-                        const position = parseFloat(signEl.querySelector('position').textContent);
-                        const speedLimit = parseFloat(signEl.querySelector('speedLimit').textContent);
-                        link.roadSigns.push({ type: 'limit', position, limit: speedLimit });
+                // Check for waypoints first
+                const waypointsEl = linkEl.querySelectorAll('Waypoints > Waypoint');
+                const hasWaypoints = waypointsEl.length >= 2;
+
+                if (hasWaypoints) {
+                    waypointsEl.forEach(wp => {
+                         const x = parseFloat(wp.querySelector('x').textContent);
+                         const y = -parseFloat(wp.querySelector('y').textContent);
+                         const p = {x, y};
+                         centerlinePolyline.push(p);
+                         updateBounds(p);
                     });
-                    segEl.querySelectorAll('RoadSigns > NoSpeedLimitSign').forEach(signEl => {
-                        const position = parseFloat(signEl.querySelector('position').textContent);
-                        link.roadSigns.push({ type: 'no_limit', position });
+                } else {
+                    // Fallback to TrapeziumSegment geometry logic
+                    const segments = Array.from(linkEl.querySelectorAll('TrapeziumSegment, Segments > TrapeziumSegment'));
+                    segments.forEach(segEl => {
+                        const ls = segEl.querySelector('LeftSide > Start');
+                        const le = segEl.querySelector('LeftSide > End');
+                        const rs = segEl.querySelector('RightSide > Start');
+                        const re = segEl.querySelector('RightSide > End');
+                        const p1 = { x: parseFloat(ls.querySelector('x').textContent), y: -parseFloat(ls.querySelector('y').textContent) };
+                        const p2 = { x: parseFloat(rs.querySelector('x').textContent), y: -parseFloat(rs.querySelector('y').textContent) };
+                        const p3 = { x: parseFloat(re.querySelector('x').textContent), y: -parseFloat(re.querySelector('y').textContent) };
+                        const p4 = { x: parseFloat(le.querySelector('x').textContent), y: -parseFloat(le.querySelector('y').textContent) };
+                        
+                        link.geometry.push({ type: 'trapezium', points: [p1, p2, p3, p4] });
+                        [p1, p2, p3, p4].forEach(updateBounds);
+                        
+                        const centerStart = Geom.Vec.scale(Geom.Vec.add(p1, p2), 0.5);
+                        const centerEnd = Geom.Vec.scale(Geom.Vec.add(p4, p3), 0.5);
+                        if (centerlinePolyline.length === 0) {
+                            centerlinePolyline.push(centerStart);
+                        }
+                        centerlinePolyline.push(centerEnd);
+                        
+                        // Parse Road Signs (Same as before)
+                        segEl.querySelectorAll('RoadSigns > SpeedLimitSign').forEach(signEl => {
+                            const position = parseFloat(signEl.querySelector('position').textContent);
+                            const speedLimit = parseFloat(signEl.querySelector('speedLimit').textContent);
+                            link.roadSigns.push({ type: 'limit', position, limit: speedLimit });
+                        });
+                        segEl.querySelectorAll('RoadSigns > NoSpeedLimitSign').forEach(signEl => {
+                            const position = parseFloat(signEl.querySelector('position').textContent);
+                            link.roadSigns.push({ type: 'no_limit', position });
+                        });
                     });
-                });
+                }
+
+                // Calculate Mitered Normals
                 const miteredNormals = [];
                 if (centerlinePolyline.length > 1) {
                     for (let i = 0; i < centerlinePolyline.length; i++) {
@@ -1307,8 +1309,48 @@ document.addEventListener('DOMContentLoaded', () => {
                         miteredNormals.push(finalNormal);
                     }
                 }
+
                 const orderedLanes = Object.values(link.lanes).sort((a, b) => a.index - b.index);
                 const totalWidth = orderedLanes.reduce((sum, lane) => sum + lane.width, 0);
+
+                // If constructed from Waypoints, build the geometry polygon now using mitered normals
+                if (hasWaypoints && centerlinePolyline.length > 1) {
+                    const leftEdgePoints = [];
+                    const rightEdgePoints = [];
+                    
+                    for (let i = 0; i < centerlinePolyline.length; i++) {
+                        const centerPoint = centerlinePolyline[i];
+                        const normal = miteredNormals[i];
+                        
+                        // Width from center
+                        const halfWidth = totalWidth / 2;
+                        
+                        leftEdgePoints.push(Geom.Vec.add(centerPoint, Geom.Vec.scale(normal, -halfWidth)));
+                        rightEdgePoints.push(Geom.Vec.add(centerPoint, Geom.Vec.scale(normal, halfWidth)));
+                    }
+                    
+                    // Create one large polygon for the whole road segment
+                    link.geometry.push({
+                        type: 'polygon',
+                        points: [...leftEdgePoints, ...rightEdgePoints.reverse()]
+                    });
+                    
+                    // Also parse road signs attached to the Segments container if waypoints were used
+                    // (Some XMLs attach signs to Segments even if geometry is waypoint-based)
+                    const segs = linkEl.querySelectorAll('Segments > TrapeziumSegment');
+                    segs.forEach(segEl => {
+                         segEl.querySelectorAll('RoadSigns > SpeedLimitSign').forEach(signEl => {
+                            const position = parseFloat(signEl.querySelector('position').textContent);
+                            const speedLimit = parseFloat(signEl.querySelector('speedLimit').textContent);
+                            link.roadSigns.push({ type: 'limit', position, limit: speedLimit });
+                        });
+                        segEl.querySelectorAll('RoadSigns > NoSpeedLimitSign').forEach(signEl => {
+                            const position = parseFloat(signEl.querySelector('position').textContent);
+                            link.roadSigns.push({ type: 'no_limit', position });
+                        });
+                    });
+                }
+
                 for (let i = 0; i < centerlinePolyline.length; i++) {
                     const centerPoint = centerlinePolyline[i];
                     const normal = miteredNormals[i];
@@ -1371,5 +1413,4 @@ document.addEventListener('DOMContentLoaded', () => {
     function handlePanEnd() { isPanning = false; canvas.style.cursor = 'grab'; }
 });
 
-// --- END OF FILE script02.js (MODIFIED FOR I18N - FULL VERSION) ---
-
+// --- END OF FILE script02.js (MODIFIED FOR I18N & WAYPOINT FIX - FULL VERSION) ---
