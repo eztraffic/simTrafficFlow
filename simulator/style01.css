@@ -1,3 +1,5 @@
+/* --- START OF FILE style01.css (MODIFIED TO FIX JITTER) --- */
+
 body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     margin: 0;
@@ -49,6 +51,7 @@ h1 {
     color: white;
     cursor: pointer;
     transition: background-color 0.2s;
+    white-space: nowrap; /* 防止按鈕文字換行 */
 }
 
 .simulation-controls button:disabled {
@@ -70,10 +73,39 @@ h1 {
     width: 150px;
 }
 
-.time-display, .slider-container label, .toggle-container .switch-label {
+/* 共通字體設定 */
+.slider-container label, .toggle-container .switch-label {
     font-weight: bold;
     font-size: 0.9em;
+    white-space: nowrap; /* 防止標籤換行 */
 }
+
+/* --- 修改開始：修復時間跳動問題 --- */
+.time-display {
+    font-weight: bold;
+    font-size: 0.9em;
+    /* 設定最小寬度，防止數字增加時推擠右側元素 (預留空間給 9999.99s) */
+    min-width: 160px; 
+    /* 使用表格數字特性，讓數字等寬 (若字體支援) */
+    font-variant-numeric: tabular-nums;
+    /* 確保內容不換行 */
+    white-space: nowrap;
+    /* 讓內容垂直置中 */
+    display: flex;
+    align-items: center;
+}
+
+/* 針對變動的數字部分進行特定設定 */
+#simulationTime {
+    /* 強制使用等寬字體，確保 1 和 8 佔用相同寬度 */
+    font-family: "Consolas", "Monaco", "Courier New", monospace;
+    display: inline-block;
+    /* 預留數字區域寬度，並靠右對齊，讓視覺更穩定 */
+    min-width: 60px; 
+    text-align: right;
+    margin-right: 3px;
+}
+/* --- 修改結束 --- */
 
 .instructions {
     margin-top: 10px;
@@ -125,7 +157,7 @@ main#main-content {
     box-shadow: 0 1px 3px rgba(0,0,0,0.05);
 }
 
-/* *** UPDATED: 為偵測器圖表容器添加間隔 *** */
+/* 為偵測器圖表容器添加間隔 */
 #meter-charts-container, #section-meter-charts-container {
     display: flex;
     flex-direction: column;
@@ -189,12 +221,15 @@ main#main-content {
   display: flex;
   align-items: center;
   gap: 10px;
+  /* 防止 Toggle 區塊本身被壓縮 */
+  flex-shrink: 0; 
 }
 .switch {
   position: relative;
   display: inline-block;
   width: 50px;
   height: 28px;
+  flex-shrink: 0;
 }
 .switch input { 
   opacity: 0;
@@ -251,4 +286,3 @@ input:checked + .slider:before {
     background-color: #fff;
     font-size: 0.9em;
 }
-/* END: NEW STYLE */
