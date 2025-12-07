@@ -3,20 +3,24 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <!-- The title will be set by JavaScript -->
-    <title data-i18n="appTitle">路網微觀交通模擬</title>
+    <title data-i18n="appTitle">路網微觀交通模擬 (2D/3D)</title>
     <link rel="stylesheet" href="style01.css">
-    <!-- 引入 Chart.js 圖表庫 -->
-    <script src="chart.min.js"></script>
+    
+    <!-- 1. 引入 Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <!-- 2. 引入 Three.js (r147) -->
+    <script src="https://unpkg.com/three@0.147.0/build/three.min.js"></script>
+    <!-- 3. 引入 OrbitControls -->
+    <script src="https://unpkg.com/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
 </head>
 <body>
     <header>
         <div class="title-bar">
-            <h1 data-i18n="appTitle">路網微觀交通模擬</h1>
+            <h1 data-i18n="appTitle">路網微觀交通模擬 (2D/3D)</h1>
             <div class="controls">
                 <label for="xmlFileInput" data-i18n="selectFileLabel">選擇路網檔案：</label>
-				<input type="file" id="xmlFileInput" accept=".sim">
-                <!-- START: NEW CODE FOR LANGUAGE SWITCHER -->
+                <input type="file" id="xmlFileInput" accept=".sim">
                 <div class="lang-switcher">
                     <label for="langSelector">language:</label>
                     <select id="langSelector">
@@ -24,11 +28,11 @@
                         <option value="en">English</option>
                     </select>
                 </div>
-                <!-- END: NEW CODE -->
             </div>
         </div>
         <div class="simulation-controls">
             <button id="startStopButton">請先載入檔案</button>
+            
             <div class="slider-container">
                 <label for="speedSlider" data-i18n="simSpeedLabel">模擬速度:</label>
                 <input type="range" id="speedSlider" min="1" max="50" value="3">
@@ -37,6 +41,8 @@
             <div class="time-display">
                 <span data-i18n="simTimeLabel">模擬時間:</span> <span id="simulationTime">0.00</span>s
             </div>
+            
+            <!-- 路口燈號 -->
             <div class="toggle-container">
                 <label class="switch-label" for="showPathsToggle" data-i18n="trafficLightToggle">路口燈號:</label>
                 <label class="switch">
@@ -44,6 +50,17 @@
                     <span class="slider round"></span>
                 </label>
             </div>
+
+            <!-- 新增位置：視角模式 (改為開關樣式) -->
+            <div class="toggle-container">
+                <label class="switch-label" for="viewModeToggle" data-i18n="viewModeLabel">3D 模式:</label>
+                <label class="switch">
+                    <!-- 預設不勾選 (2D)，勾選為 3D -->
+                    <input type="checkbox" id="viewModeToggle">
+                    <span class="slider round"></span>
+                </label>
+            </div>
+
             <div class="toggle-container">
                 <label class="switch-label" for="showPointMetersToggle" data-i18n="pointMeterToggle">定點偵測器:</label>
                 <label class="switch">
@@ -75,10 +92,7 @@
                 <canvas id="avgSpeedChart"></canvas>
             </div>
 
-            <!-- 點偵測器圖表的容器 -->
             <div id="meter-charts-container"></div>
-            
-            <!-- 區間偵測器圖表的容器 -->
             <div id="section-meter-charts-container"></div>
 
             <div id="stats-table-container">
@@ -91,17 +105,23 @@
                             <th data-i18n="tableHeaderAvgSpeed">平均速度 (km/h)</th>
                         </tr>
                     </thead>
-                    <tbody id="statsTableBody">
-                        <!-- 數據將由 JS 動態插入 -->
-                    </tbody>
+                    <tbody id="statsTableBody"></tbody>
                 </table>
             </div>
         </div>
         <!-- 右側畫布容器 -->
         <div id="canvas-container">
+            <!-- 2D Canvas -->
             <canvas id="networkCanvas"></canvas>
+            <!-- 3D Container -->
+            <div id="threejs-container"></div>
+            <!-- 載入提示文字 -->
+            <div id="placeholder-text" style="position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); color:#888;">
+                請從上方選擇一個 XML 檔案以載入路網
+            </div>
         </div>
     </main>
+    
     <script src="script02.js"></script>
 </body>
 </html>
