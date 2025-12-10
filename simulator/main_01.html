@@ -21,6 +21,12 @@
             <div class="controls">
                 <label for="xmlFileInput" data-i18n="selectFileLabel">選擇路網檔案：</label>
                 <input type="file" id="xmlFileInput" accept=".sim">
+				<div class="seed-container" style="display:flex; align-items:center; gap:5px; margin-left:10px;">
+   				 <label for="citySeedInput" style="font-size:0.9em; font-weight:bold;">City Seed:</label>
+   				 <input type="number" id="citySeedInput" value="12345" style="width:70px; padding:3px;">
+   				 <button id="regenCityBtn" style="padding:3px 8px; font-size:0.8em; cursor:pointer;">生成</button>
+				</div>                
+                
                 <div class="lang-switcher">
                     <label for="langSelector">language:</label>
                     <select id="langSelector">
@@ -57,6 +63,15 @@
                 <label class="switch">
                     <!-- 預設不勾選 (2D)，勾選為 3D -->
                     <input type="checkbox" id="viewModeToggle">
+                    <span class="slider round"></span>
+                </label>
+            </div>
+
+            <!-- 新增位置：自動巡航 (鳥瞰) -->
+            <div class="toggle-container">
+                <label class="switch-label" for="flyoverToggle" data-i18n="flyoverLabel">鳥瞰:</label>
+                <label class="switch">
+                    <input type="checkbox" id="flyoverToggle">
                     <span class="slider round"></span>
                 </label>
             </div>
