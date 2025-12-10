@@ -37,7 +37,8 @@ document.addEventListener('DOMContentLoaded', () => {
             allLanesLabel: '不分車道',
             allLanesAvgRateLabel: '不分車道平均速率',
             imageLoadError: '無法載入底圖',
-            dragPegmanHint: '拖曳小人至道路以進入街景'
+            dragPegmanHint: '拖曳小人至道路以進入街景',
+            flyoverLabel: '鳥瞰:' // 新增
         },
         'en': {
             appTitle: 'simTrafficFlow (2D/3D)',
@@ -73,7 +74,8 @@ document.addEventListener('DOMContentLoaded', () => {
             allLanesLabel: 'All Lanes',
             allLanesAvgRateLabel: 'All Lanes Average Rate',
             imageLoadError: 'Could not load background image',
-            dragPegmanHint: 'Drag Pegman to road for Street View'
+            dragPegmanHint: 'Drag Pegman to road for Street View',
+            flyoverLabel: 'Auto Flyover:' // 新增
         }
     };
 
@@ -134,6 +136,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const avgSpeedChartCanvas = document.getElementById('avgSpeedChart').getContext('2d');
     const meterChartsContainer = document.getElementById('meter-charts-container');
     const sectionMeterChartsContainer = document.getElementById('section-meter-charts-container');
+    const flyoverToggle = document.getElementById('flyoverToggle'); // 新增
 
     // --- State Variables ---
     let simulation = null;
@@ -178,6 +181,26 @@ document.addEventListener('DOMContentLoaded', () => {
     let currentHoveredLink = null;
     let lastValidLink = null; 
     let lastValidDropPos = null; 
+
+    // --- Flyover Variables (新增) ---
+    let isFlyoverActive = false;
+    let flyoverController = null; // 新增控制器實例
+    let flyoverBaseTime = 0;
+    let flyoverCenter = { x: 0, y: 0 };
+    let flyoverRadiusX = 100;
+    let flyoverRadiusZ = 100;
+    
+// --- City Generation Variables ---
+    let cityGroup = new THREE.Group(); // 裝載所有城市物件
+    const citySeedInput = document.getElementById('citySeedInput');
+    const regenCityBtn = document.getElementById('regenCityBtn');
+    // --- Event Listeners (新增) ---
+    regenCityBtn.addEventListener('click', () => {
+        if (networkData) {
+            const seed = parseInt(citySeedInput.value, 10) || 12345;
+            generateCity(networkData, seed);
+        }
+    });    
     
     const PEGMAN_SVG = `
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#F5B921" style="width:100%;height:100%;filter:drop-shadow(1px 1px 1px rgba(0,0,0,0.5));">
@@ -219,6 +242,71 @@ document.addEventListener('DOMContentLoaded', () => {
     canvas2D.addEventListener('mousemove', handlePanMove2D);
     canvas2D.addEventListener('mouseup', handlePanEnd2D);
     canvas2D.addEventListener('mouseleave', handlePanEnd2D);
+
+// --- Flyover Event Listeners ---
+    
+    // 1. 開關切換
+    flyoverToggle.addEventListener('change', (e) => {
+        setFlyoverMode(e.target.checked);
+    });
+
+    // 2. 使用者介入時自動退出 (Mouse Down / Wheel)
+    // 只有在 3D 模式且巡航開啟時才偵聽
+    container3D.addEventListener('mousedown', interruptFlyover);
+    container3D.addEventListener('wheel', interruptFlyover);
+
+    function interruptFlyover() {
+        if (isFlyoverActive) {
+            flyoverToggle.checked = false;
+            setFlyoverMode(false);
+        }
+    }
+
+function setFlyoverMode(active) {
+        if (currentViewMode !== '3D') {
+            if (active) {
+                viewModeToggle.checked = true;
+                setViewMode('3D');
+            } else {
+                return;
+            }
+        }
+
+        isFlyoverActive = active;
+        
+        if (active) {
+            if (controls) controls.enabled = false;
+            
+            // [修改] 初始化道路飛行控制器
+            // 使用 City Seed 確保路徑固定
+            const seed = parseInt(citySeedInput.value, 10) || 12345;
+            if (networkData) {
+                flyoverController = new RoadFlyoverController(networkData, seed);
+            }
+            
+        } else {
+            if (controls) {
+                controls.enabled = true;
+                camera.up.set(0, 1, 0);
+                controls.update();
+            }
+            flyoverController = null; // 清除控制器
+        }
+    }
+
+    // 3. 核心飛行運算 (每一幀呼叫)
+	function updateFlyoverCamera() {
+        if (!isFlyoverActive || !camera || !flyoverController) return;
+
+        // 計算 Delta Time (秒)
+        // 使用 performance.now 的差值會比固定值平滑
+        // 這裡簡單假設 60FPS，或您可以傳入 simulation 的 dt
+        const dt = 0.016; 
+
+        flyoverController.update(dt, camera);
+    }
+      
+    
     
     window.addEventListener('resize', onWindowResize);
 
@@ -483,36 +571,44 @@ function activateStreetView(link, x, y) {
     // ===================================================================
     // View Mode Switching
     // ===================================================================
-function setViewMode(mode) {
-    currentViewMode = mode;
-    const pegman = document.getElementById('pegman-icon');
-    
-    if (mode === '2D') {
-        canvas2D.style.display = 'block';
-        container3D.style.display = 'none';
-        if(pegman && networkData) pegman.style.display = 'block'; 
-        resizeCanvas2D();
-        redraw2D();
-    } else {
-        canvas2D.style.display = 'none';
-        container3D.style.display = 'block';
-        if(pegman) pegman.style.display = 'none'; 
-        onWindowResize(); 
+// ===================================================================
+    // View Mode Switching
+    // ===================================================================
+    function setViewMode(mode) {
+        currentViewMode = mode;
+        const pegman = document.getElementById('pegman-icon');
         
-        // 確保 3D 場景立即更新
-        setTimeout(() => {
-            if (camera && controls && simulation) {
-                // 如果已經有模擬，更新車輛位置
-                update3DScene();
-            } else {
-                // 否則渲染空白場景
-                if (renderer && scene && camera) {
-                    renderer.render(scene, camera);
+        if (mode === '2D') {
+            canvas2D.style.display = 'block';
+            container3D.style.display = 'none';
+            if(pegman && networkData) pegman.style.display = 'block'; 
+            resizeCanvas2D();
+            redraw2D();
+        } else {
+            canvas2D.style.display = 'none';
+            container3D.style.display = 'block';
+            if(pegman) pegman.style.display = 'none'; 
+            onWindowResize(); 
+            
+            // --- [修正開始] ---
+            // 切換到 3D 時，強制根據目前的開關狀態更新 3D 物件的可見性
+            update3DVisibility(); 
+            // --- [修正結束] ---
+
+            // 確保 3D 場景立即更新
+            setTimeout(() => {
+                if (camera && controls && simulation) {
+                    // 如果已經有模擬，更新車輛位置
+                    update3DScene();
+                } else {
+                    // 否則渲染空白場景
+                    if (renderer && scene && camera) {
+                        renderer.render(scene, camera);
+                    }
                 }
-            }
-        }, 10);
+            }, 10);
+        }
     }
-}
     // ===================================================================
     // 2D Rendering Logic (With Background Image)
     // ===================================================================
@@ -749,6 +845,9 @@ function setViewMode(mode) {
         scene.add(debugGroup);
         scene.add(signalPathsGroup); 
         scene.add(trafficLightsGroup); // Add traffic light poles group
+        
+        // [新增] 加入城市群組
+        scene.add(cityGroup);
     }
 
     function onWindowResize() {
@@ -1197,35 +1296,173 @@ function setViewMode(mode) {
         return Math.atan2(p2.y - p1.y, p2.x - p1.x);
     }
 
-    function update3DScene() {
+// 建立一台更像車子的 Mesh Group (包含車身、車頂、輪胎、車燈)
+    function createDetailedCarMesh(length, width, colorValue) {
+        const carGroup = new THREE.Group();
+        
+        // 為了讓比例好看，我們設定一些高度參數
+        const chassisHeight = 0.6; // 底盤高度
+        const cabinHeight = 0.5;   // 車頂高度
+        const wheelRadius = 0.3;   // 輪胎半徑
+        const wheelThickness = 0.25;
+        
+        // --- 1. 底盤 (Chassis) - 主色 ---
+        // 車頭朝向 +X，所以 Length 是 X 軸，Width 是 Z 軸
+        const chassisGeo = new THREE.BoxGeometry(length, chassisHeight, width);
+        // 這就是車身的顏色材質
+        const paintMat = new THREE.MeshLambertMaterial({ color: colorValue });
+        
+        const chassis = new THREE.Mesh(chassisGeo, paintMat);
+        chassis.position.y = chassisHeight / 2 + wheelRadius * 0.5; // 抬高，留給輪胎空間
+        chassis.castShadow = true;
+        chassis.receiveShadow = true;
+        carGroup.add(chassis);
+
+        // --- 2. 車頂/車廂 (Cabin) - 頂部車色，側面黑窗 ---
+        // 判斷是公車/卡車還是小汽車
+        const isLargeVehicle = length > 5.5;
+        
+        let cabinGeo, cabinXOffset;
+        if (isLargeVehicle) {
+            // 大型車：車頂幾乎與車身同長同寬
+            cabinGeo = new THREE.BoxGeometry(length - 0.5, 1.2, width - 0.2);
+            cabinXOffset = 0;
+        } else {
+            // 小汽車：車頂較短，且向後偏移
+            cabinGeo = new THREE.BoxGeometry(length * 0.55, cabinHeight, width * 0.85);
+            cabinXOffset = -length * 0.1; 
+        }
+
+        // [修改重點]：定義窗戶顏色 (深灰)
+        const windowMat = new THREE.MeshLambertMaterial({ color: 0x222222 }); 
+        
+        // [修改重點]：BoxGeometry 的材質陣列順序為：
+        // 0: Right (X+), 1: Left (X-), 2: Top (Y+), 3: Bottom (Y-), 4: Front (Z+), 5: Back (Z-)
+        // 我們將 Top (2) 設為 paintMat (車身顏色)，其餘設為 windowMat (窗戶)
+        // 注意：Three.js 的 BoxGeometry 預設 Z 軸是前後，但我們的車身邏輯可能是 X 軸為前後
+        // 不過材質陣列的邏輯是固定的 (Top 永遠是 Index 2)
+        const cabinMaterials = [
+            windowMat, // Right
+            windowMat, // Left
+            paintMat,  // Top (車頂！使用車身顏色)
+            windowMat, // Bottom
+            windowMat, // Front
+            windowMat  // Back
+        ];
+
+        // 傳入陣列材質
+        const cabin = new THREE.Mesh(cabinGeo, cabinMaterials);
+        
+        // 位置：在底盤上方
+        cabin.position.set(cabinXOffset, chassis.position.y + chassisHeight/2 + (isLargeVehicle? 0.6 : cabinHeight/2), 0);
+        cabin.castShadow = true;
+        carGroup.add(cabin);
+
+        // --- 3. 輪胎 (Wheels) - 黑色圓柱體 ---
+        const wheelGeo = new THREE.CylinderGeometry(wheelRadius, wheelRadius, wheelThickness, 16);
+        const wheelMat = new THREE.MeshLambertMaterial({ color: 0x111111 });
+        
+        const wheelX = length * 0.35; 
+        const wheelZ = width * 0.5 - wheelThickness / 2; 
+        const wheelY = wheelRadius; 
+
+        const positions = [
+            { x: wheelX, z: wheelZ },   // 前左
+            { x: wheelX, z: -wheelZ },  // 前右
+            { x: -wheelX, z: wheelZ },  // 後左
+            { x: -wheelX, z: -wheelZ }  // 後右
+        ];
+        
+        if (isLargeVehicle) {
+            positions.push({ x: -wheelX * 0.2, z: wheelZ });
+            positions.push({ x: -wheelX * 0.2, z: -wheelZ });
+        }
+
+        positions.forEach(p => {
+            const wheel = new THREE.Mesh(wheelGeo, wheelMat);
+            wheel.rotation.x = Math.PI / 2; 
+            wheel.position.set(p.x, wheelY, p.z);
+            wheel.castShadow = true;
+            carGroup.add(wheel);
+        });
+
+        // --- 4. 車燈 (Lights) ---
+        const headLightGeo = new THREE.BoxGeometry(0.1, 0.2, 0.4);
+        const headLightMat = new THREE.MeshBasicMaterial({ color: 0xffffcc }); // 亮黃色
+        const tailLightMat = new THREE.MeshBasicMaterial({ color: 0xff0000 }); // 紅色
+
+        const lightY = chassis.position.y + 0.1;
+        const lightZ = width * 0.3;
+        const lightX = length / 2; 
+
+        const fl = new THREE.Mesh(headLightGeo, headLightMat);
+        fl.position.set(lightX, lightY, lightZ);
+        carGroup.add(fl);
+
+        const fr = new THREE.Mesh(headLightGeo, headLightMat);
+        fr.position.set(lightX, lightY, -lightZ);
+        carGroup.add(fr);
+
+        const bl = new THREE.Mesh(headLightGeo, tailLightMat);
+        bl.position.set(-lightX, lightY, lightZ);
+        carGroup.add(bl);
+
+        const br = new THREE.Mesh(headLightGeo, tailLightMat);
+        br.position.set(-lightX, lightY, -lightZ);
+        carGroup.add(br);
+
+        return carGroup;
+    }
+
+function update3DScene() {
         if (!simulation) { renderer.render(scene, camera); return; }
         if (showTurnPaths) update3DSignals();
 
         const vehicles = simulation.vehicles;
         const activeIds = new Set();
-        const vehicleGeo = new THREE.BoxGeometry(1, 1, 1); 
         
         vehicles.forEach(v => {
             activeIds.add(v.id);
             let mesh = vehicleMeshes.get(v.id);
+            
             if (!mesh) {
                 const color = new THREE.Color().setHSL(Math.random(), 0.7, 0.5);
-                const mat = new THREE.MeshStandardMaterial({ color: color });
-                mesh = new THREE.Mesh(vehicleGeo, mat);
-                mesh.castShadow = true;
+                mesh = createDetailedCarMesh(v.length, v.width, color);
                 scene.add(mesh);
                 vehicleMeshes.set(v.id, mesh);
             }
-            mesh.position.set(v.x, v.width * 0.5 + 0.3, v.y);
-            mesh.scale.set(v.length, 1.8, v.width); 
+            
+            // 更新位置與角度
+            mesh.position.set(v.x, 0, v.y);
             mesh.rotation.y = -v.angle;
         });
 
+        // 移除已經消失的車輛
         for (const [id, mesh] of vehicleMeshes) {
             if (!activeIds.has(id)) {
                 scene.remove(mesh);
-                mesh.geometry.dispose();
-                mesh.material.dispose();
+                
+                // [修正] 更嚴謹的資源釋放邏輯
+                mesh.traverse((child) => {
+                    if (child.isMesh) {
+                        // 釋放幾何體
+                        if (child.geometry) {
+                            child.geometry.dispose();
+                        }
+
+                        // 釋放材質 (需判斷是單一材質還是陣列)
+                        if (child.material) {
+                            if (Array.isArray(child.material)) {
+                                // 如果是材質陣列 (例如車頂)，遍歷釋放
+                                child.material.forEach(mat => mat.dispose());
+                            } else {
+                                // 如果是單一材質 (例如輪胎、底盤)，直接釋放
+                                child.material.dispose();
+                            }
+                        }
+                    }
+                });
+                
                 vehicleMeshes.delete(id);
             }
         }
@@ -1246,7 +1483,512 @@ function setViewMode(mode) {
         camera.updateProjectionMatrix();
         controls.update();
     }
+    
+// ===================================================================
+    //  City Generation Logic (Procedural & Deterministic)
+    // ===================================================================
 
+    // 1. 偽隨機數生成器 (Linear Congruential Generator)
+    // 確保輸入相同的種子，產生的隨機序列永遠一致
+    class PseudoRandom {
+        constructor(seed) {
+            this.seed = seed;
+        }
+        // 回傳 0 ~ 1 之間的浮點數
+        next() {
+            this.seed = (this.seed * 9301 + 49297) % 233280;
+            return this.seed / 233280;
+        }
+        // 回傳 min ~ max 之間的浮點數
+        range(min, max) {
+            return min + this.next() * (max - min);
+        }
+        // 回傳 true/false
+        bool(chance = 0.5) {
+            return this.next() < chance;
+        }
+        // 從陣列中隨機挑選
+        pick(array) {
+            return array[Math.floor(this.next() * array.length)];
+        }
+    }
+
+// ===================================================================
+    //  Road Flyover Controller (Seamless Rolling Buffer & DFS Backtracking)
+    // ===================================================================
+    class RoadFlyoverController {
+        constructor(network, seed) {
+            this.network = network;
+            // 假設外部已有定義 PseudoRandom 類別
+            this.rng = new PseudoRandom(seed);
+            
+            this.visitedLinks = new Set();
+            this.historyStack = []; 
+            
+            // 這是一個連續的點佇列，相機永遠追著這些點跑
+            this.pathQueue = []; 
+            
+            this.speed = 30.0; // 飛行速度
+            
+            // 用來平滑視線
+            this.tempLookAt = new THREE.Vector3();
+            this.currentLookAt = new THREE.Vector3(); 
+            this.isFirstFrame = true;
+
+            // 初始化：隨機選一條路開始
+            this.startRandomly();
+        }
+
+        startRandomly() {
+            const allLinks = Object.values(this.network.links);
+            if (allLinks.length === 0) return;
+            
+            // 排序以確保固定性
+            allLinks.sort((a, b) => a.id.localeCompare(b.id));
+            const startLink = this.rng.pick(allLinks);
+            
+            this.visitedLinks.add(startLink.id);
+            this.historyStack.push({ linkId: startLink.id, reversed: false });
+            
+            this.currentDestinationNode = startLink.destination;
+            
+            // 建立初始路徑並加入佇列
+            const points = this.getPointsFromLink(startLink, false);
+            this.appendPoints(points);
+        }
+
+        // 核心更新函式 (每幀呼叫)
+        update(dt, camera) {
+            // 1. 檢查緩衝區是否快用完了？如果剩餘點數少於 10 個，預先加載下一段路
+            if (this.pathQueue.length < 10) {
+                this.findAndAppendNextRoad();
+            }
+
+            if (this.pathQueue.length === 0) return;
+
+            // 第一幀初始化位置與視角
+            if (this.isFirstFrame) {
+                camera.position.copy(this.pathQueue[0]);
+                // 初始化視線目標為前方遠處
+                const lookIdx = Math.min(5, this.pathQueue.length - 1);
+                this.currentLookAt.copy(this.pathQueue[lookIdx]);
+                this.tempLookAt.copy(this.currentLookAt);
+                camera.lookAt(this.currentLookAt);
+                this.isFirstFrame = false;
+                return;
+            }
+
+            // 2. 移動邏輯：消耗 distance
+            let moveDist = this.speed * dt;
+            const currentPos = camera.position;
+
+            while (moveDist > 0 && this.pathQueue.length > 0) {
+                const target = this.pathQueue[0];
+                const distToTarget = currentPos.distanceTo(target);
+
+                if (distToTarget < moveDist) {
+                    // 這一幀可以跨越這個點，繼續前往下一個點
+                    moveDist -= distToTarget;
+                    currentPos.copy(target); // 物理位置到達該點
+                    this.pathQueue.shift();  // 從佇列中移除已通過的點
+                } else {
+                    // 這一幀只能移動到半途
+                    const alpha = moveDist / distToTarget;
+                    currentPos.lerp(target, alpha);
+                    moveDist = 0; // 移動完畢
+                }
+            }
+
+            // 3. 視線邏輯 (LookAt)
+            // 永遠看向佇列中前方第 N 個點，保證 U-Turn 時視線自然轉向
+            const lookAheadCount = 6; 
+            if (this.pathQueue.length > 0) {
+                const lookIdx = Math.min(lookAheadCount, this.pathQueue.length - 1);
+                const targetLook = this.pathQueue[lookIdx];
+
+                // 使用 lerp 平滑轉動
+                this.tempLookAt.lerp(targetLook, dt * 3.0);
+                
+                // 保護機制：避免 LookAt 與 Position 重疊導致相機亂轉
+                // [修正] 使用 distanceToSquared 避免錯誤
+                if (currentPos.distanceToSquared(this.tempLookAt) > 0.1) {
+                    camera.lookAt(this.tempLookAt);
+                }
+            }
+        }
+
+        // 尋找下一條路並追加到佇列
+        findAndAppendNextRoad() {
+            // 此時我們應該位於 this.currentDestinationNode
+            // 尋找從這裡出發的路
+            const outgoingLinks = [];
+            Object.values(this.network.links).forEach(link => {
+                if (link.source === this.currentDestinationNode) outgoingLinks.push(link);
+            });
+
+            // 排序
+            outgoingLinks.sort((a, b) => a.id.localeCompare(b.id));
+            let unvisited = outgoingLinks.filter(l => !this.visitedLinks.has(l.id));
+
+            // 處理循環：若無路可走且已回起點 (堆疊空)，重置記憶但保持位置
+            if (unvisited.length === 0 && this.historyStack.length === 0) {
+                this.visitedLinks.clear();
+                unvisited = outgoingLinks; // 重新開放所有選項
+            }
+
+            let nextPoints = [];
+            let nextDestNode = null;
+
+            if (unvisited.length > 0) {
+                // Case A: 前進 (Forward)
+                const nextLink = this.rng.pick(unvisited);
+                this.visitedLinks.add(nextLink.id);
+                this.historyStack.push({ linkId: nextLink.id, reversed: false });
+                
+                nextPoints = this.getPointsFromLink(nextLink, false);
+                nextDestNode = nextLink.destination;
+            } else {
+                // Case B: 折返 (Backtrack)
+                const lastStep = this.historyStack.pop();
+                if (lastStep) {
+                    const prevLink = this.network.links[lastStep.linkId];
+                    // 如果上次是正向(false)，這次反向飛(true)
+                    const flyReverse = !lastStep.reversed;
+                    
+                    nextPoints = this.getPointsFromLink(prevLink, flyReverse);
+                    nextDestNode = flyReverse ? prevLink.source : prevLink.destination;
+                } else {
+                    // Case C: 孤立無援 (極罕見)
+                    return; 
+                }
+            }
+
+            // 將新點加入佇列
+            if (nextPoints.length > 0) {
+                this.appendPoints(nextPoints);
+                this.currentDestinationNode = nextDestNode;
+            }
+        }
+
+        // 取得路徑點 (純資料，不修改狀態)
+        getPointsFromLink(link, reverse) {
+            const lanes = Object.values(link.lanes);
+            if (lanes.length === 0) return [];
+            
+            // 取中間車道
+            const lane = lanes[Math.floor(lanes.length/2)]; 
+            let pathPoints = lane.path; 
+
+            if (reverse) {
+                pathPoints = [...pathPoints].reverse();
+            }
+
+            const height = 25; // 飛行高度
+            return pathPoints.map(p => new THREE.Vector3(p.x, height, p.y));
+        }
+
+        // 將新點追加到佇列，並處理接縫
+        appendPoints(newPoints) {
+            if (newPoints.length === 0) return;
+
+            // [縫合處理]
+            // 如果佇列裡已經有點，新路徑的第一個點通常與佇列最後一個點位置重疊
+            // 為了避免在同一位置停滯，我們移除新路徑的第一個點
+            if (this.pathQueue.length > 0) {
+                const lastPoint = this.pathQueue[this.pathQueue.length - 1];
+                const firstNew = newPoints[0];
+                
+                // 只有在距離極近時才移除 (視為重疊點)
+                if (lastPoint.distanceTo(firstNew) < 5.0) {
+                    newPoints.shift(); 
+                }
+            }
+
+            // 追加到主佇列
+            for (const p of newPoints) {
+                this.pathQueue.push(p);
+            }
+        }
+    }
+
+
+// 2. 城市生成主函式 (包含防重疊碰撞檢測)
+    function generateCity(netData, seed) {
+        // 清除舊城市
+        cityGroup.clear();
+        
+        // 初始化隨機生成器
+        const rng = new PseudoRandom(seed);
+
+        // 準備幾何體與材質 (InstancedMesh)
+        const buildGeo = new THREE.BoxGeometry(1, 1, 1);
+        const buildMat = new THREE.MeshLambertMaterial({ color: 0xffffff }); 
+        const treeGeo = new THREE.ConeGeometry(1, 4, 8);
+        const treeMat = new THREE.MeshLambertMaterial({ color: 0x2d5a27 });
+
+        const buildingsData = [];
+        const treesData = [];
+        const watersData = [];
+
+        // --- [新增] 空間雜湊 (Spatial Hash) 用於碰撞檢測 ---
+        // 將地圖切分成 50x50 的網格，將所有道路線段存入對應網格
+        // 用來快速查詢 "這個位置附近有沒有路"
+        const gridSize = 50; 
+        const roadSpatialHash = {}; 
+
+        function addToHash(x, z, item) {
+            const key = `${Math.floor(x/gridSize)},${Math.floor(z/gridSize)}`;
+            if (!roadSpatialHash[key]) roadSpatialHash[key] = [];
+            roadSpatialHash[key].push(item);
+        }
+
+        function getFromHash(x, z) {
+            const key = `${Math.floor(x/gridSize)},${Math.floor(z/gridSize)}`;
+            return roadSpatialHash[key] || [];
+        }
+
+        // --- 步驟 A: 預處理 - 建立道路禁區 ---
+        
+        // 1. 處理路口 (Nodes)
+        Object.values(netData.nodes).forEach(node => {
+            if(node.polygon && node.polygon.length > 0) {
+                 // 計算路口中心與概略半徑
+                 let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+                 node.polygon.forEach(p => {
+                     // 注意：netData 解析時 y 已經是負值，對應 3D 的 z
+                     const px = p.x; 
+                     const pz = p.y; 
+                     minX = Math.min(minX, px); maxX = Math.max(maxX, px);
+                     minZ = Math.min(minZ, pz); maxZ = Math.max(maxZ, pz);
+                 });
+                 const cx = (minX + maxX) / 2;
+                 const cz = (minZ + maxZ) / 2;
+                 // 擴大路口保護半徑 (至少 20m)
+                 const radius = Math.max(20, Math.hypot(maxX - minX, maxZ - minZ) / 2);
+                 
+                 // 將路口加入九宮格 Hash (因為路口可能跨網格)
+                 for(let i=-1; i<=1; i++) {
+                     for(let j=-1; j<=1; j++) {
+                         addToHash(cx + i*gridSize/2, cz + j*gridSize/2, { type: 'node', x: cx, z: cz, r: radius });
+                     }
+                 }
+            }
+        });
+
+        // 2. 處理道路線段 (Links)
+        Object.values(netData.links).forEach(link => {
+            let totalWidth = 0;
+            Object.values(link.lanes).forEach(l => totalWidth += l.width);
+            const halfWidth = totalWidth / 2;
+            
+            // 使用第一條車道作為參考路徑
+            const lanes = Object.values(link.lanes);
+            if(lanes.length === 0) return;
+            const path = lanes[0].path; // 這是 {x, y} 陣列
+
+            for(let i=0; i < path.length - 1; i++) {
+                const p1 = path[i];
+                const p2 = path[i+1];
+                // 3D 座標映射: path 的 y 對應 3D 的 z
+                const seg = {
+                    type: 'segment',
+                    x1: p1.x, z1: p1.y,
+                    x2: p2.x, z2: p2.y,
+                    width: halfWidth + 2.0 // 額外加 2米 安全邊界
+                };
+                
+                // 將線段兩端點加入 Hash
+                addToHash(seg.x1, seg.z1, seg);
+                addToHash(seg.x2, seg.z2, seg);
+                addToHash((seg.x1+seg.x2)/2, (seg.z1+seg.z2)/2, seg);
+            }
+        });
+
+        // 輔助函式：點到線段的最短距離平方
+        function distToSegmentSquared(px, pz, x1, z1, x2, z2) {
+            const l2 = (x1-x2)**2 + (z1-z2)**2;
+            if (l2 === 0) return (px-x1)**2 + (pz-z1)**2;
+            let t = ((px-x1)*(x2-x1) + (pz-z1)*(z2-z1)) / l2;
+            t = Math.max(0, Math.min(1, t));
+            return (px - (x1 + t*(x2-x1)))**2 + (pz - (z1 + t*(z2-z1)))**2;
+        }
+
+        // 輔助函式：檢查位置是否安全 (不會撞到任何路)
+        function isPositionSafe(x, z, radius) {
+            // 檢查周圍 3x3 的網格
+            const cx = Math.floor(x/gridSize);
+            const cz = Math.floor(z/gridSize);
+            
+            for(let i = -1; i <= 1; i++) {
+                for(let j = -1; j <= 1; j++) {
+                    const key = `${cx+i},${cz+j}`;
+                    const items = roadSpatialHash[key];
+                    if(!items) continue;
+                    
+                    for(const item of items) {
+                        if (item.type === 'node') {
+                            const dist = Math.hypot(x - item.x, z - item.z);
+                            if (dist < (item.r + radius)) return false;
+                        } else if (item.type === 'segment') {
+                            const distSq = distToSegmentSquared(x, z, item.x1, item.z1, item.x2, item.z2);
+                            const safeDist = item.width + radius;
+                            if (distSq < safeDist * safeDist) return false;
+                        }
+                    }
+                }
+            }
+            return true;
+        }
+
+        // --- 步驟 B: 沿著道路生成物件 ---
+        Object.values(netData.links).forEach(link => {
+            let roadWidth = 0;
+            Object.values(link.lanes).forEach(l => roadWidth += l.width);
+            
+            // 基礎偏移：半路寬 + 3米人行道
+            const baseOffset = (roadWidth / 2) + 3.0; 
+
+            if (!link.geometry) return;
+            const lanes = Object.values(link.lanes);
+            if(lanes.length === 0) return;
+            const path = lanes[0].path;
+
+            const stepSize = 10; // 間距
+
+            for(let i=0; i < path.length -1; i++) {
+                const p1 = path[i];
+                const p2 = path[i+1];
+                const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+                const steps = Math.floor(dist / stepSize);
+                
+                const dx = (p2.x - p1.x) / dist;
+                const dy = (p2.y - p1.y) / dist;
+                
+                // 法向量
+                const nx = -dy;
+                const ny = dx;
+
+                for(let j=1; j <= steps; j++) {
+                    // 加入一點隨機抖動，讓建築不那麼死板
+                    const jitter = rng.range(-2, 2);
+                    const t = ((j * stepSize) + jitter) / dist; 
+                    if(t < 0 || t > 1) continue;
+
+                    const cx = p1.x + (p2.x - p1.x) * t;
+                    const cy = p1.y + (p2.y - p1.y) * t;
+                    
+                    [-1, 1].forEach(side => {
+                        const lotTypeRate = rng.next();
+                        
+                        // 嘗試放置點：退縮距離 (隨機 2~8 米)
+                        const setback = rng.range(2, 8);
+                        const totalOffset = baseOffset + setback;
+
+                        const placeX = cx + nx * totalOffset * side;
+                        const placeZ = cy + ny * totalOffset * side;
+                        
+                        // 決定建築物大小 (半徑用於碰撞檢測)
+                    	// ▼▼▼ 修改這裡 ▼▼▼
+                    	// 原本是 rng.range(6, 10)，改小一點讓它們更容易擠進去
+                    	const w = rng.range(5, 8); 
+                    	const d = rng.range(5, 8);
+                        const radius = Math.max(w, d) / 1.5; // 估算半徑
+
+                        // [關鍵] 嚴格檢查：這裡會不會撞到別條路？
+                        if (!isPositionSafe(placeX, placeZ, radius)) {
+                            return; // 撞到了，放棄這個點
+                        }
+
+                        const angle = Math.atan2(dy, dx); 
+
+                        if(lotTypeRate < 0.6) {
+                            // --- 建築 ---
+                            const h = rng.range(6, 20); 
+                            const finalH = (rng.bool(0.05)) ? rng.range(25, 50) : h; 
+                            const colors = [0xeeeeee, 0xf0f0f0, 0xdcdcdc, 0xfffff0, 0xcceeff, 0xe6e6fa];
+                            
+                            buildingsData.push({
+                                x: placeX, z: placeZ, y: finalH/2, 
+                                sx: w, sy: finalH, sz: d,
+                                ry: -angle, 
+                                color: rng.pick(colors)
+                            });
+                        } else if (lotTypeRate < 0.85) {
+                            // --- 樹木 ---
+                            // 樹木比較小，檢查半徑小一點
+                            if (isPositionSafe(placeX, placeZ, 2.0)) {
+                                const numTrees = Math.floor(rng.range(2, 5));
+                                for(let k=0; k<numTrees; k++) {
+                                    const tx = placeX + rng.range(-4, 4);
+                                    const tz = placeZ + rng.range(-4, 4);
+                                    if(isPositionSafe(tx, tz, 1.0)) {
+                                        const scale = rng.range(0.8, 1.4);
+                                        treesData.push({
+                                            x: tx, z: tz, y: 2 * scale, 
+                                            sx: scale, sy: scale, sz: scale
+                                        });
+                                    }
+                                }
+                            }
+                        } else if (lotTypeRate < 0.90) {
+                            // --- 水池 ---
+                            const r = rng.range(6, 12);
+                            if(isPositionSafe(placeX, placeZ, r + 2)) {
+                                watersData.push({ x: placeX, z: placeZ, r: r });
+                            }
+                        }
+                    });
+                }
+            }
+        });
+
+        // --- 步驟 C: 建立 InstancedMesh (不變) ---
+        if(buildingsData.length > 0) {
+            const iMesh = new THREE.InstancedMesh(buildGeo, buildMat, buildingsData.length);
+            iMesh.castShadow = true;
+            iMesh.receiveShadow = true;
+            const dummy = new THREE.Object3D();
+            const color = new THREE.Color();
+            buildingsData.forEach((data, i) => {
+                dummy.position.set(data.x, data.y, data.z);
+                dummy.rotation.y = data.ry;
+                dummy.scale.set(data.sx, data.sy, data.sz);
+                dummy.updateMatrix();
+                iMesh.setMatrixAt(i, dummy.matrix);
+                color.setHex(data.color);
+                iMesh.setColorAt(i, color);
+            });
+            iMesh.instanceMatrix.needsUpdate = true;
+            if(iMesh.instanceColor) iMesh.instanceColor.needsUpdate = true;
+            cityGroup.add(iMesh);
+        }
+
+        if(treesData.length > 0) {
+            const iTree = new THREE.InstancedMesh(treeGeo, treeMat, treesData.length);
+            iTree.castShadow = true;
+            const dummy = new THREE.Object3D();
+            treesData.forEach((data, i) => {
+                dummy.position.set(data.x, data.y, data.z);
+                dummy.scale.set(data.sx * 2, data.sy * 2, data.sz * 2);
+                dummy.updateMatrix();
+                iTree.setMatrixAt(i, dummy.matrix);
+            });
+            iTree.instanceMatrix.needsUpdate = true;
+            cityGroup.add(iTree);
+        }
+
+        const waterGeo = new THREE.CircleGeometry(1, 16);
+        const waterMat = new THREE.MeshLambertMaterial({ color: 0x4fa4bc });
+        watersData.forEach(data => {
+            const water = new THREE.Mesh(waterGeo, waterMat);
+            water.rotation.x = -Math.PI / 2;
+            water.position.set(data.x, 0.15, data.z);
+            water.scale.set(data.r, data.r, 1);
+            cityGroup.add(water);
+        });
+        
+        if(renderer) renderer.render(scene, camera);
+    }
 
     // ===================================================================
     // Main File Handling & Simulation Loop
@@ -1276,7 +2018,11 @@ function setViewMode(mode) {
                 autoCenter2D(networkData.bounds);
                 buildNetwork3D(networkData);
                 autoCenterCamera3D(networkData.bounds);
-
+                
+                // [新增] 生成城市
+                const seed = parseInt(citySeedInput.value, 10) || 12345;
+                generateCity(networkData, seed);
+                
                 setupMeterCharts(networkData.speedMeters);
                 setupSectionMeterCharts(networkData.sectionMeters);
 
@@ -1324,6 +2070,10 @@ function setViewMode(mode) {
         debugGroup.clear();
         signalPathsGroup.clear();
         trafficLightsGroup.clear(); // Clear poles
+       
+        // [新增] 清空城市
+        cityGroup.clear();        
+        
         renderer.render(scene, camera);
         
         ctx2D.clearRect(0, 0, canvas2D.width, canvas2D.height);
@@ -1341,7 +2091,13 @@ function setViewMode(mode) {
         animationFrameId = requestAnimationFrame(simulationLoop);
         
         if(currentViewMode === '3D') {
-            controls.update();
+            // [新增] 如果開啟巡航，執行飛行邏輯
+            if (isFlyoverActive) {
+                updateFlyoverCamera();
+            } else {
+                // 只有在非巡航模式下才更新控制器 (允許手動操作)
+                controls.update();
+            }
         }
 
         if (isRunning && simulation) {
@@ -1608,7 +2364,57 @@ function setViewMode(mode) {
         handleMandatoryLaneChangeDecision(network, allVehicles) { if (this.laneChangeGoal !== null) return; const link = network.links[this.currentLinkId]; const lane = link.lanes[this.currentLaneIndex]; if (!lane) return; const distanceToEnd = lane.length - this.distanceOnPath; if (distanceToEnd > 150) return; const nextLinkId = this.route[this.currentLinkIndex + 1]; if (!nextLinkId) return; const destNode = network.nodes[link.destination]; const canPass = destNode.transitions.some(t => t.sourceLinkId === this.currentLinkId && t.sourceLaneIndex === this.currentLaneIndex && t.destLinkId === nextLinkId); if (canPass) return; const suitableLanes = []; for (const laneIdx in link.lanes) { const targetLane = parseInt(laneIdx, 10); const canPassOnNewLane = destNode.transitions.some(t => t.sourceLinkId === this.currentLinkId && t.sourceLaneIndex === targetLane && t.destLinkId === nextLinkId); if (canPassOnNewLane) { const { leader } = this.getLaneLeader(targetLane, allVehicles); const density = leader ? leader.distanceOnPath - this.distanceOnPath : Infinity; suitableLanes.push({ laneIndex: targetLane, density }); } } if (suitableLanes.length > 0) { suitableLanes.sort((a, b) => b.density - a.density); this.laneChangeGoal = suitableLanes[0].laneIndex; } }
         handleDiscretionaryLaneChangeDecision(network, allVehicles) { if (this.laneChangeGoal !== null || this.laneChangeState !== null || this.laneChangeCooldown > 0) return; const link = network.links[this.currentLinkId]; const nextLinkId = this.route[this.currentLinkIndex + 1]; if (!nextLinkId) return; const destNode = network.nodes[link.destination]; const { leader: currentLeader } = this.getLaneLeader(this.currentLaneIndex, allVehicles); const adjacentLanes = [this.currentLaneIndex - 1, this.currentLaneIndex + 1]; for (const targetLane of adjacentLanes) { if (!link.lanes[targetLane]) continue; const canPassOnTargetLane = destNode.transitions.some(t => t.sourceLinkId === this.currentLinkId && t.sourceLaneIndex === targetLane && t.destLinkId === nextLinkId); if (!canPassOnTargetLane) continue; const { leader: targetLeader } = this.getLaneLeader(targetLane, allVehicles); const currentGap = currentLeader ? currentLeader.distanceOnPath - this.distanceOnPath : Infinity; const targetGap = targetLeader ? targetLeader.distanceOnPath - this.distanceOnPath : Infinity; const speedAdvantage = targetLeader ? targetLeader.speed - this.speed : 0; const gapAdvantage = targetGap - currentGap; if (gapAdvantage > this.length * 2 && speedAdvantage > 2) { if (this.isSafeToChange(targetLane, allVehicles)) { this.laneChangeGoal = targetLane; return; } } } }
         getLaneLeader(laneIndex, allVehicles) { let leader = null; let gap = Infinity; for (const other of allVehicles) { if (this.id === other.id || other.currentLinkId !== this.currentLinkId) continue; const otherLane = other.laneChangeState ? other.laneChangeState.toLaneIndex : other.currentLaneIndex; if (otherLane === laneIndex && other.distanceOnPath > this.distanceOnPath) { const otherGap = other.distanceOnPath - this.distanceOnPath - this.length; if (otherGap < gap) { gap = otherGap; leader = other; } } } return { leader, gap }; }
-        isSafeToChange(targetLane, allVehicles) { return !allVehicles.some(v => v.id !== this.id && v.currentLinkId === this.currentLinkId && (v.laneChangeState ? v.laneChangeState.toLaneIndex : v.currentLaneIndex) === targetLane && this.distanceOnPath > v.distanceOnPath && (this.distanceOnPath - v.distanceOnPath) < (v.length + this.minGap)); }
+// --- [修改] 變換車道安全檢查 (加入雙重匯流與目標車道預判) ---
+    isSafeToChange(targetLane, allVehicles) {
+        // 1. 基本檢查：目標車道前後是否有空間
+        // 檢查目標車道上現有的車輛
+        for (const other of allVehicles) {
+            if (other.id === this.id) continue;
+            // 只檢查同 Link 的車
+            if (other.currentLinkId !== this.currentLinkId) continue;
+
+            // 取得對方目前所在的車道 (若正在換車道，取其目標車道)
+            const otherLaneIndex = other.laneChangeState ? other.laneChangeState.toLaneIndex : other.currentLaneIndex;
+
+            if (otherLaneIndex === targetLane) {
+                // 對方在目標車道
+                const distDiff = other.distanceOnPath - this.distanceOnPath;
+                
+                // 情況 A: 對方在前方 (由後方接近)
+                // 需要保持 minGap + 車長，且考慮速度差
+                if (distDiff > 0) {
+                    if (distDiff < (this.length + this.minGap)) return false;
+                } 
+                // 情況 B: 對方在後方 (我要切到他前面)
+                else {
+                    // 需要確保後方車輛有足夠煞車空間
+                    // 如果對方比我快很多，切過去會被撞
+                    const gap = -distDiff; // 轉為正值
+                    const safeGap = other.length + this.minGap + Math.max(0, (other.speed - this.speed) * 2.0); // 2秒緩衝
+                    if (gap < safeGap) return false;
+                }
+            }
+        }
+
+        // 2. [新增] 進階檢查：是否有「其他人」也想切入同一個目標車道？ (Double Merge Prevention)
+        // 例如：我在 Lane 1 想切 Lane 2，另一個人從 Lane 3 也想切 Lane 2
+        for (const other of allVehicles) {
+            if (other.id === this.id) continue;
+            if (other.currentLinkId !== this.currentLinkId) continue;
+
+            // 檢查對方的意圖
+            if (other.laneChangeGoal === targetLane || (other.laneChangeState && other.laneChangeState.toLaneIndex === targetLane)) {
+                // 如果有人也想去同個車道，且距離我很近 (例如前後 30公尺內)
+                // 我們就放棄這次變換，避免同時擠進去
+                const distDiff = Math.abs(other.distanceOnPath - this.distanceOnPath);
+                if (distDiff < 30.0) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
         getPositionOnPath(path, distance) {
             let distAcc = 0;
             for (let i = 0; i < path.length - 1; i++) {
@@ -1663,7 +2469,7 @@ function setViewMode(mode) {
                 const tangent = Geom.Bezier.getTangent(t, p0, p1, p2, p3);
                 this.angle = Geom.Vec.angle(tangent);
             }
-        }
+        }        
     }
 
     // --- Stats & Charts Helper Functions ---
