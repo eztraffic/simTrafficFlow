@@ -38,7 +38,12 @@ document.addEventListener('DOMContentLoaded', () => {
             allLanesAvgRateLabel: '不分車道平均速率',
             imageLoadError: '無法載入底圖',
             dragPegmanHint: '拖曳小人至道路以進入街景',
-            flyoverLabel: '鳥瞰:' // 新增
+            flyoverLabel: '鳥瞰:', // 新增
+            layerLabel: '顯示:',
+            layerBoth: '建築 + 底圖',
+            layerBuildings: '僅建築',
+            layerBasemap: '僅底圖',
+            layerNone: '均無'
         },
         'en': {
             appTitle: 'simTrafficFlow (2D/3D)',
@@ -75,7 +80,12 @@ document.addEventListener('DOMContentLoaded', () => {
             allLanesAvgRateLabel: 'All Lanes Average Rate',
             imageLoadError: 'Could not load background image',
             dragPegmanHint: 'Drag Pegman to road for Street View',
-            flyoverLabel: 'Auto Flyover:' // 新增
+            flyoverLabel: 'Auto Flyover:', // 新增
+            layerLabel: 'Display:',
+            layerBoth: 'Builds + Map',
+            layerBuildings: 'Buildings Only',
+            layerBasemap: 'Basemap Only',
+            layerNone: 'None',
         }
     };
 
@@ -101,6 +111,14 @@ document.addEventListener('DOMContentLoaded', () => {
         
         const pegman = document.getElementById('pegman-icon');
         if(pegman) pegman.title = dict.dragPegmanHint;
+    
+        // [新增] 更新下拉選單選項文字
+        //const dict = translations[lang];
+        const options = layerSelector.options;
+        for (let i = 0; i < options.length; i++) {
+            const key = options[i].getAttribute('data-i18n');
+            if (dict[key]) options[i].textContent = dict[key];
+        }    
     }
 
     function updateButtonText() {
@@ -137,6 +155,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const meterChartsContainer = document.getElementById('meter-charts-container');
     const sectionMeterChartsContainer = document.getElementById('section-meter-charts-container');
     const flyoverToggle = document.getElementById('flyoverToggle'); // 新增
+    const layerSelector = document.getElementById('layerSelector'); // 新增
 
     // --- State Variables ---
     let simulation = null;
@@ -190,6 +209,8 @@ document.addEventListener('DOMContentLoaded', () => {
     let flyoverRadiusX = 100;
     let flyoverRadiusZ = 100;
     
+    let basemapGroup = new THREE.Group(); // 新增底圖群組
+    
 // --- City Generation Variables ---
     let cityGroup = new THREE.Group(); // 裝載所有城市物件
     const citySeedInput = document.getElementById('citySeedInput');
@@ -242,6 +263,11 @@ document.addEventListener('DOMContentLoaded', () => {
     canvas2D.addEventListener('mousemove', handlePanMove2D);
     canvas2D.addEventListener('mouseup', handlePanEnd2D);
     canvas2D.addEventListener('mouseleave', handlePanEnd2D);
+    
+    // --- Layer Selector ---
+    layerSelector.addEventListener('change', () => {
+        updateLayerVisibility();
+    });
 
 // --- Flyover Event Listeners ---
     
@@ -595,6 +621,8 @@ function activateStreetView(link, x, y) {
             update3DVisibility(); 
             // --- [修正結束] ---
 
+            updateLayerVisibility();
+
             // 確保 3D 場景立即更新
             setTimeout(() => {
                 if (camera && controls && simulation) {
@@ -837,7 +865,7 @@ function activateStreetView(link, x, y) {
         const groundMat = new THREE.MeshLambertMaterial({ color: 0xf0f0f0 }); 
         const ground = new THREE.Mesh(groundGeo, groundMat);
         ground.rotation.x = -Math.PI / 2; 
-        ground.position.y = -1.0; // Lower the ground significantly
+        ground.position.y = -5.0; // [修正] 大幅降低地面高度，避免遮擋底圖
         ground.receiveShadow = true;
         scene.add(ground);
 
@@ -848,6 +876,9 @@ function activateStreetView(link, x, y) {
         
         // [新增] 加入城市群組
         scene.add(cityGroup);
+        
+        // [新增] 加入底圖群組
+        scene.add(basemapGroup);
     }
 
     function onWindowResize() {
@@ -1167,6 +1198,107 @@ function activateStreetView(link, x, y) {
             });
         }
         update3DVisibility();
+    }
+
+// --- script02.js ---
+
+// --- script02.js ---
+
+function buildBasemap3D(netData) {
+    basemapGroup.clear();
+
+    if (!netData.backgroundTiles || netData.backgroundTiles.length === 0) return;
+
+    // 將底圖高度設為 -0.2，確保在地面(-5.0)之上，且不與道路(0.1)衝突
+    const yHeight = -0.2;
+
+    netData.backgroundTiles.forEach(tile => {
+        if (!tile.image) return;
+
+        const texture = new THREE.Texture(tile.image);
+
+        // 讓 3D 底圖的貼圖方向與 2D Canvas drawImage 一致（避免鏡射翻轉）
+        texture.flipY = false;
+
+        texture.center.set(0.5, 0.5);
+        texture.rotation = Math.PI;
+        
+        // [關鍵修正 1] 設定紋理 Wrapping
+        // 對於非 2 的次方尺寸圖片 (NPOT)，必須使用 ClampToEdgeWrapping，否則 WebGL 會拒絕渲染該紋理
+        texture.wrapS = THREE.ClampToEdgeWrapping;
+        texture.wrapT = THREE.ClampToEdgeWrapping;
+        
+        // 濾波器設定
+        texture.minFilter = THREE.LinearFilter; 
+        texture.magFilter = THREE.LinearFilter;
+        texture.generateMipmaps = false; 
+        
+        texture.needsUpdate = true;
+        texture.encoding = THREE.sRGBEncoding; 
+
+        // [關鍵修正 2] 材質設定
+        const isTransparent = (Number.isFinite(tile.opacity) && tile.opacity < 1.0);
+
+        const material = new THREE.MeshBasicMaterial({ 
+            map: texture, 
+            transparent: true, // 保持開啟，以支援 PNG 透明通道
+            opacity: isTransparent ? tile.opacity : 1.0,
+            color: 0xffffff,
+            side: THREE.DoubleSide, // 雙面渲染，防止因 scale -1 導致的面剔除
+            depthWrite: true,       // 強制寫入深度，確保它是一個實體層
+            depthTest: true
+        });
+
+        const geometry = new THREE.PlaneGeometry(tile.width, tile.height);
+        const uvs = geometry.attributes.uv;
+        for (let i = 0; i < uvs.count; i++) {
+            uvs.setX(i, 1 - uvs.getX(i));
+        }
+        uvs.needsUpdate = true;
+        const mesh = new THREE.Mesh(geometry, material);
+
+        // 調整方位
+        mesh.rotation.x = -Math.PI / 2; 
+
+        // 計算位置
+        const centerX = tile.x + tile.width / 2;
+        const centerZ = (tile.y + tile.height / 2);
+        
+        mesh.position.set(centerX, yHeight, centerZ);
+
+        // [關鍵修正 3] 渲染順序
+        // 999 確保它在地面 (通常是 0) 之後繪製
+        mesh.renderOrder = 999;
+
+        basemapGroup.add(mesh);
+    });
+    
+    // 確保群組可見性正確
+    updateLayerVisibility();
+    
+    // 強制重繪
+    if(renderer) renderer.render(scene, camera);
+}
+    
+    
+    // 更新圖層可見性
+    function updateLayerVisibility() {
+        const mode = layerSelector.value;
+        
+        // 控制建築 (City)
+        if (cityGroup) {
+            cityGroup.visible = (mode === 'both' || mode === 'buildings');
+        }
+
+        // 控制底圖 (Basemap)
+        if (basemapGroup) {
+            basemapGroup.visible = (mode === 'both' || mode === 'basemap');
+        }
+        
+        // 重新渲染
+        if (renderer && scene && camera) {
+            renderer.render(scene, camera);
+        }
     }
 
     function update3DVisibility() {
@@ -2016,7 +2148,9 @@ function update3DScene() {
                 simulation = new Simulation(networkData);
                 
                 autoCenter2D(networkData.bounds);
-                buildNetwork3D(networkData);
+                buildNetwork3D(networkData);              
+                // [新增] 建立底圖
+                buildBasemap3D(networkData);                 
                 autoCenterCamera3D(networkData.bounds);
                 
                 // [新增] 生成城市
@@ -2073,6 +2207,8 @@ function update3DScene() {
        
         // [新增] 清空城市
         cityGroup.clear();        
+
+        basemapGroup.clear();
         
         renderer.render(scene, camera);
         
@@ -2532,7 +2668,7 @@ function update3DScene() {
             xmlDoc.querySelectorAll('SectionAverageTravelSpeedMeter').forEach(meterEl => { const id = meterEl.querySelector('id').textContent; const name = meterEl.querySelector('name').textContent; const linkId = meterEl.querySelector('linkId').textContent; const endPosition = parseFloat(meterEl.querySelector('position').textContent); const length = parseFloat(meterEl.querySelector('sectionLength').textContent); const startPosition = endPosition - length; const link = links[linkId]; if (!link) return; let refPath = []; const laneEntries = Object.values(link.lanes).sort((a,b) => a.index - b.index); if (laneEntries.length > 0) { refPath = laneEntries[0].path; } const startPosData = getPointAtDistanceAlongPath(refPath, startPosition); const endPosData = getPointAtDistanceAlongPath(refPath, endPosition); if (startPosData && endPosData) { const numLanes = Object.keys(link.lanes).length; const roadCenterlineOffset = (numLanes - 1) / 2 * 3.5; const startMarkerPos = Geom.Vec.add(startPosData.point, Geom.Vec.scale(startPosData.normal, roadCenterlineOffset)); const endMarkerPos = Geom.Vec.add(endPosData.point, Geom.Vec.scale(endPosData.normal, roadCenterlineOffset)); sectionMeters.push({ id, name, linkId, length, startPosition, endPosition, startX: startMarkerPos.x, startY: startMarkerPos.y, startAngle: startPosData.angle, endX: endMarkerPos.x, endY: endMarkerPos.y, endAngle: endPosData.angle, }); } });
             
             // --- Parse Background Images ---
-            xmlDoc.querySelectorAll('Background > Tile').forEach(tileEl => { const rect = tileEl.querySelector('Rectangle'); const start = rect.querySelector('Start'); const end = rect.querySelector('End'); const imageEl = tileEl.querySelector('Image'); const p1x = parseFloat(start.querySelector('x').textContent); const p1y = -parseFloat(start.querySelector('y').textContent); const p2x = parseFloat(end.querySelector('x').textContent); const p2y = -parseFloat(end.querySelector('y').textContent); const x = Math.min(p1x, p2x); const y = Math.min(p1y, p2y); const width = Math.abs(p2x - p1x); const height = Math.abs(p2y - p1y); const saturationEl = tileEl.querySelector('saturation'); const opacity = saturationEl ? parseFloat(saturationEl.textContent) / 100 : 1.0; const type = imageEl.querySelector('type').textContent.toUpperCase(); const mimeType = imageTypeMap[type] || 'png'; const base64Data = imageEl.querySelector('binaryData').textContent; const img = new Image(); const p = new Promise((imgResolve, imgReject) => { img.onload = () => imgResolve(img); img.onerror = () => imgReject(); }); imagePromises.push(p); img.src = `data:image/${mimeType};base64,${base64Data}`; backgroundTiles.push({ image: img, x, y, width, height, opacity }); });
+            xmlDoc.querySelectorAll('Background > Tile').forEach(tileEl => { const rect = tileEl.querySelector('Rectangle'); const start = rect.querySelector('Start'); const end = rect.querySelector('End'); const imageEl = tileEl.querySelector('Image'); const p1x = parseFloat(start.querySelector('x').textContent); const p1y = -parseFloat(start.querySelector('y').textContent); const p2x = parseFloat(end.querySelector('x').textContent); const p2y = -parseFloat(end.querySelector('y').textContent); const x = Math.min(p1x, p2x); const y = Math.min(p1y, p2y); const width = Math.abs(p2x - p1x); const height = Math.abs(p2y - p1y); const saturationEl = tileEl.querySelector('saturation'); const opacity = saturationEl ? parseFloat(saturationEl.textContent) / 100 : 1.0; const type = imageEl.querySelector('type').textContent.toUpperCase(); const mimeType = imageTypeMap[type] || 'png'; const base64Data = imageEl.querySelector('binaryData').textContent.replace(/\s/g, ''); const img = new Image(); const p = new Promise((imgResolve, imgReject) => { img.onload = () => imgResolve(img); img.onerror = () => imgReject(); }); imagePromises.push(p); img.src = `data:image/${mimeType};base64,${base64Data}`; backgroundTiles.push({ image: img, x, y, width, height, opacity }); });
 
             Promise.all(imagePromises).then(() => {
                 resolve({ links, nodes, spawners, trafficLights, staticVehicles, speedMeters, sectionMeters, bounds: { minX, minY, maxX, maxY }, pathfinder: new Pathfinder(links, nodes), backgroundTiles });
