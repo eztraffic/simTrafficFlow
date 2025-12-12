@@ -77,6 +77,16 @@
             </div>
 
             <div class="toggle-container">
+                <label for="layerSelector" data-i18n="layerLabel" style="font-weight:bold; font-size:0.9em;">顯示:</label>
+                <select id="layerSelector" style="padding:2px; border-radius:4px;">
+                    <option value="both" data-i18n="layerBoth">建築 + 底圖</option>
+                    <option value="buildings" data-i18n="layerBuildings">僅建築</option>
+                    <option value="basemap" data-i18n="layerBasemap">僅底圖</option>
+                    <option value="none" data-i18n="layerNone">均無</option>
+                </select>
+            </div>
+
+            <div class="toggle-container">
                 <label class="switch-label" for="showPointMetersToggle" data-i18n="pointMeterToggle">定點偵測器:</label>
                 <label class="switch">
                     <input type="checkbox" id="showPointMetersToggle" checked>
