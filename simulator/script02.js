@@ -208,6 +208,18 @@ document.addEventListener('DOMContentLoaded', () => {
     let flyoverCenter = { x: 0, y: 0 };
     let flyoverRadiusX = 100;
     let flyoverRadiusZ = 100;
+
+    let isChaseActive = false;
+    let chaseVehicleId = null;
+    let chaseRaycaster = new THREE.Raycaster();
+    let chasePointerNdc = new THREE.Vector2();
+    let chaseSmoothedPos = new THREE.Vector3();
+    let chaseSmoothedLookAt = new THREE.Vector3();
+    let chaseIsFirstFrame = true;
+    const chaseEyeHeight = 1.4;
+    const chaseForwardOffset = 1.2;
+    const chaseLookAhead = 25.0;
+    const chaseLerpFactor = 0.2;
     
     let basemapGroup = new THREE.Group(); // 新增底圖群組
     
@@ -281,6 +293,12 @@ document.addEventListener('DOMContentLoaded', () => {
     container3D.addEventListener('mousedown', interruptFlyover);
     container3D.addEventListener('wheel', interruptFlyover);
 
+    window.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && isChaseActive) {
+            stopChaseMode();
+        }
+    });
+
     function interruptFlyover() {
         if (isFlyoverActive) {
             flyoverToggle.checked = false;
@@ -301,6 +319,7 @@ function setFlyoverMode(active) {
         isFlyoverActive = active;
         
         if (active) {
+            if (isChaseActive) stopChaseMode();
             if (controls) controls.enabled = false;
             
             // [修改] 初始化道路飛行控制器
@@ -330,6 +349,91 @@ function setFlyoverMode(active) {
         const dt = 0.016; 
 
         flyoverController.update(dt, camera);
+    }
+
+    function startChaseMode(vehicleId) {
+        if (!vehicleId) return;
+        if (currentViewMode !== '3D') {
+            viewModeToggle.checked = true;
+            setViewMode('3D');
+        }
+        if (isFlyoverActive) {
+            flyoverToggle.checked = false;
+            setFlyoverMode(false);
+        }
+        isChaseActive = true;
+        chaseVehicleId = vehicleId;
+        chaseIsFirstFrame = true;
+        if (controls) controls.enabled = false;
+        if (camera) camera.up.set(0, 1, 0);
+    }
+
+    function stopChaseMode() {
+        isChaseActive = false;
+        chaseVehicleId = null;
+        chaseIsFirstFrame = true;
+        if (controls) {
+            controls.enabled = true;
+            controls.update();
+        }
+    }
+
+    function updateChaseCamera() {
+        if (!isChaseActive || !camera || !simulation || !chaseVehicleId) return;
+        const v = simulation.vehicles.find(vv => vv.id === chaseVehicleId);
+        if (!v) {
+            stopChaseMode();
+            return;
+        }
+
+        const fx = Math.cos(v.angle);
+        const fz = Math.sin(v.angle);
+
+        const desiredPos = new THREE.Vector3(
+            v.x + fx * chaseForwardOffset,
+            chaseEyeHeight,
+            v.y + fz * chaseForwardOffset
+        );
+        const desiredLookAt = new THREE.Vector3(
+            v.x + fx * chaseLookAhead,
+            chaseEyeHeight,
+            v.y + fz * chaseLookAhead
+        );
+
+        if (chaseIsFirstFrame) {
+            camera.position.copy(desiredPos);
+            chaseSmoothedPos.copy(desiredPos);
+            chaseSmoothedLookAt.copy(desiredLookAt);
+            chaseIsFirstFrame = false;
+        } else {
+            chaseSmoothedPos.lerp(desiredPos, chaseLerpFactor);
+            chaseSmoothedLookAt.lerp(desiredLookAt, chaseLerpFactor);
+            camera.position.copy(chaseSmoothedPos);
+        }
+
+        if (camera.position.distanceToSquared(chaseSmoothedLookAt) > 0.1) {
+            camera.lookAt(chaseSmoothedLookAt);
+        }
+    }
+
+    function handle3DVehiclePick(e) {
+        if (currentViewMode !== '3D' || !camera || !renderer) return;
+
+        const rect = renderer.domElement.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return;
+
+        chasePointerNdc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        chasePointerNdc.y = -(((e.clientY - rect.top) / rect.height) * 2 - 1);
+
+        chaseRaycaster.setFromCamera(chasePointerNdc, camera);
+        const roots = Array.from(vehicleMeshes.values());
+        if (roots.length === 0) return;
+        const hits = chaseRaycaster.intersectObjects(roots, true);
+        if (hits.length === 0) return;
+        const hitObj = hits[0].object;
+        const vehicleId = hitObj?.userData?.vehicleId;
+        if (!vehicleId) return;
+        startChaseMode(vehicleId);
     }
       
     
@@ -831,6 +935,8 @@ function activateStreetView(link, x, y) {
         renderer.shadowMap.enabled = true;
         container3D.appendChild(renderer.domElement);
 
+        renderer.domElement.addEventListener('click', handle3DVehiclePick);
+
         controls = new THREE.OrbitControls(camera, renderer.domElement);
         
         // 啟用鍵盤監聽，方便筆電使用者平移
@@ -949,6 +1055,7 @@ function activateStreetView(link, x, y) {
         function createArrowShape(type) {
             const shape = new THREE.Shape();
             if (type === 'circle') {
+                shape.moveTo(lampRadius, 0);
                 shape.absarc(0, 0, lampRadius, 0, Math.PI * 2, false);
             } else if (type === 'straight') {
                 shape.moveTo(-0.1, -0.15); shape.lineTo(-0.1, 0.05);
@@ -1001,11 +1108,13 @@ function activateStreetView(link, x, y) {
             meshFront.position.set((-armLength + 1.0) + xOffsetFront, poleHeight - 0.5, housingDepth / 2 + 0.08);
             group.add(meshFront);
 
-            const visorFront = new THREE.Mesh(visorGeo, visorMat);
-            visorFront.rotation.x = Math.PI / 2; 
-            visorFront.rotation.z = -Math.PI / 2; 
-            visorFront.position.set((-armLength + 1.0) + xOffsetFront, poleHeight - 0.5, housingDepth / 2 + 0.18);
-            group.add(visorFront);
+            if (cfg.type !== 'circle') {
+                const visorFront = new THREE.Mesh(visorGeo, visorMat);
+                visorFront.rotation.x = Math.PI / 2; 
+                visorFront.rotation.z = -Math.PI / 2; 
+                visorFront.position.set((-armLength + 1.0) + xOffsetFront, poleHeight - 0.5, housingDepth / 2 + 0.18);
+                group.add(visorFront);
+            }
             
             lampsFront.push({ mesh: meshFront, material: matFront, config: cfg });
 
@@ -1023,12 +1132,14 @@ function activateStreetView(link, x, y) {
             meshBack.position.set((-armLength + 1.0) + xOffsetBack, poleHeight - 0.5, -housingDepth / 2 - 0.08);
             group.add(meshBack);
 
-            const visorBack = new THREE.Mesh(visorGeo, visorMat);
-            visorBack.rotation.x = Math.PI / 2; 
-            visorBack.rotation.z = -Math.PI / 2; 
-            visorBack.rotation.y = Math.PI; // Face Back
-            visorBack.position.set((-armLength + 1.0) + xOffsetBack, poleHeight - 0.5, -housingDepth / 2 - 0.18);
-            group.add(visorBack);
+            if (cfg.type !== 'circle') {
+                const visorBack = new THREE.Mesh(visorGeo, visorMat);
+                visorBack.rotation.x = Math.PI / 2; 
+                visorBack.rotation.z = -Math.PI / 2; 
+                visorBack.rotation.y = Math.PI; // Face Back
+                visorBack.position.set((-armLength + 1.0) + xOffsetBack, poleHeight - 0.5, -housingDepth / 2 - 0.18);
+                group.add(visorBack);
+            }
 
             lampsBack.push({ mesh: meshBack, material: matBack, config: cfg });
         });
@@ -1560,6 +1671,10 @@ function update3DScene() {
             if (!mesh) {
                 const color = new THREE.Color().setHSL(Math.random(), 0.7, 0.5);
                 mesh = createDetailedCarMesh(v.length, v.width, color);
+                mesh.userData.vehicleId = v.id;
+                mesh.traverse((child) => {
+                    child.userData.vehicleId = v.id;
+                });
                 scene.add(mesh);
                 vehicleMeshes.set(v.id, mesh);
             }
@@ -1598,6 +1713,8 @@ function update3DScene() {
                 vehicleMeshes.delete(id);
             }
         }
+
+        if (isChaseActive) updateChaseCamera();
         renderer.render(scene, camera);
     }
     
@@ -2197,6 +2314,8 @@ function update3DScene() {
         if (animationFrameId) cancelAnimationFrame(animationFrameId);
         simulation = null;
         networkData = null;
+
+        if (isChaseActive) stopChaseMode();
         
         vehicleMeshes.forEach(mesh => scene.remove(mesh));
         vehicleMeshes.clear();
@@ -2341,6 +2460,8 @@ function update3DScene() {
             this.laneChangeState = null;
             this.laneChangeGoal = null;
             this.laneChangeCooldown = 0;
+            this.lastBlockInfo = null;
+            this._debugBlockLogCooldown = 0;
             this.initializePosition(network);
         }
         initializePosition(network) { const link = network.links[this.currentLinkId]; if (!link) { this.finished = true; return; } this.nextSignIndex = 0; const lane = link.lanes[this.currentLaneIndex]; if (!lane || lane.path.length === 0) { this.finished = true; return; } this.currentPath = lane.path; this.currentPathLength = lane.length; this.updateDrawingPosition(network); }
@@ -2349,10 +2470,18 @@ function update3DScene() {
             if (this.finished) return;
             const network = simulation.network;
             const oldDistanceOnPath = this.distanceOnPath;
+            if (this._debugBlockLogCooldown > 0) this._debugBlockLogCooldown -= dt;
             if(this.laneChangeCooldown > 0) { this.laneChangeCooldown -= dt; }
             if (this.state === 'onLink') { this.manageLaneChangeProcess(dt, network, allVehicles); }
             if (this.state === 'onLink') { this.checkRoadSigns(network); }
             const { leader, gap } = this.findLeader(allVehicles, network);
+            if (typeof window !== 'undefined' && window.DEBUG_BLOCKING && this._debugBlockLogCooldown <= 0) {
+                const distanceToEnd = this.currentPathLength - this.distanceOnPath;
+                if (this.state === 'onLink' && this.speed <= 0.2 && distanceToEnd >= 0 && distanceToEnd <= 8 && this.lastBlockInfo?.blocked) {
+                    this._debugBlockLogCooldown = 1.0;
+                    console.log('[blocked]', { time: simulation.time, vehicleId: this.id, linkId: this.currentLinkId, laneIndex: this.currentLaneIndex, speed: this.speed, distanceToEnd, ...this.lastBlockInfo });
+                }
+            }
             const s_star = this.minGap + Math.max(0, this.speed * this.headwayTime + (this.speed * (this.speed - (leader ? leader.speed : 0))) / (2 * Math.sqrt(this.maxAccel * this.comfortDecel)));
             this.accel = this.maxAccel * (1 - Math.pow(this.speed / this.maxSpeed, this.delta) - Math.pow(s_star / gap, 2));
             this.speed += this.accel * dt;
@@ -2374,11 +2503,76 @@ function update3DScene() {
             if (!this.laneChangeGoal && this.laneChangeCooldown <= 0) { this.handleDiscretionaryLaneChangeDecision(network, allVehicles); }
             if (this.laneChangeGoal !== null && !this.laneChangeState) { if (this.currentLaneIndex === this.laneChangeGoal) { this.laneChangeGoal = null; } else { const direction = Math.sign(this.laneChangeGoal - this.currentLaneIndex); const nextLaneIndex = this.currentLaneIndex + direction; const safeToChange = this.isSafeToChange(nextLaneIndex, allVehicles); if (safeToChange) { this.laneChangeState = { progress: 0, fromLaneIndex: this.currentLaneIndex, toLaneIndex: nextLaneIndex, duration: 1.5, }; } } }
         }
-        handlePathTransition(leftoverDistance, network) { this.laneChangeState = null; this.laneChangeGoal = null; this.laneChangeCooldown = 0; if (this.state === 'onLink') { const nextLinkIndex = this.currentLinkIndex + 1; if (nextLinkIndex >= this.route.length) { this.finished = true; return; } const currentLink = network.links[this.currentLinkId]; const nextLinkId = this.route[nextLinkIndex]; const destNode = network.nodes[currentLink.destination]; const transition = destNode.transitions.find(t => t.sourceLinkId === this.currentLinkId && t.sourceLaneIndex === this.currentLaneIndex && t.destLinkId === nextLinkId); this.currentTransition = transition; if (transition && transition.bezier) { this.state = 'inIntersection'; this.currentPath = transition.bezier.points; this.currentPathLength = transition.bezier.length; this.distanceOnPath = leftoverDistance; } else { this.finished = true; } } else if (this.state === 'inIntersection') { this.switchToNextLink(leftoverDistance, network); } }
+        buildFallbackTransitionBezier(network, transition) {
+            const inLink = network.links[transition.sourceLinkId];
+            const outLink = network.links[transition.destLinkId];
+            const inLane = inLink?.lanes?.[transition.sourceLaneIndex];
+            const outLane = outLink?.lanes?.[transition.destLaneIndex];
+            if (!inLane || !outLane) return null;
+            const inPath = inLane.path;
+            const outPath = outLane.path;
+            if (!inPath || inPath.length < 2 || !outPath || outPath.length < 2) return null;
+
+            const p0 = inPath[inPath.length - 1];
+            const p3 = outPath[0];
+            const inPrev = inPath[inPath.length - 2] || p0;
+            const outNext = outPath[1] || p3;
+
+            const dirOutRaw = Geom.Vec.sub(p0, inPrev);
+            const dirInRaw = Geom.Vec.sub(outNext, p3);
+            const dirOut = Geom.Vec.len(dirOutRaw) > 1e-6 ? Geom.Vec.normalize(dirOutRaw) : Geom.Vec.normalize(Geom.Vec.sub(p3, p0));
+            const dirIn = Geom.Vec.len(dirInRaw) > 1e-6 ? Geom.Vec.normalize(dirInRaw) : Geom.Vec.normalize(Geom.Vec.sub(p3, p0));
+
+            const chord = Geom.Vec.dist(p0, p3);
+            const d = Math.max(5, Math.min(25, chord * 0.35));
+            const p1 = Geom.Vec.add(p0, Geom.Vec.scale(dirOut, d));
+            const p2 = Geom.Vec.sub(p3, Geom.Vec.scale(dirIn, d));
+            const length = Geom.Bezier.getLength(p0, p1, p2, p3);
+            if (!(length > 0)) return null;
+            return { points: [p0, p1, p2, p3], length };
+        }
+
+        handlePathTransition(leftoverDistance, network) {
+            const laneForTransition = (this.laneChangeGoal !== null)
+                ? this.laneChangeGoal
+                : (this.laneChangeState ? this.laneChangeState.toLaneIndex : this.currentLaneIndex);
+
+            this.laneChangeState = null;
+            this.laneChangeGoal = null;
+            this.laneChangeCooldown = 0;
+
+            if (this.state === 'onLink') {
+                const nextLinkIndex = this.currentLinkIndex + 1;
+                if (nextLinkIndex >= this.route.length) { this.finished = true; return; }
+
+                const currentLink = network.links[this.currentLinkId];
+                const nextLinkId = this.route[nextLinkIndex];
+                const destNode = currentLink ? network.nodes[currentLink.destination] : null;
+                const transition = destNode?.transitions?.find(t =>
+                    t.sourceLinkId === this.currentLinkId &&
+                    t.sourceLaneIndex === laneForTransition &&
+                    t.destLinkId === nextLinkId
+                );
+
+                this.currentTransition = transition || null;
+                const bezier = transition ? (transition.bezier || this.buildFallbackTransitionBezier(network, transition)) : null;
+                if (bezier && bezier.points && bezier.points.length === 4 && bezier.length > 0) {
+                    this.state = 'inIntersection';
+                    this.currentPath = bezier.points;
+                    this.currentPathLength = bezier.length;
+                    this.distanceOnPath = leftoverDistance;
+                } else {
+                    this.finished = true;
+                }
+            } else if (this.state === 'inIntersection') {
+                this.switchToNextLink(leftoverDistance, network);
+            }
+        }
         switchToNextLink(leftoverDistance, network) { this.currentLinkIndex++; if (this.currentLinkIndex >= this.route.length) { this.finished = true; return; } this.currentLinkId = this.route[this.currentLinkIndex]; this.currentLaneIndex = this.currentTransition ? this.currentTransition.destLaneIndex : 0; this.currentTransition = null; this.maxSpeed = this.originalMaxSpeed; this.nextSignIndex = 0; const link = network.links[this.currentLinkId]; if (!link || !link.lanes[this.currentLaneIndex]) { this.finished = true; return; } const lane = link.lanes[this.currentLaneIndex]; this.state = 'onLink'; this.currentPath = lane.path; this.currentPathLength = lane.length; this.distanceOnPath = leftoverDistance; }
         findLeader(allVehicles, network) {
              let leader = null;
             let gap = Infinity;
+            this.lastBlockInfo = null;
             const distanceToEndOfCurrentPath = this.currentPathLength - this.distanceOnPath;
             for (const other of allVehicles) {
                 if (other.id === this.id) continue;
@@ -2398,7 +2592,9 @@ function update3DScene() {
             if (this.state === 'onLink') {
                 const nextLinkIdx = this.currentLinkIndex + 1;
                 if (nextLinkIdx < this.route.length) {
-                    const finalLane = this.laneChangeGoal !== null ? this.laneChangeGoal : this.currentLaneIndex;
+                    const finalLane = this.laneChangeGoal !== null
+                        ? this.laneChangeGoal
+                        : (this.laneChangeState ? this.laneChangeState.toLaneIndex : this.currentLaneIndex);
                     const myTransition = network.nodes[network.links[this.currentLinkId].destination]?.transitions.find(t =>
                         t.sourceLinkId === this.currentLinkId && t.sourceLaneIndex === finalLane && t.destLinkId === this.route[nextLinkIdx]
                     );
@@ -2449,39 +2645,175 @@ function update3DScene() {
                         const currentLink = network.links[this.currentLinkId];
                         const destNodeId = currentLink.destination;
                         const destNode = network.nodes[destNodeId];
-                        const finalLaneForTransition = this.laneChangeGoal !== null ? this.laneChangeGoal : this.currentLaneIndex;
+                        const finalLaneForTransition = this.laneChangeGoal !== null
+                            ? this.laneChangeGoal
+                            : (this.laneChangeState ? this.laneChangeState.toLaneIndex : this.currentLaneIndex);
                         const transition = destNode.transitions.find(t =>
                             t.sourceLinkId === this.currentLinkId &&
                             t.sourceLaneIndex === finalLaneForTransition &&
                             t.destLinkId === this.route[nextLinkIndex]
                         );
                         let isBlocked = false;
+                        let blockReason = null;
+                        let blockDetails = {};
                         if (!transition) {
                             isBlocked = true;
+                            blockReason = 'no_transition';
                         } else {
                             const tfl = network.trafficLights.find(t => t.nodeId === destNodeId);
                             if (tfl) {
                                 const signal = tfl.getSignalForTurnGroup(transition.turnGroupId);
                                 if (signal === 'Red') {
                                     isBlocked = true;
+                                    blockReason = 'red_signal';
+                                    blockDetails = { myTurnGroupId: transition.turnGroupId, mySignal: signal };
                                 }
                                 else if (signal === 'Yellow') {
                                     const requiredBrakingDistance = (this.speed * this.speed) / (2 * this.comfortDecel);
                                     if (distanceToEndOfCurrentPath > requiredBrakingDistance) {
                                         isBlocked = true;
+                                        blockReason = 'yellow_stop';
+                                        blockDetails = { myTurnGroupId: transition.turnGroupId, mySignal: signal };
                                     }
                                 }
                             }
                             if (!isBlocked) {
+                                 const normalizeAngleDiff = (diff) => {
+                                     while (diff <= -Math.PI) diff += Math.PI * 2;
+                                     while (diff > Math.PI) diff -= Math.PI * 2;
+                                     return diff;
+                                 };
+
+                                 const getTurnType = (trans, inAngle) => {
+                                     if (!trans) return null;
+                                     let turnAngle = 0;
+                                     if (trans.bezier && trans.bezier.points && trans.bezier.points.length === 4) {
+                                         const pts = trans.bezier.points;
+                                         const pNearEnd = pts[2];
+                                         const pEnd = pts[3];
+                                         const curveAngle = Math.atan2(pEnd.y - pNearEnd.y, pEnd.x - pNearEnd.x);
+                                         turnAngle = normalizeAngleDiff(curveAngle - inAngle);
+                                     } else {
+                                         const outLink = network.links[trans.destLinkId];
+                                         const outAngle = getLinkAngle(outLink, false);
+                                         turnAngle = normalizeAngleDiff(outAngle - inAngle);
+                                     }
+                                     if (turnAngle > 0.2) return 'right';
+                                     if (turnAngle < -0.2) return 'left';
+                                     return 'straight';
+                                 };
+
+                                 const isOncoming = (inAngleA, inAngleB) => {
+                                     const diff = Math.abs(normalizeAngleDiff(inAngleA - inAngleB));
+                                     return Math.abs(diff - Math.PI) < 0.7;
+                                 };
+
+                                 const myInAngle = getLinkAngle(network.links[this.currentLinkId], true);
+                                 const myTurnType = getTurnType(transition, myInAngle);
+                                 const enableLeftTurnYield = (typeof window !== 'undefined' && window.ENABLE_LEFT_TURN_YIELD);
+
+                                 if (enableLeftTurnYield && tfl && myTurnType === 'left') {
+                                     const ttcYield = 2.5;
+                                     const distYield = 10.0;
+                                     const stoppedSpeedEps = 0.3;
+                                     const stoppedDistEps = 5.0;
+                                     for (const other of allVehicles) {
+                                         if (other.id === this.id) continue;
+
+                                         let otherTransition = null;
+                                         let otherDistanceToNode = Infinity;
+                                         let otherIsInIntersection = false;
+                                         if (other.state === 'inIntersection' && other.currentTransition) {
+                                             const otherNodeId = network.links[other.currentTransition.sourceLinkId]?.destination;
+                                             if (otherNodeId !== destNodeId) continue;
+                                             otherTransition = other.currentTransition;
+                                             otherDistanceToNode = 0;
+                                             otherIsInIntersection = true;
+                                         } else if (other.state === 'onLink') {
+                                             const otherLink = network.links[other.currentLinkId];
+                                             if (!otherLink || otherLink.destination !== destNodeId) continue;
+                                             const otherNextIdx = other.currentLinkIndex + 1;
+                                             if (otherNextIdx >= other.route.length) continue;
+                                             const otherFinalLane = other.laneChangeGoal !== null
+                                                 ? other.laneChangeGoal
+                                                 : (other.laneChangeState ? other.laneChangeState.toLaneIndex : other.currentLaneIndex);
+                                             otherTransition = destNode.transitions.find(t =>
+                                                 t.sourceLinkId === other.currentLinkId &&
+                                                 t.sourceLaneIndex === otherFinalLane &&
+                                                 t.destLinkId === other.route[otherNextIdx]
+                                             );
+                                             otherDistanceToNode = (other.currentPathLength - other.distanceOnPath);
+                                         } else {
+                                             continue;
+                                         }
+
+                                         if (!otherTransition) continue;
+                                         if (otherDistanceToNode > checkDistance) continue;
+
+                                         const otherInAngle = getLinkAngle(network.links[otherTransition.sourceLinkId], true);
+                                         if (!isOncoming(myInAngle, otherInAngle)) continue;
+
+                                         const otherTurnType = getTurnType(otherTransition, otherInAngle);
+                                         if (otherTurnType !== 'straight') continue;
+
+                                         const otherSpeed = Math.max(0, other.speed);
+                                         if (!otherIsInIntersection && otherSpeed <= stoppedSpeedEps && otherDistanceToNode <= stoppedDistEps) continue;
+
+                                         let otherSignal = null;
+                                         if (!otherIsInIntersection) {
+                                             if (!otherTransition.turnGroupId) continue;
+                                             otherSignal = tfl.getSignalForTurnGroup(otherTransition.turnGroupId);
+                                             if (otherSignal === 'Red') continue;
+                                             if (otherSignal === 'Yellow') {
+                                                 const otherTtcYellow = otherDistanceToNode / Math.max(otherSpeed, 0.1);
+                                                 if (otherTtcYellow > ttcYield && otherDistanceToNode > distYield) continue;
+                                             }
+                                         }
+
+                                         let shouldYield = false;
+                                         let otherTtc = null;
+                                         if (otherIsInIntersection) {
+                                             const otherProgress = (other.currentPathLength > 0) ? (other.distanceOnPath / other.currentPathLength) : 0;
+                                             if (otherSpeed > stoppedSpeedEps && otherProgress < 0.85) {
+                                                 shouldYield = true;
+                                             }
+                                         } else {
+                                             otherTtc = otherDistanceToNode / Math.max(otherSpeed, 0.1);
+                                             if (otherDistanceToNode <= distYield || otherTtc <= ttcYield) {
+                                                 shouldYield = true;
+                                             }
+                                         }
+
+                                         if (!shouldYield) continue;
+                                         isBlocked = true;
+                                         blockReason = 'yield_oncoming';
+                                         blockDetails = {
+                                             myTurnGroupId: transition.turnGroupId,
+                                             otherVehicleId: other.id,
+                                             otherLinkId: otherTransition.sourceLinkId,
+                                             otherTurnGroupId: otherTransition.turnGroupId,
+                                             otherSignal,
+                                             otherDistanceToNode,
+                                             otherSpeed,
+                                             otherTtc
+                                         };
+                                         break;
+                                     }
+                                 }
+
                                  for (const other of allVehicles) {
                                     if (other.id === this.id || other.state !== 'onLink' || other.currentLinkId !== this.currentLinkId) continue;
                                     const otherNextIdx = other.currentLinkIndex + 1;
                                     if (otherNextIdx >= other.route.length) continue;
-                                    const otherFinalLane = other.laneChangeGoal !== null ? other.laneChangeGoal : other.currentLaneIndex;
+                                    const otherFinalLane = other.laneChangeGoal !== null
+                                        ? other.laneChangeGoal
+                                        : (other.laneChangeState ? other.laneChangeState.toLaneIndex : other.currentLaneIndex);
                                     const otherTransition = destNode.transitions.find(t => t.sourceLinkId === other.currentLinkId && t.sourceLaneIndex === otherFinalLane && t.destLinkId === other.route[otherNextIdx]);
                                     if (otherTransition && otherTransition.destLinkId === transition.destLinkId && otherTransition.destLaneIndex === transition.destLaneIndex) {
                                         if ((other.currentPathLength - other.distanceOnPath) < (this.currentPathLength - this.distanceOnPath)) {
                                             isBlocked = true;
+                                            blockReason = 'merge_queue';
+                                            blockDetails = { myTurnGroupId: transition.turnGroupId, otherVehicleId: other.id, myDestLinkId: transition.destLinkId, myDestLaneIndex: transition.destLaneIndex };
                                             break;
                                         }
                                     }
@@ -2491,13 +2823,116 @@ function update3DScene() {
                         if (isBlocked && distanceToEndOfCurrentPath < gap) {
                             leader = null;
                             gap = distanceToEndOfCurrentPath;
+                            this.lastBlockInfo = { blocked: true, reason: blockReason, nodeId: destNodeId, ...blockDetails };
                         }
                     }
                 }
             }
             return { leader, gap: Math.max(0.1, gap) };
         }
-        handleMandatoryLaneChangeDecision(network, allVehicles) { if (this.laneChangeGoal !== null) return; const link = network.links[this.currentLinkId]; const lane = link.lanes[this.currentLaneIndex]; if (!lane) return; const distanceToEnd = lane.length - this.distanceOnPath; if (distanceToEnd > 150) return; const nextLinkId = this.route[this.currentLinkIndex + 1]; if (!nextLinkId) return; const destNode = network.nodes[link.destination]; const canPass = destNode.transitions.some(t => t.sourceLinkId === this.currentLinkId && t.sourceLaneIndex === this.currentLaneIndex && t.destLinkId === nextLinkId); if (canPass) return; const suitableLanes = []; for (const laneIdx in link.lanes) { const targetLane = parseInt(laneIdx, 10); const canPassOnNewLane = destNode.transitions.some(t => t.sourceLinkId === this.currentLinkId && t.sourceLaneIndex === targetLane && t.destLinkId === nextLinkId); if (canPassOnNewLane) { const { leader } = this.getLaneLeader(targetLane, allVehicles); const density = leader ? leader.distanceOnPath - this.distanceOnPath : Infinity; suitableLanes.push({ laneIndex: targetLane, density }); } } if (suitableLanes.length > 0) { suitableLanes.sort((a, b) => b.density - a.density); this.laneChangeGoal = suitableLanes[0].laneIndex; } }
+        handleMandatoryLaneChangeDecision(network, allVehicles) {
+            if (this.laneChangeGoal !== null) return;
+            const link = network.links[this.currentLinkId];
+            const lane = link.lanes[this.currentLaneIndex];
+            if (!lane) return;
+
+            const nextLinkId = this.route[this.currentLinkIndex + 1];
+            if (!nextLinkId) return;
+            const destNode = network.nodes[link.destination];
+            if (!destNode) return;
+
+            const secondLinkId = this.route[this.currentLinkIndex + 2];
+            const shortLinkThreshold = (typeof window !== 'undefined' && typeof window.MANDATORY_LC_SHORT_LINK_THRESHOLD === 'number')
+                ? window.MANDATORY_LC_SHORT_LINK_THRESHOLD
+                : 80;
+            let shouldLookahead2 = false;
+            if (secondLinkId) {
+                const nextLink = network.links[nextLinkId];
+                const nextLinkFirstLaneKey = nextLink?.lanes ? Object.keys(nextLink.lanes)[0] : null;
+                const nextLinkLength = nextLink?.lanes?.[0]?.length ?? (nextLinkFirstLaneKey !== null ? nextLink?.lanes?.[nextLinkFirstLaneKey]?.length : undefined);
+                if (typeof nextLinkLength === 'number' && nextLinkLength < shortLinkThreshold) {
+                    shouldLookahead2 = true;
+                }
+            }
+
+            const canPassFromLane = (laneIndex) => destNode.transitions.some(t =>
+                t.sourceLinkId === this.currentLinkId &&
+                t.sourceLaneIndex === laneIndex &&
+                t.destLinkId === nextLinkId
+            );
+
+            const canPassFromLaneConsideringShortNextLink = (laneIndex) => {
+                const firstTransitions = destNode.transitions.filter(t =>
+                    t.sourceLinkId === this.currentLinkId &&
+                    t.sourceLaneIndex === laneIndex &&
+                    t.destLinkId === nextLinkId
+                );
+                if (firstTransitions.length === 0) return false;
+                if (!shouldLookahead2) return true;
+
+                const nextLinkDestNodeId = network.links[nextLinkId]?.destination;
+                const nextDestNode = nextLinkDestNodeId ? network.nodes[nextLinkDestNodeId] : null;
+                if (!nextDestNode || !nextDestNode.transitions) return true;
+
+                for (const t1 of firstTransitions) {
+                    const ok = nextDestNode.transitions.some(t2 =>
+                        t2.sourceLinkId === nextLinkId &&
+                        t2.sourceLaneIndex === t1.destLaneIndex &&
+                        t2.destLinkId === secondLinkId
+                    );
+                    if (ok) return true;
+                }
+                return false;
+            };
+
+            if (canPassFromLaneConsideringShortNextLink(this.currentLaneIndex)) return;
+
+            const suitableLanes = [];
+            let minLaneShift = Infinity;
+            for (const laneIdx in link.lanes) {
+                const targetLane = parseInt(laneIdx, 10);
+                if (!canPassFromLaneConsideringShortNextLink(targetLane)) continue;
+                const laneShift = Math.abs(targetLane - this.currentLaneIndex);
+                minLaneShift = Math.min(minLaneShift, laneShift);
+                const { leader } = this.getLaneLeader(targetLane, allVehicles);
+                const density = leader ? leader.distanceOnPath - this.distanceOnPath : Infinity;
+                suitableLanes.push({ laneIndex: targetLane, density, laneShift });
+            }
+            if (suitableLanes.length === 0) return;
+
+            const distanceToEnd = lane.length - this.distanceOnPath;
+            const lookaheadDistance = Math.max(
+                150,
+                this.speed * 8,
+                (minLaneShift === Infinity ? 0 : minLaneShift * 120)
+            );
+            const maxStartBase = (typeof window !== 'undefined' && typeof window.MANDATORY_LC_MAX_START_BASE === 'number')
+                ? window.MANDATORY_LC_MAX_START_BASE
+                : 600;
+            const maxStartPerShift = (typeof window !== 'undefined' && typeof window.MANDATORY_LC_MAX_START_PER_SHIFT === 'number')
+                ? window.MANDATORY_LC_MAX_START_PER_SHIFT
+                : 250;
+            const maxStartDistance = Math.max(
+                400,
+                maxStartBase + (minLaneShift === Infinity ? 0 : minLaneShift * maxStartPerShift)
+            );
+            if (distanceToEnd > maxStartDistance) return;
+
+            const approachSpeed = Math.max(5, Math.min(this.maxSpeed || 5, Math.max(this.speed, 1)));
+            const timeToEnd = distanceToEnd / approachSpeed;
+            const requiredTime = 18 + (minLaneShift === Infinity ? 0 : minLaneShift * 8);
+
+            const { leader: currentLeader, gap: currentGap } = this.getLaneLeader(this.currentLaneIndex, allVehicles);
+            const congested = !!currentLeader && (this.speed < 6) && (currentGap < 25 || currentLeader.speed < 3);
+
+            if (!congested && distanceToEnd > lookaheadDistance && timeToEnd > requiredTime) return;
+
+            suitableLanes.sort((a, b) => {
+                if (a.laneShift !== b.laneShift) return a.laneShift - b.laneShift;
+                return b.density - a.density;
+            });
+            this.laneChangeGoal = suitableLanes[0].laneIndex;
+        }
         handleDiscretionaryLaneChangeDecision(network, allVehicles) { if (this.laneChangeGoal !== null || this.laneChangeState !== null || this.laneChangeCooldown > 0) return; const link = network.links[this.currentLinkId]; const nextLinkId = this.route[this.currentLinkIndex + 1]; if (!nextLinkId) return; const destNode = network.nodes[link.destination]; const { leader: currentLeader } = this.getLaneLeader(this.currentLaneIndex, allVehicles); const adjacentLanes = [this.currentLaneIndex - 1, this.currentLaneIndex + 1]; for (const targetLane of adjacentLanes) { if (!link.lanes[targetLane]) continue; const canPassOnTargetLane = destNode.transitions.some(t => t.sourceLinkId === this.currentLinkId && t.sourceLaneIndex === targetLane && t.destLinkId === nextLinkId); if (!canPassOnTargetLane) continue; const { leader: targetLeader } = this.getLaneLeader(targetLane, allVehicles); const currentGap = currentLeader ? currentLeader.distanceOnPath - this.distanceOnPath : Infinity; const targetGap = targetLeader ? targetLeader.distanceOnPath - this.distanceOnPath : Infinity; const speedAdvantage = targetLeader ? targetLeader.speed - this.speed : 0; const gapAdvantage = targetGap - currentGap; if (gapAdvantage > this.length * 2 && speedAdvantage > 2) { if (this.isSafeToChange(targetLane, allVehicles)) { this.laneChangeGoal = targetLane; return; } } } }
         getLaneLeader(laneIndex, allVehicles) { let leader = null; let gap = Infinity; for (const other of allVehicles) { if (this.id === other.id || other.currentLinkId !== this.currentLinkId) continue; const otherLane = other.laneChangeState ? other.laneChangeState.toLaneIndex : other.currentLaneIndex; if (otherLane === laneIndex && other.distanceOnPath > this.distanceOnPath) { const otherGap = other.distanceOnPath - this.distanceOnPath - this.length; if (otherGap < gap) { gap = otherGap; leader = other; } } } return { leader, gap }; }
 // --- [修改] 變換車道安全檢查 (加入雙重匯流與目標車道預判) ---
@@ -2597,7 +3032,7 @@ function update3DScene() {
                     if (pos) { this.x = pos.x; this.y = pos.y; this.angle = pos.angle; }
                 }
             } else if (this.state === 'inIntersection') {
-                const t = this.distanceOnPath / this.currentPathLength;
+                const t = this.currentPathLength > 0 ? Math.max(0, Math.min(1, this.distanceOnPath / this.currentPathLength)) : 0;
                 const [p0, p1, p2, p3] = this.currentPath;
                 const pos = Geom.Bezier.getPoint(t, p0, p1, p2, p3);
                 this.x = pos.x;
