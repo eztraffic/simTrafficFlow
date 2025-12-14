@@ -48,7 +48,83 @@ h1 {
     row-gap: 10px;
 }
 
-.simulation-controls button {
+.multi-toggle {
+    display: inline-flex;
+    border: 1px solid #cfd7e3;
+    border-radius: 12px;
+    overflow: hidden;
+    background: #ffffff;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+}
+
+.multi-toggle-btn {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    padding: 8px 12px 8px 36px;
+    border: none;
+    background: transparent;
+    color: #2c3e50;
+    cursor: pointer;
+    font-size: 0.95em;
+    line-height: 1;
+    transition: background-color 0.15s ease, color 0.15s ease;
+    white-space: nowrap;
+}
+
+.multi-toggle-btn::before {
+    content: "";
+    position: absolute;
+    left: 12px;
+    top: 50%;
+    width: 14px;
+    height: 14px;
+    transform: translateY(-50%);
+    border: 2px solid #9aa8b6;
+    border-radius: 4px;
+    background: #ffffff;
+    box-sizing: border-box;
+}
+
+.multi-toggle-btn::after {
+    content: "";
+    position: absolute;
+    left: 16px;
+    top: 50%;
+    width: 8px;
+    height: 4px;
+    transform: translateY(-60%) rotate(-45deg);
+    border-left: 2px solid transparent;
+    border-bottom: 2px solid transparent;
+    opacity: 0;
+}
+
+.multi-toggle-btn + .multi-toggle-btn {
+    border-left: 1px solid #cfd7e3;
+}
+
+.multi-toggle-btn.is-active {
+    background: #e7f1ff;
+    color: #0b5ed7;
+}
+
+.multi-toggle-btn.is-active::before {
+    border-color: #0d6efd;
+    background: #0d6efd;
+}
+
+.multi-toggle-btn.is-active::after {
+    border-left-color: #ffffff;
+    border-bottom-color: #ffffff;
+    opacity: 1;
+}
+
+.multi-toggle-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+
+.simulation-controls > button {
     padding: 8px 15px;
     font-size: 1em;
     border: none;
@@ -60,12 +136,12 @@ h1 {
     white-space: nowrap;
 }
 
-.simulation-controls button:disabled {
+.simulation-controls > button:disabled {
     background-color: #aaa;
     cursor: not-allowed;
 }
 
-.simulation-controls button:hover:not(:disabled) {
+.simulation-controls > button:hover:not(:disabled) {
     background-color: #0056b3;
 }
 
@@ -120,6 +196,10 @@ main#main-content {
     display: flex;
     flex-direction: column;
     gap: 15px;
+}
+
+#stats-panel.is-hidden {
+    display: none;
 }
 
 #stats-panel h2 {
@@ -193,12 +273,24 @@ main#main-content {
     overflow: hidden;
 }
 
+#canvas-container.is-split {
+    gap: 0;
+}
+
+#canvas-container.is-split #networkCanvas,
+#canvas-container.is-split #threejs-container {
+    flex: 0 0 50%;
+    width: 50%;
+}
+
 #networkCanvas {
     display: block;
     cursor: grab;
     width: 100%;
     height: 100%;
+    flex: 1 1 0;
 }
+
 #networkCanvas:active {
     cursor: grabbing;
 }
@@ -207,6 +299,7 @@ main#main-content {
     display: none; /* 預設隱藏 */
     width: 100%;
     height: 100%;
+    flex: 1 1 0;
 }
 
 /* Toggle Switch Styles */
