@@ -7,10 +7,16 @@ document.addEventListener('DOMContentLoaded', () => {
             appTitle: '路網微觀交通模擬 (2D/3D)',
             selectFileLabel: '選擇路網檔案：',
             viewModeLabel: '3D 模式:',
+            displayStats: '統計',
+            display2D: '2D',
+            display3D: '3D',
+            syncRotateLabel: '2D 同步3D旋轉:',
             btnLoadFirst: '請先載入檔案',
             btnStart: '開始模擬',
             btnPause: '暫停模擬',
             btnResume: '繼續模擬',
+            hideStatsPanel: '隱藏統計',
+            showStatsPanel: '顯示統計',
             simSpeedLabel: '模擬速度:',
             simTimeLabel: '模擬時間:',
             trafficLightToggle: '路口燈號:',
@@ -49,10 +55,16 @@ document.addEventListener('DOMContentLoaded', () => {
             appTitle: 'simTrafficFlow (2D/3D)',
             selectFileLabel: 'Select Network File:',
             viewModeLabel: '3D Mode:', 
+            displayStats: 'Stats',
+            display2D: '2D',
+            display3D: '3D',
+            syncRotateLabel: 'Sync 2D rotation:',
             btnLoadFirst: 'Please Load a File',
             btnStart: 'Start Simulation',
             btnPause: 'Pause Simulation',
             btnResume: 'Resume Simulation',
+            hideStatsPanel: 'Hide Stats',
+            showStatsPanel: 'Show Stats',
             simSpeedLabel: 'Sim Speed:',
             simTimeLabel: 'Sim Time:',
             trafficLightToggle: 'Junction Lights:',
@@ -92,6 +104,19 @@ document.addEventListener('DOMContentLoaded', () => {
     let currentLang = 'zh-Hant';
     let currentViewMode = '2D'; 
 
+    let isDisplay2D = true;
+    let isDisplay3D = false;
+
+    let isRotationSyncEnabled = true;
+
+    let wasSplitActive = false;
+    let splitStartAzimuth = 0;
+    let has3DHeadingChangedSinceSplit = false;
+
+    let viewRotation2D = 0;
+    let initialViewRotation2D = 0;
+    let networkCenter2D = null;
+
     function setLanguage(lang) {
         currentLang = lang;
         const dict = translations[lang];
@@ -101,6 +126,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         document.title = dict.appTitle;
         updateButtonText();
+        updateDisplayButtons();
         initializeCharts();
         if (networkData) {
             setupMeterCharts(networkData.speedMeters);
@@ -133,9 +159,140 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    function resizeStatsCharts() {
+        if (vehicleCountChart) vehicleCountChart.resize();
+        if (avgSpeedChart) avgSpeedChart.resize();
+        Object.values(meterCharts).forEach((chart) => {
+            if (chart && typeof chart.resize === 'function') chart.resize();
+        });
+        Object.values(sectionMeterCharts).forEach((chart) => {
+            if (chart && typeof chart.resize === 'function') chart.resize();
+        });
+    }
+
+    function setStatsPanelVisible(visible) {
+        isStatsPanelVisible = visible;
+        if (statsPanel) statsPanel.classList.toggle('is-hidden', !visible);
+        updateDisplayButtons();
+        requestAnimationFrame(() => {
+            onWindowResize();
+            resizeStatsCharts();
+        });
+    }
+
+    function setButtonActive(btn, active) {
+        if (!btn) return;
+        btn.classList.toggle('is-active', !!active);
+        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    }
+
+    function get3DAzimuth() {
+        if (!camera) return 0;
+        if (controls && controls.enabled && typeof controls.getAzimuthalAngle === 'function') {
+            return controls.getAzimuthalAngle();
+        }
+        const dir = new THREE.Vector3();
+        camera.getWorldDirection(dir);
+        // Map camera forward direction onto XZ plane; yaw is measured around +Y.
+        // We use atan2(x, z) so that 0 means looking toward +Z.
+        return Math.atan2(dir.x, dir.z);
+    }
+
+    function angleDeltaRad(a, b) {
+        let d = a - b;
+        while (d > Math.PI) d -= Math.PI * 2;
+        while (d < -Math.PI) d += Math.PI * 2;
+        return d;
+    }
+
+    function sync2DRotationFrom3D() {
+        if (!isDisplay2D || !isDisplay3D) return;
+        if (!isRotationSyncEnabled) return;
+        viewRotation2D = -get3DAzimuth();
+    }
+
+    function applyDisplayState() {
+        if (!isDisplay2D && !isDisplay3D) {
+            isDisplay2D = true;
+        }
+
+        if (isDisplay2D && isDisplay3D) {
+            setStatsPanelVisible(false);
+        }
+
+        canvasContainer.classList.toggle('is-split', isDisplay2D && isDisplay3D);
+        canvas2D.style.display = isDisplay2D ? 'block' : 'none';
+        container3D.style.display = isDisplay3D ? 'block' : 'none';
+
+        const isSplit = isDisplay2D && isDisplay3D;
+        if (syncRotationContainer && syncRotationToggle) {
+            syncRotationContainer.style.display = isSplit ? 'flex' : 'none';
+
+            // Only apply defaults when entering split mode.
+            if (isSplit && !wasSplitActive) {
+                syncRotationToggle.checked = true;
+                isRotationSyncEnabled = true;
+                splitStartAzimuth = get3DAzimuth();
+                has3DHeadingChangedSinceSplit = false;
+            }
+
+            // Leaving split mode: disable sync, and reset internal tracking.
+            if (!isSplit && wasSplitActive) {
+                isRotationSyncEnabled = false;
+                has3DHeadingChangedSinceSplit = false;
+            }
+        }
+
+        const pegman = document.getElementById('pegman-icon');
+        if (pegman) {
+            pegman.style.display = (isDisplay2D && networkData && !isDisplay3D) ? 'block' : 'none';
+        }
+
+        currentViewMode = isDisplay3D ? '3D' : '2D';
+
+        if (isDisplay2D && !isDisplay3D) {
+            viewRotation2D = initialViewRotation2D;
+        }
+
+        if (isSplit) {
+            if (!isRotationSyncEnabled) {
+                viewRotation2D = initialViewRotation2D;
+            } else {
+                // Keep 2D aligned with load-time orientation until 3D heading changes.
+                // (Sync becomes effective after the 3D camera has actually rotated.)
+                sync2DRotationFrom3D();
+            }
+        }
+
+        wasSplitActive = isSplit;
+
+        updateDisplayButtons();
+        onWindowResize();
+
+        if (isDisplay2D && !isRunning) redraw2D();
+        if (isDisplay3D) {
+            update3DVisibility();
+            updateLayerVisibility();
+            if (renderer && scene && camera) renderer.render(scene, camera);
+        }
+    }
+
+    function updateDisplayButtons() {
+        setButtonActive(displayStatsBtn, isStatsPanelVisible);
+        setButtonActive(display2DBtn, isDisplay2D);
+        setButtonActive(display3DBtn, isDisplay3D);
+
+        if (displayStatsBtn) {
+            const statsAllowed = !(isDisplay2D && isDisplay3D);
+            displayStatsBtn.disabled = !statsAllowed;
+            if (!statsAllowed) {
+                setButtonActive(displayStatsBtn, false);
+            }
+        }
+    }
+
     // --- DOM Elements ---
     const langSelector = document.getElementById('langSelector');
-    const viewModeToggle = document.getElementById('viewModeToggle'); 
     const fileInput = document.getElementById('xmlFileInput');
     const canvasContainer = document.getElementById('canvas-container');
     const placeholderText = document.getElementById('placeholder-text');
@@ -143,12 +300,18 @@ document.addEventListener('DOMContentLoaded', () => {
     const ctx2D = canvas2D.getContext('2d');
     const container3D = document.getElementById('threejs-container');
     const startStopButton = document.getElementById('startStopButton');
+    const displayStatsBtn = document.getElementById('displayStatsBtn');
+    const display2DBtn = document.getElementById('display2DBtn');
+    const display3DBtn = document.getElementById('display3DBtn');
+    const syncRotationContainer = document.getElementById('syncRotationContainer');
+    const syncRotationToggle = document.getElementById('syncRotationToggle');
     const speedSlider = document.getElementById('speedSlider');
     const speedValueSpan = document.getElementById('speedValue');
     const simTimeSpan = document.getElementById('simulationTime');
     const showPathsToggle = document.getElementById('showPathsToggle');
     const showPointMetersToggle = document.getElementById('showPointMetersToggle');
     const showSectionMetersToggle = document.getElementById('showSectionMetersToggle');
+    const statsPanel = document.getElementById('stats-panel');
     const statsTableBody = document.getElementById('statsTableBody');
     const vehicleCountChartCanvas = document.getElementById('vehicleCountChart').getContext('2d');
     const avgSpeedChartCanvas = document.getElementById('avgSpeedChart').getContext('2d');
@@ -167,6 +330,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let showTurnPaths = false;
     let showPointMeters = true;
     let showSectionMeters = true;
+    let isStatsPanelVisible = true;
 
     // --- 2D View Variables ---
     let scale = 1.0; 
@@ -174,6 +338,8 @@ document.addEventListener('DOMContentLoaded', () => {
     let panY = 0;
     let isPanning = false; 
     let panStart = { x: 0, y: 0 };
+    let panDownPos = { x: 0, y: 0 };
+    let panWasDrag = false;
 
     // --- 3D View Variables ---
     let scene, camera, renderer, controls;
@@ -243,10 +409,47 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Event Listeners ---
     langSelector.addEventListener('change', (e) => setLanguage(e.target.value));
-    
-    viewModeToggle.addEventListener('change', (e) => {
-        setViewMode(e.target.checked ? '3D' : '2D');
-    });
+
+    if (displayStatsBtn) {
+        displayStatsBtn.addEventListener('click', () => {
+            if (isDisplay2D && isDisplay3D) return;
+            setStatsPanelVisible(!isStatsPanelVisible);
+        });
+    }
+
+    if (display2DBtn) {
+        display2DBtn.addEventListener('click', () => {
+            const next = !isDisplay2D;
+            if (!next && !isDisplay3D) return;
+            isDisplay2D = next;
+            applyDisplayState();
+        });
+    }
+
+    if (display3DBtn) {
+        display3DBtn.addEventListener('click', () => {
+            const next = !isDisplay3D;
+            if (!next && !isDisplay2D) return;
+            isDisplay3D = next;
+            applyDisplayState();
+        });
+    }
+
+    if (syncRotationToggle) {
+        syncRotationToggle.addEventListener('change', (e) => {
+            isRotationSyncEnabled = !!e.target.checked;
+            if (isDisplay2D && isDisplay3D) {
+                if (isRotationSyncEnabled) {
+                    has3DHeadingChangedSinceSplit = true;
+                    sync2DRotationFrom3D();
+                } else {
+                    has3DHeadingChangedSinceSplit = false;
+                    viewRotation2D = initialViewRotation2D;
+                }
+                if (!isRunning) redraw2D();
+            }
+        });
+    }
 
     fileInput.addEventListener('change', handleFileSelect);
     startStopButton.addEventListener('click', toggleSimulation);
@@ -256,18 +459,18 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     showPathsToggle.addEventListener('change', (e) => {
         showTurnPaths = e.target.checked;
-        if(currentViewMode === '2D' && !isRunning) redraw2D();
-        if(currentViewMode === '3D') update3DVisibility();
+        if(isDisplay2D && !isRunning) redraw2D();
+        if(isDisplay3D) update3DVisibility();
     });
     showPointMetersToggle.addEventListener('change', (e) => {
         showPointMeters = e.target.checked;
-        if(currentViewMode === '2D' && !isRunning) redraw2D();
-        if(currentViewMode === '3D') update3DVisibility();
+        if(isDisplay2D && !isRunning) redraw2D();
+        if(isDisplay3D) update3DVisibility();
     });
     showSectionMetersToggle.addEventListener('change', (e) => {
         showSectionMeters = e.target.checked;
-        if(currentViewMode === '2D' && !isRunning) redraw2D();
-        if(currentViewMode === '3D') update3DVisibility();
+        if(isDisplay2D && !isRunning) redraw2D();
+        if(isDisplay3D) update3DVisibility();
     });
 
     canvas2D.addEventListener('wheel', handleZoom2D);
@@ -275,6 +478,7 @@ document.addEventListener('DOMContentLoaded', () => {
     canvas2D.addEventListener('mousemove', handlePanMove2D);
     canvas2D.addEventListener('mouseup', handlePanEnd2D);
     canvas2D.addEventListener('mouseleave', handlePanEnd2D);
+    canvas2D.addEventListener('click', handle2DVehiclePick);
     
     // --- Layer Selector ---
     layerSelector.addEventListener('change', () => {
@@ -307,9 +511,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
 function setFlyoverMode(active) {
-        if (currentViewMode !== '3D') {
+        if (!isDisplay3D) {
             if (active) {
-                viewModeToggle.checked = true;
                 setViewMode('3D');
             } else {
                 return;
@@ -351,10 +554,10 @@ function setFlyoverMode(active) {
         flyoverController.update(dt, camera);
     }
 
-    function startChaseMode(vehicleId) {
+    function startChaseMode(vehicleId, options = {}) {
         if (!vehicleId) return;
-        if (currentViewMode !== '3D') {
-            viewModeToggle.checked = true;
+        const { force3D = true } = options;
+        if (force3D && !isDisplay3D) {
             setViewMode('3D');
         }
         if (isFlyoverActive) {
@@ -364,8 +567,10 @@ function setFlyoverMode(active) {
         isChaseActive = true;
         chaseVehicleId = vehicleId;
         chaseIsFirstFrame = true;
-        if (controls) controls.enabled = false;
-        if (camera) camera.up.set(0, 1, 0);
+        if (force3D || isDisplay3D) {
+            if (controls) controls.enabled = false;
+            if (camera) camera.up.set(0, 1, 0);
+        }
     }
 
     function stopChaseMode() {
@@ -417,7 +622,7 @@ function setFlyoverMode(active) {
     }
 
     function handle3DVehiclePick(e) {
-        if (currentViewMode !== '3D' || !camera || !renderer) return;
+        if (!isDisplay3D || !camera || !renderer) return;
 
         const rect = renderer.domElement.getBoundingClientRect();
         if (rect.width === 0 || rect.height === 0) return;
@@ -445,7 +650,7 @@ function setFlyoverMode(active) {
     resizeCanvas2D(); 
     createPegmanUI(); 
     setLanguage(currentLang);
-    setViewMode('2D'); 
+    applyDisplayState();
     startStopButton.disabled = true;
 
 
@@ -474,7 +679,7 @@ function setFlyoverMode(active) {
 
     function startPegmanDrag(e) {
         e.preventDefault();
-        if (currentViewMode !== '2D' || !networkData) return;
+        if (!isDisplay2D || !networkData) return;
 
         isDraggingPegman = true;
         currentHoveredLink = null;
@@ -647,7 +852,6 @@ function setFlyoverMode(active) {
 
 function activateStreetView(link, x, y) {
     // 強制切換到 3D 模式
-    viewModeToggle.checked = true;
     setViewMode('3D');
     
     // 等待一小段時間確保 3D 場景已更新
@@ -706,48 +910,25 @@ function activateStreetView(link, x, y) {
     // ===================================================================
     function setViewMode(mode) {
         currentViewMode = mode;
-        const pegman = document.getElementById('pegman-icon');
-        
         if (mode === '2D') {
-            canvas2D.style.display = 'block';
-            container3D.style.display = 'none';
-            if(pegman && networkData) pegman.style.display = 'block'; 
-            resizeCanvas2D();
-            redraw2D();
+            isDisplay2D = true;
+            isDisplay3D = false;
         } else {
-            canvas2D.style.display = 'none';
-            container3D.style.display = 'block';
-            if(pegman) pegman.style.display = 'none'; 
-            onWindowResize(); 
-            
-            // --- [修正開始] ---
-            // 切換到 3D 時，強制根據目前的開關狀態更新 3D 物件的可見性
-            update3DVisibility(); 
-            // --- [修正結束] ---
-
-            updateLayerVisibility();
-
-            // 確保 3D 場景立即更新
-            setTimeout(() => {
-                if (camera && controls && simulation) {
-                    // 如果已經有模擬，更新車輛位置
-                    update3DScene();
-                } else {
-                    // 否則渲染空白場景
-                    if (renderer && scene && camera) {
-                        renderer.render(scene, camera);
-                    }
-                }
-            }, 10);
+            isDisplay2D = false;
+            isDisplay3D = true;
         }
+        applyDisplayState();
     }
     // ===================================================================
     // 2D Rendering Logic (With Background Image)
     // ===================================================================
     function resizeCanvas2D() {
-        canvas2D.width = canvasContainer.clientWidth;
-        canvas2D.height = canvasContainer.clientHeight;
-        if (currentViewMode === '2D' && !isRunning) redraw2D();
+        const rect = canvas2D.getBoundingClientRect();
+        const w = Math.max(1, Math.floor(rect.width));
+        const h = Math.max(1, Math.floor(rect.height));
+        canvas2D.width = w;
+        canvas2D.height = h;
+        if (isDisplay2D && !isRunning) redraw2D();
     }
 
     function autoCenter2D(bounds) {
@@ -778,20 +959,249 @@ function activateStreetView(link, x, y) {
         panY = mouseY - worldY * scale;
         if (!isRunning) redraw2D();
     }
-    function handlePanStart2D(event) { event.preventDefault(); isPanning = true; panStart.x = event.clientX; panStart.y = event.clientY; canvas2D.style.cursor = 'grabbing'; }
-    function handlePanMove2D(event) { if (!isPanning) return; event.preventDefault(); const dx = event.clientX - panStart.x; const dy = event.clientY - panStart.y; panX += dx; panY += dy; panStart.x = event.clientX; panStart.y = event.clientY; if (!isRunning) redraw2D(); }
-    function handlePanEnd2D() { isPanning = false; canvas2D.style.cursor = 'grab'; }
+    function handlePanStart2D(event) {
+        event.preventDefault();
+        isPanning = true;
+        panWasDrag = false;
+        panStart.x = event.clientX;
+        panStart.y = event.clientY;
+        panDownPos.x = event.clientX;
+        panDownPos.y = event.clientY;
+        canvas2D.style.cursor = 'grabbing';
+    }
+
+    function handlePanMove2D(event) {
+        if (!isPanning) return;
+        event.preventDefault();
+        const dx = event.clientX - panStart.x;
+        const dy = event.clientY - panStart.y;
+        if (!panWasDrag) {
+            const ddx = event.clientX - panDownPos.x;
+            const ddy = event.clientY - panDownPos.y;
+            if ((ddx * ddx + ddy * ddy) > 9) panWasDrag = true;
+        }
+        panX += dx;
+        panY += dy;
+        panStart.x = event.clientX;
+        panStart.y = event.clientY;
+        if (!isRunning) redraw2D();
+    }
+
+    function handlePanEnd2D() {
+        isPanning = false;
+        canvas2D.style.cursor = 'grab';
+    }
 
     function redraw2D() {
-        if (currentViewMode !== '2D') return;
+        if (!isDisplay2D) return;
         ctx2D.clearRect(0, 0, canvas2D.width, canvas2D.height);
         ctx2D.save();
         ctx2D.translate(panX, panY);
         ctx2D.scale(scale, scale);
+
+        if (viewRotation2D !== 0 && networkCenter2D) {
+            ctx2D.translate(networkCenter2D.x, networkCenter2D.y);
+            ctx2D.rotate(viewRotation2D);
+            ctx2D.translate(-networkCenter2D.x, -networkCenter2D.y);
+        }
         
         if (simulation || networkData) {
             drawNetwork2D(networkData, simulation ? simulation.vehicles : null);
         }
+        ctx2D.restore();
+
+        drawChaseVehicleOverlay2D();
+        drawFlyoverOverlay2D();
+    }
+
+    function worldToScreen2D(x, y) {
+        let wx = x;
+        let wy = y;
+
+        if (viewRotation2D !== 0 && networkCenter2D) {
+            const cos = Math.cos(viewRotation2D);
+            const sin = Math.sin(viewRotation2D);
+            const dx = wx - networkCenter2D.x;
+            const dy = wy - networkCenter2D.y;
+            wx = dx * cos - dy * sin + networkCenter2D.x;
+            wy = dx * sin + dy * cos + networkCenter2D.y;
+        }
+
+        return {
+            x: panX + wx * scale,
+            y: panY + wy * scale,
+        };
+    }
+
+    function screenToWorld2D(screenX, screenY) {
+        let wx = (screenX - panX) / scale;
+        let wy = (screenY - panY) / scale;
+
+        if (viewRotation2D !== 0 && networkCenter2D) {
+            const cos = Math.cos(-viewRotation2D);
+            const sin = Math.sin(-viewRotation2D);
+            const dx = wx - networkCenter2D.x;
+            const dy = wy - networkCenter2D.y;
+            wx = dx * cos - dy * sin + networkCenter2D.x;
+            wy = dx * sin + dy * cos + networkCenter2D.y;
+        }
+
+        return { x: wx, y: wy };
+    }
+
+    function pickVehicle2D(worldX, worldY) {
+        if (!simulation || !simulation.vehicles) return null;
+
+        let best = null;
+        let bestDist2 = Infinity;
+        const extra = 1.0;
+
+        for (const v of simulation.vehicles) {
+            if (!v) continue;
+            const dx = worldX - v.x;
+            const dy = worldY - v.y;
+            const cos = Math.cos(-v.angle);
+            const sin = Math.sin(-v.angle);
+            const lx = dx * cos - dy * sin;
+            const ly = dx * sin + dy * cos;
+            const halfL = (v.length || 4) / 2 + extra;
+            const halfW = (v.width || 2) / 2 + extra;
+            if (Math.abs(lx) <= halfL && Math.abs(ly) <= halfW) {
+                const d2 = dx * dx + dy * dy;
+                if (d2 < bestDist2) {
+                    bestDist2 = d2;
+                    best = v;
+                }
+            }
+        }
+
+        return best ? best.id : null;
+    }
+
+    function handle2DVehiclePick(e) {
+        if (!isDisplay2D) return;
+        if (!simulation) return;
+        if (isDraggingPegman) return;
+        if (panWasDrag) {
+            panWasDrag = false;
+            return;
+        }
+
+        const rect = canvas2D.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return;
+        const screenX = e.clientX - rect.left;
+        const screenY = e.clientY - rect.top;
+        const world = screenToWorld2D(screenX, screenY);
+        const vehicleId = pickVehicle2D(world.x, world.y);
+        if (!vehicleId) return;
+
+        startChaseMode(vehicleId, { force3D: false });
+        if (!isRunning) redraw2D();
+    }
+
+    function drawChaseVehicleOverlay2D() {
+        if (!isDisplay2D) return;
+        if (!isChaseActive || !chaseVehicleId || !simulation) return;
+
+        const v = simulation.vehicles.find(vv => vv.id === chaseVehicleId);
+        if (!v) return;
+
+        const p = worldToScreen2D(v.x, v.y);
+
+        const speedKmh = Math.max(0, v.speed || 0) * 3.6;
+        const speedText = `${speedKmh.toFixed(1)} km/h`;
+
+        const anchorX = 12;
+        const anchorY = 12;
+        const pad = 4;
+
+        ctx2D.save();
+        ctx2D.lineWidth = 1;
+        ctx2D.strokeStyle = 'rgba(255, 0, 0, 0.9)';
+        ctx2D.beginPath();
+        ctx2D.moveTo(p.x, p.y);
+        ctx2D.lineTo(anchorX, anchorY);
+        ctx2D.stroke();
+
+        ctx2D.font = '12px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+        const metrics = ctx2D.measureText(speedText);
+        const boxW = Math.ceil(metrics.width + pad * 2);
+        const boxH = 12 + pad * 2;
+
+        ctx2D.fillStyle = 'rgba(255, 255, 255, 0.85)';
+        ctx2D.fillRect(anchorX, anchorY, boxW, boxH);
+        ctx2D.strokeStyle = 'rgba(255, 0, 0, 0.9)';
+        ctx2D.strokeRect(anchorX, anchorY, boxW, boxH);
+
+        ctx2D.fillStyle = 'rgba(255, 0, 0, 0.95)';
+        ctx2D.textAlign = 'left';
+        ctx2D.textBaseline = 'top';
+        ctx2D.fillText(speedText, anchorX + pad, anchorY + pad);
+        ctx2D.restore();
+    }
+
+    function drawFlyoverOverlay2D() {
+        if (!isDisplay2D) return;
+        if (!isFlyoverActive) return;
+        if (!camera) return;
+
+        const p = worldToScreen2D(camera.position.x, camera.position.z);
+        const dir = new THREE.Vector3();
+        camera.getWorldDirection(dir);
+
+        let dx = dir.x;
+        let dy = dir.z;
+        const len2 = dx * dx + dy * dy;
+        if (len2 < 1e-6) return;
+        const invLen = 1 / Math.sqrt(len2);
+        dx *= invLen;
+        dy *= invLen;
+
+        let angle = Math.atan2(dy, dx);
+        if (isDisplay2D && isDisplay3D && isRotationSyncEnabled && networkCenter2D && viewRotation2D !== 0) {
+            angle += viewRotation2D;
+        }
+
+        const radiusPx = 7;
+        const arrowLenPx = 18;
+        const arrowWidthPx = 9;
+        const baseDist = radiusPx + 2;
+
+        const tipX = p.x + Math.cos(angle) * arrowLenPx;
+        const tipY = p.y + Math.sin(angle) * arrowLenPx;
+        const baseX = p.x + Math.cos(angle) * baseDist;
+        const baseY = p.y + Math.sin(angle) * baseDist;
+        const perpX = -Math.sin(angle);
+        const perpY = Math.cos(angle);
+
+        const leftX = baseX + perpX * (arrowWidthPx / 2);
+        const leftY = baseY + perpY * (arrowWidthPx / 2);
+        const rightX = baseX - perpX * (arrowWidthPx / 2);
+        const rightY = baseY - perpY * (arrowWidthPx / 2);
+
+        ctx2D.save();
+        ctx2D.lineWidth = 2;
+        ctx2D.strokeStyle = 'rgba(0, 0, 0, 0.75)';
+        ctx2D.fillStyle = 'rgba(255, 215, 0, 0.95)';
+
+        ctx2D.beginPath();
+        ctx2D.arc(p.x, p.y, radiusPx, 0, Math.PI * 2);
+        ctx2D.fill();
+        ctx2D.stroke();
+
+        ctx2D.beginPath();
+        ctx2D.moveTo(p.x, p.y);
+        ctx2D.lineTo(baseX, baseY);
+        ctx2D.stroke();
+
+        ctx2D.beginPath();
+        ctx2D.moveTo(tipX, tipY);
+        ctx2D.lineTo(leftX, leftY);
+        ctx2D.lineTo(rightX, rightY);
+        ctx2D.closePath();
+        ctx2D.fill();
+        ctx2D.stroke();
+
         ctx2D.restore();
     }
 
@@ -908,7 +1318,10 @@ function activateStreetView(link, x, y) {
 
     function drawVehicle2D(v) {
         ctx2D.save(); ctx2D.translate(v.x, v.y); ctx2D.rotate(v.angle);
-        ctx2D.fillStyle = 'rgba(10, 238, 254, 1.0)'; ctx2D.strokeStyle = '#FFFFFF'; ctx2D.lineWidth = 0.5 / scale;
+        const isChaseVehicle = isChaseActive && chaseVehicleId && v.id === chaseVehicleId;
+        ctx2D.fillStyle = isChaseVehicle ? 'rgba(255, 0, 0, 1.0)' : 'rgba(10, 238, 254, 1.0)';
+        ctx2D.strokeStyle = '#FFFFFF';
+        ctx2D.lineWidth = (isChaseVehicle ? 1.2 : 0.5) / scale;
         ctx2D.beginPath(); ctx2D.rect(-v.length / 2, -v.width / 2, v.length, v.width);
         ctx2D.fill(); ctx2D.stroke(); ctx2D.restore();
     }
@@ -945,6 +1358,14 @@ function activateStreetView(link, x, y) {
         controls.dampingFactor = 0.05;
         controls.screenSpacePanning = true; 
         controls.keyPanSpeed = 20.0; 
+
+        controls.addEventListener('change', () => {
+            if (!isDisplay2D || !isDisplay3D) return;
+            if (!isRotationSyncEnabled) return;
+            has3DHeadingChangedSinceSplit = true;
+            sync2DRotationFrom3D();
+            if (!isRunning) redraw2D();
+        });
 
         // 3. Limit rotation (cannot go below ground)
         controls.maxPolarAngle = Math.PI / 2 - 0.05; // Slightly above horizon
@@ -991,9 +1412,11 @@ function activateStreetView(link, x, y) {
         resizeCanvas2D();
         
         if (camera && renderer) {
-            camera.aspect = canvasContainer.clientWidth / canvasContainer.clientHeight;
+            const w = Math.max(1, container3D.clientWidth);
+            const h = Math.max(1, container3D.clientHeight);
+            camera.aspect = w / h;
             camera.updateProjectionMatrix();
-            renderer.setSize(canvasContainer.clientWidth, canvasContainer.clientHeight);
+            renderer.setSize(w, h);
         }
     }
 
@@ -2265,6 +2688,12 @@ function update3DScene() {
                 simulation = new Simulation(networkData);
                 
                 autoCenter2D(networkData.bounds);
+                networkCenter2D = {
+                    x: (networkData.bounds.minX + networkData.bounds.maxX) / 2,
+                    y: (networkData.bounds.minY + networkData.bounds.maxY) / 2
+                };
+                initialViewRotation2D = 0;
+                viewRotation2D = initialViewRotation2D;
                 buildNetwork3D(networkData);              
                 // [新增] 建立底圖
                 buildBasemap3D(networkData);                 
@@ -2281,12 +2710,12 @@ function update3DScene() {
                 simTimeSpan.textContent = "0.00";
                 updateButtonText();
                 
-                if(currentViewMode === '2D') redraw2D();
-                else update3DScene();
+                if(isDisplay2D) redraw2D();
+                if(isDisplay3D) update3DScene();
                 
                 // Show Pegman if in 2D mode
                 const pegman = document.getElementById('pegman-icon');
-                if(pegman && currentViewMode === '2D') pegman.style.display = 'block';
+                if(pegman) pegman.style.display = (isDisplay2D && !isDisplay3D) ? 'block' : 'none';
 
                 updateStatistics(0);
                 lastLoggedIntegerTime = 0;
@@ -2345,7 +2774,7 @@ function update3DScene() {
     function simulationLoop(timestamp) {
         animationFrameId = requestAnimationFrame(simulationLoop);
         
-        if(currentViewMode === '3D') {
+        if(isDisplay3D) {
             // [新增] 如果開啟巡航，執行飛行邏輯
             if (isFlyoverActive) {
                 updateFlyoverCamera();
@@ -2370,11 +2799,23 @@ function update3DScene() {
         }
         
         lastTimestamp = timestamp;
-        
-        if(currentViewMode === '2D') {
-            if(isRunning) redraw2D(); 
-        } else {
-            update3DScene(); 
+
+        if (isDisplay2D && isDisplay3D && isRotationSyncEnabled) {
+            if (!has3DHeadingChangedSinceSplit) {
+                const az = get3DAzimuth();
+                const d = Math.abs(angleDeltaRad(az, splitStartAzimuth));
+                if (d > 0.02) {
+                    has3DHeadingChangedSinceSplit = true;
+                }
+            }
+            sync2DRotationFrom3D();
+        }
+
+        if (isDisplay2D) {
+            if (isRunning || (isDisplay3D && isRotationSyncEnabled)) redraw2D();
+        }
+        if (isDisplay3D) {
+            update3DScene();
         }
     }
 
