@@ -38,12 +38,26 @@
         </div>
         <div class="simulation-controls">
             <button id="startStopButton">請先載入檔案</button>
+            <div id="displayModeToggle" class="multi-toggle" role="group" aria-label="Display">
+                <button type="button" id="displayStatsBtn" class="multi-toggle-btn is-active" aria-pressed="true" data-mode="stats" data-i18n="displayStats">統計</button>
+                <button type="button" id="display2DBtn" class="multi-toggle-btn is-active" aria-pressed="true" data-mode="2d" data-i18n="display2D">2D</button>
+                <button type="button" id="display3DBtn" class="multi-toggle-btn" aria-pressed="false" data-mode="3d" data-i18n="display3D">3D</button>
+            </div>
+
+            <div id="syncRotationContainer" class="toggle-container" style="display:none;">
+                <label class="switch-label" for="syncRotationToggle" data-i18n="syncRotateLabel">2D 同步3D旋轉:</label>
+                <label class="switch">
+                    <input type="checkbox" id="syncRotationToggle" checked>
+                    <span class="slider round"></span>
+                </label>
+            </div>
             
             <div class="slider-container">
                 <label for="speedSlider" data-i18n="simSpeedLabel">模擬速度:</label>
                 <input type="range" id="speedSlider" min="1" max="50" value="3">
                 <span id="speedValue">3x</span>
             </div>
+
             <div class="time-display">
                 <span data-i18n="simTimeLabel">模擬時間:</span> <span id="simulationTime">0.00</span>s
             </div>
@@ -53,16 +67,6 @@
                 <label class="switch-label" for="showPathsToggle" data-i18n="trafficLightToggle">路口燈號:</label>
                 <label class="switch">
                     <input type="checkbox" id="showPathsToggle">
-                    <span class="slider round"></span>
-                </label>
-            </div>
-
-            <!-- 新增位置：視角模式 (改為開關樣式) -->
-            <div class="toggle-container">
-                <label class="switch-label" for="viewModeToggle" data-i18n="viewModeLabel">3D 模式:</label>
-                <label class="switch">
-                    <!-- 預設不勾選 (2D)，勾選為 3D -->
-                    <input type="checkbox" id="viewModeToggle">
                     <span class="slider round"></span>
                 </label>
             </div>
@@ -156,4 +160,7 @@
         window.MANDATORY_LC_MAX_START_PER_SHIFT = 400;
     </script>
     <script>
-        window.MANDATORY_LC_SHORT_LINK_THRESHOLD = 15
+        window.MANDATORY_LC_SHORT_LINK_THRESHOLD = 150;
+    </script>
+</body>
+</html>
