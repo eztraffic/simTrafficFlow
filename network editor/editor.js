@@ -280,24 +280,35 @@ document.addEventListener('DOMContentLoaded', () => {
             konvaObj.stroke('blue');
             konvaObj.strokeWidth(4);
         } else if (obj.type === 'ParkingLot') {
-            konvaObj = obj.konvaGroup;
-            const tr = new Konva.Transformer({
-                nodes: [konvaObj],
-                keepRatio: false,
-                borderStroke: 'blue',
-                anchorStroke: 'blue',
-                anchorFill: 'white',
-                rotationSnaps: [0, 90, 180, 270],
-            });
-            layer.add(tr);
-            tr.moveToTop();
-            obj.konvaTransformer = tr;
+                konvaObj = obj.konvaGroup;
+                const tr = new Konva.Transformer({
+                    nodes: [konvaObj],
+                    keepRatio: false,
+                    borderStroke: 'blue',
+                    anchorStroke: 'blue',
+                    anchorFill: 'white',
+                    rotationSnaps: [0, 90, 180, 270],
+                    shouldOverdrawWholeArea: true,
+                    anchorSize: 8 // 變形框錨點大小
+                });
+                layer.add(tr);
+                tr.moveToTop();
+                obj.konvaTransformer = tr;
 
-            konvaObj.on('transformend', () => {
-                // 變形結束後可以做一些事情，但對於多邊形群組，縮放主要影響 scale
-                updatePropertiesPanel(obj);
-            });
-        }
+                // 繪製控制點
+                drawParkingLotHandles(obj); 
+
+                // *** 新增：當 Group 本身被拖曳或變形時，更新控制點位置 ***
+                konvaObj.on('dragmove transform', () => {
+                    updateParkingLotHandlePositions(obj);
+                });
+
+                konvaObj.on('transformend dragend', () => {
+                    updatePropertiesPanel(obj);
+                    // 結束時重繪以確保精確
+                    drawParkingLotHandles(obj); 
+                });
+            }
 
         // 套用視覺陰影效果到選取的 Konva 物件
         if (konvaObj && obj.type !== 'Background' && obj.type !== 'Overpass' && obj.type !== 'ParkingLot') {
@@ -360,6 +371,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     obj.konvaTransformer.destroy();
                     obj.konvaTransformer = null;
                 }
+                // 移除事件監聽，避免記憶體洩漏或錯誤觸發
+                obj.konvaGroup.off('dragmove transform');
+                obj.konvaGroup.off('transformend dragend');
+
+                destroyParkingLotHandles(obj); // 清除控制點
                 konvaObj = obj.konvaGroup;
             }
 
@@ -1538,6 +1554,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (activeTool !== 'select') return;
 
+            // --- 在這裡插入你的檢查代碼 ---
+            if (e.target.name() === 'parking-vertex-handle') {
+                return;
+            }
+            // ---------------------------
+
             if (e.target.name() === 'measurement-handle') {
                 return;
             }
@@ -2383,6 +2405,7 @@ document.addEventListener('DOMContentLoaded', () => {
             name: `Parking Lot ${idCounter}`,
             carCapacity: 0,
             motoCapacity: 0,
+            konvaHandles: [], // <--- 新增初始化空陣列
             konvaGroup: new Konva.Group({
                 id, draggable: true, name: 'parking-lot-group'
             })
@@ -2435,6 +2458,18 @@ document.addEventListener('DOMContentLoaded', () => {
         return parkingLot;
     }
 
+    // --- 新增：座標轉換輔助函數 ---
+    function getLocalPoint(group, absPoint) {
+        const transform = group.getAbsoluteTransform().copy();
+        transform.invert();
+        return transform.point(absPoint);
+    }
+
+    function getAbsolutePoint(group, localPoint) {
+        const transform = group.getAbsoluteTransform();
+        return transform.point(localPoint);
+    }
+
     function deleteParkingLot(id) {
         const pl = network.parkingLots[id];
         if (!pl) return;
@@ -2444,6 +2479,98 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         pl.konvaGroup.destroy();
         delete network.parkingLots[id];
+    }
+
+
+
+    // --- 修改：繪製停車場頂點控制點 (改為放在 Layer 上，確保可點擊) ---
+    function drawParkingLotHandles(parkingLot) {
+        destroyParkingLotHandles(parkingLot); // 先清除舊的
+
+        const group = parkingLot.konvaGroup;
+        const polygon = group.findOne('.parking-lot-shape');
+        if (!polygon) return;
+
+        const points = polygon.points(); // 這是相對於群組的座標
+        parkingLot.konvaHandles = [];
+
+        // 縮放比例 (用於保持控制點視覺大小一致)
+        const scale = 1 / stage.scaleX();
+
+        for (let i = 0; i < points.length; i += 2) {
+            const localX = points[i];
+            const localY = points[i + 1];
+
+            // 算出絕對座標，將點放在 Layer 上
+            const absPos = getAbsolutePoint(group, {x: localX, y: localY});
+
+            const handle = new Konva.Circle({
+                x: absPos.x,
+                y: absPos.y,
+                radius: 8, // 半徑設大一點，確保比變形框的錨點好點選
+                fill: '#ff00ff', // 紫色
+                stroke: 'white',
+                strokeWidth: 2,
+                draggable: true,
+                name: 'parking-vertex-handle',
+                scaleX: scale,
+                scaleY: scale
+            });
+
+            // 儲存對應的多邊形頂點索引
+            handle.setAttr('vertexIndex', i);
+
+            handle.on('dragmove', (e) => {
+                // 將 Handle 的新絕對座標轉回 Group 的相對座標
+                const node = e.target;
+                const newLocal = getLocalPoint(group, {x: node.x(), y: node.y()});
+                
+                const currentPoints = polygon.points();
+                const idx = node.getAttr('vertexIndex');
+                currentPoints[idx] = newLocal.x;
+                currentPoints[idx + 1] = newLocal.y;
+                
+                polygon.points(currentPoints);
+                
+                // 強制更新 Transformer (因為邊界變了)
+                if (parkingLot.konvaTransformer) {
+                    parkingLot.konvaTransformer.forceUpdate();
+                }
+            });
+
+            // 加到 Layer 而不是 Group，確保層級最高
+            layer.add(handle);
+            parkingLot.konvaHandles.push(handle);
+        }
+        
+        // 確保控制點在最上層 (包含蓋過 Transformer)
+        parkingLot.konvaHandles.forEach(h => h.moveToTop());
+        layer.batchDraw();
+    }
+
+    // --- 新增：更新控制點位置 (用於群組移動時) ---
+    function updateParkingLotHandlePositions(parkingLot) {
+        if (!parkingLot.konvaHandles) return;
+        const group = parkingLot.konvaGroup;
+        const polygon = group.findOne('.parking-lot-shape');
+        const points = polygon.points();
+        
+        parkingLot.konvaHandles.forEach(handle => {
+            const idx = handle.getAttr('vertexIndex');
+            const localX = points[idx];
+            const localY = points[idx+1];
+            // 重新計算絕對位置
+            const absPos = getAbsolutePoint(group, {x: localX, y: localY});
+            handle.position(absPos);
+        });
+    }
+
+    // --- 新增：移除停車場頂點控制點 ---
+    function destroyParkingLotHandles(parkingLot) {
+        if (parkingLot && parkingLot.konvaHandles) {
+            parkingLot.konvaHandles.forEach(handle => handle.destroy());
+            parkingLot.konvaHandles = [];
+        }
     }
 
     // --- END OF CORRECTED handleStageClick FUNCTION ---
@@ -5115,557 +5242,599 @@ document.addEventListener('DOMContentLoaded', () => {
         updatePropertiesPanel(null);
     }
     // 完整替換此函數
-    function createAndLoadNetworkFromXML(xmlString) {
-        stage.position({ x: 0, y: 0 });
-        stage.scale({ x: 1, y: 1 });
-        resetWorkspace();
+function createAndLoadNetworkFromXML(xmlString) {
+    stage.position({ x: 0, y: 0 });
+    stage.scale({ x: 1, y: 1 });
+    resetWorkspace();
 
-        const parser = new DOMParser();
-        const xmlDoc = parser.parseFromString(xmlString, "application/xml");
+    const parser = new DOMParser();
+    const xmlDoc = parser.parseFromString(xmlString, "application/xml");
 
-        if (xmlDoc.getElementsByTagName("parsererror").length > 0) {
-            throw new Error("Invalid XML format");
+    if (xmlDoc.getElementsByTagName("parsererror").length > 0) {
+        throw new Error("Invalid XML format");
+    }
+
+    // 輔助：解析 ID 並更新全域計數器，防止 ID 衝突
+    const syncIdCounter = (idStr) => {
+        if (!idStr) return;
+        const parts = idStr.split('_');
+        const num = parseInt(parts[parts.length - 1], 10);
+        if (!isNaN(num) && num > idCounter) {
+            idCounter = num;
         }
+    };
 
-        const xmlLinkIdMap = new Map();
-        const xmlNodeIdMap = new Map();
-        const xmlConnIdMap = new Map();
-        const xmlTFLGroupMap = new Map();
+    const xmlLinkIdMap = new Map();
+    const xmlNodeIdMap = new Map();
+    const xmlConnIdMap = new Map();
+    const xmlTFLGroupMap = new Map();
 
-        const linkElements = xmlDoc.querySelectorAll("RoadNetwork > Links > Link");
-        linkElements.forEach(linkEl => {
-            const xmlId = linkEl.querySelector("id").textContent;
-            const waypoints = [];
-            linkEl.querySelectorAll("Waypoints > Waypoint").forEach(wpEl => {
+    // --- 1. Links ---
+    const linkElements = xmlDoc.querySelectorAll("RoadNetwork > Links > Link");
+    linkElements.forEach(linkEl => {
+        const xmlId = getChildValue(linkEl, "id");
+        syncIdCounter(xmlId);
+
+        const waypoints = [];
+        const wpContainer = getChildrenByLocalName(linkEl, "Waypoints")[0];
+        if (wpContainer) {
+            getChildrenByLocalName(wpContainer, "Waypoint").forEach(wpEl => {
                 waypoints.push({
-                    x: parseFloat(wpEl.querySelector("x").textContent),
-                    y: parseFloat(wpEl.querySelector("y").textContent) * C_SYSTEM_Y_INVERT
+                    x: parseFloat(getChildValue(wpEl, "x")),
+                    y: parseFloat(getChildValue(wpEl, "y")) * C_SYSTEM_Y_INVERT
                 });
             });
-            const firstLanesElement = linkEl.querySelector("Lanes");
-            const laneWidths = [];
-            if (firstLanesElement) {
-                firstLanesElement.querySelectorAll("Lane").forEach(laneEl => {
-                    const widthEl = laneEl.querySelector("width");
-                    if (widthEl) {
-                        laneWidths.push(parseFloat(widthEl.textContent));
-                    } else {
-                        laneWidths.push(LANE_WIDTH);
-                    }
-                });
-            }
-            if (laneWidths.length === 0) {
-                laneWidths.push(LANE_WIDTH, LANE_WIDTH);
-            }
-            const newLink = createLink(waypoints, laneWidths);
-            xmlLinkIdMap.set(xmlId, newLink.id);
-            const roadSignsContainer = linkEl.querySelector("RoadSigns");
-            if (roadSignsContainer) {
-                roadSignsContainer.childNodes.forEach(signNode => {
-                    if (signNode.nodeType !== 1) return;
-                    const position = parseFloat(signNode.querySelector("position").textContent);
-                    const newSign = createRoadSign(newLink, position);
-                    if (signNode.tagName === 'tm:SpeedLimitSign') {
-                        const speedLimitMps = parseFloat(signNode.querySelector("speedLimit").textContent);
-                        newSign.signType = 'start';
-                        newSign.speedLimit = speedLimitMps * 3.6;
-                    } else if (signNode.tagName === 'tm:NoSpeedLimitSign') {
-                        newSign.signType = 'end';
-                    }
-                    drawRoadSign(newSign);
-                });
-            }
-        });
+        }
 
-        const nodeElements = xmlDoc.querySelectorAll("RoadNetwork > Nodes > *");
-        nodeElements.forEach(nodeEl => {
-            const xmlId = nodeEl.querySelector("id").textContent;
-            if (nodeEl.tagName === 'tm:OriginNode') {
-                const outgoingXmlLinkId = nodeEl.querySelector("outgoingLinkId").textContent;
-                const internalLinkId = xmlLinkIdMap.get(outgoingXmlLinkId);
+        const laneWidths = [];
+        const lanesContainer = getChildrenByLocalName(linkEl, "Lanes")[0];
+        if (lanesContainer) {
+            getChildrenByLocalName(lanesContainer, "Lane").forEach(laneEl => {
+                const w = getChildValue(laneEl, "width");
+                laneWidths.push(w ? parseFloat(w) : LANE_WIDTH);
+            });
+        }
+        if (laneWidths.length === 0) laneWidths.push(LANE_WIDTH, LANE_WIDTH);
+
+        const newLink = createLink(waypoints, laneWidths);
+        xmlLinkIdMap.set(xmlId, newLink.id);
+
+        // RoadSigns
+        const signsContainer = getChildrenByLocalName(linkEl, "RoadSigns")[0];
+        if (signsContainer) {
+            Array.from(signsContainer.children).forEach(signNode => {
+                const pos = parseFloat(getChildValue(signNode, "position"));
+                const newSign = createRoadSign(newLink, pos);
+                syncIdCounter(newSign.id);
+
+                const tagName = signNode.localName || signNode.nodeName.split(':').pop();
+                if (tagName === 'SpeedLimitSign') {
+                    const speed = parseFloat(getChildValue(signNode, "speedLimit"));
+                    newSign.signType = 'start';
+                    newSign.speedLimit = speed * 3.6;
+                } else if (tagName === 'NoSpeedLimitSign') {
+                    newSign.signType = 'end';
+                }
+                drawRoadSign(newSign);
+            });
+        }
+    });
+
+    // --- 2. Nodes ---
+    const nodesContainer = xmlDoc.querySelector("RoadNetwork > Nodes");
+    if (nodesContainer) {
+        Array.from(nodesContainer.children).forEach(nodeEl => {
+            const xmlId = getChildValue(nodeEl, "id");
+            const tagName = nodeEl.localName || nodeEl.nodeName.split(':').pop();
+
+            if (tagName === 'OriginNode') {
+                const outLinkXmlId = getChildValue(nodeEl, "outgoingLinkId");
+                const internalLinkId = xmlLinkIdMap.get(outLinkXmlId);
                 const link = network.links[internalLinkId];
                 if (link) {
+                    // *** 修正：根據 Link 長度計算 Origin 位置 ***
                     const linkLength = getPolylineLength(link.waypoints);
                     const originPosition = Math.min(5, linkLength * 0.1);
+
                     const origin = createOrigin(link, originPosition);
+                    syncIdCounter(origin.id);
                     xmlNodeIdMap.set(xmlId, origin.id);
                 }
-            } else if (nodeEl.tagName === 'tm:DestinationNode') {
-                const incomingXmlLinkId = nodeEl.querySelector("incomingLinkId").textContent;
-                const internalLinkId = xmlLinkIdMap.get(incomingXmlLinkId);
+            } else if (tagName === 'DestinationNode') {
+                const inLinkXmlId = getChildValue(nodeEl, "incomingLinkId");
+                const internalLinkId = xmlLinkIdMap.get(inLinkXmlId);
                 const link = network.links[internalLinkId];
                 if (link) {
+                    // *** 修正：根據 Link 長度計算 Destination 位置 (確保在末端) ***
                     const linkLength = getPolylineLength(link.waypoints);
                     const destPosition = Math.max(linkLength - 5, linkLength * 0.9);
+
                     const dest = createDestination(link, destPosition);
+                    syncIdCounter(dest.id);
                     xmlNodeIdMap.set(xmlId, dest.id);
                 }
-            } else if (nodeEl.tagName === 'tm:RegularNode') {
+            } else if (tagName === 'RegularNode') {
                 xmlNodeIdMap.set(xmlId, null);
-            }
-        });
-
-        xmlDoc.querySelectorAll("RoadNetwork > Nodes > RegularNode").forEach(nodeEl => {
-            const xmlNodeId = nodeEl.querySelector("id").textContent;
-            const turnTRGroupsEl = nodeEl.querySelector("TurnTRGroups");
-            if (turnTRGroupsEl) {
-                const groupMapForNode = new Map();
-                turnTRGroupsEl.querySelectorAll("TurnTRGroup").forEach(groupEl => {
-                    const numericGroupId = groupEl.querySelector("id").textContent;
-                    const groupName = groupEl.querySelector("name").textContent;
-                    const connXmlIds = Array.from(groupEl.querySelectorAll("TransitionRules > TransitionRule > transitionRuleId"))
-                        .map(el => el.textContent);
-                    groupMapForNode.set(numericGroupId, { name: groupName, connXmlIds });
-                });
-                xmlTFLGroupMap.set(xmlNodeId, groupMapForNode);
-            }
-        });
-
-        const ruleElements = xmlDoc.querySelectorAll("RegularNode > TransitionRules > TransitionRule");
-        ruleElements.forEach(ruleEl => {
-            const sourceXmlLinkId = ruleEl.querySelector("sourceLinkId").textContent;
-            const destXmlLinkId = ruleEl.querySelector("destinationLinkId").textContent;
-            const sourceLaneIndex = parseInt(ruleEl.querySelector("sourceLaneIndex").textContent, 10);
-            const destLaneIndex = parseInt(ruleEl.querySelector("destinationLaneIndex").textContent, 10);
-            const sourceLink = network.links[xmlLinkIdMap.get(sourceXmlLinkId)];
-            const destLink = network.links[xmlLinkIdMap.get(destXmlLinkId)];
-            if (sourceLink && destLink) {
-                const sourceMeta = { linkId: sourceLink.id, laneIndex: sourceLaneIndex };
-                const destMeta = { linkId: destLink.id, laneIndex: destLaneIndex };
-                const newConn = handleConnection(sourceMeta, destMeta);
-                if (newConn) {
-                    const xmlConnId = ruleEl.querySelector("id").textContent;
-                    xmlConnIdMap.set(xmlConnId, newConn.id);
-                    const xmlRegularNodeId = ruleEl.closest("RegularNode").querySelector("id").textContent;
-                    if (xmlNodeIdMap.get(xmlRegularNodeId) === null) {
-                        xmlNodeIdMap.set(xmlRegularNodeId, newConn.nodeId);
-                    } else {
-                        newConn.nodeId = xmlNodeIdMap.get(xmlRegularNodeId);
-                    }
-                    if (ruleEl.querySelector("BezierCurveGeometry")) {
-                        const points = [];
-                        ruleEl.querySelectorAll("BezierCurveGeometry Point").forEach(pEl => {
-                            points.push({
-                                x: parseFloat(pEl.querySelector("x").textContent),
-                                y: parseFloat(pEl.querySelector("y").textContent) * C_SYSTEM_Y_INVERT
+                
+                const trGroupsEl = getChildrenByLocalName(nodeEl, "TurnTRGroups")[0];
+                if (trGroupsEl) {
+                    const groupMap = new Map();
+                    getChildrenByLocalName(trGroupsEl, "TurnTRGroup").forEach(gEl => {
+                        const gId = getChildValue(gEl, "id");
+                        const gName = getChildValue(gEl, "name");
+                        const rulesEl = getChildrenByLocalName(gEl, "TransitionRules")[0];
+                        const connIds = [];
+                        if (rulesEl) {
+                            getChildrenByLocalName(rulesEl, "TransitionRule").forEach(trEl => {
+                                connIds.push(getChildValue(trEl, "transitionRuleId"));
                             });
-                        });
-                        if (points.length === 4) {
-                            newConn.bezierPoints = [points[0], points[3]];
-                            newConn.konvaBezier.points(newConn.bezierPoints.flatMap(p => [p.x, p.y]));
+                        }
+                        groupMap.set(gId, { name: gName, connXmlIds: connIds });
+                    });
+                    xmlTFLGroupMap.set(xmlId, groupMap);
+                }
+            }
+        });
+    }
+
+    // --- 3. Connections ---
+    if (nodesContainer) {
+        getChildrenByLocalName(nodesContainer, "RegularNode").forEach(nodeEl => {
+            const rulesContainer = getChildrenByLocalName(nodeEl, "TransitionRules")[0];
+            const xmlRegNodeId = getChildValue(nodeEl, "id");
+            
+            if (rulesContainer) {
+                getChildrenByLocalName(rulesContainer, "TransitionRule").forEach(ruleEl => {
+                    const srcXmlId = getChildValue(ruleEl, "sourceLinkId");
+                    const dstXmlId = getChildValue(ruleEl, "destinationLinkId");
+                    const srcLane = parseInt(getChildValue(ruleEl, "sourceLaneIndex"), 10);
+                    const dstLane = parseInt(getChildValue(ruleEl, "destinationLaneIndex"), 10);
+                    
+                    const srcLink = network.links[xmlLinkIdMap.get(srcXmlId)];
+                    const dstLink = network.links[xmlLinkIdMap.get(dstXmlId)];
+
+                    if (srcLink && dstLink) {
+                        const newConn = handleConnection(
+                            { linkId: srcLink.id, laneIndex: srcLane, portType: 'end' },
+                            { linkId: dstLink.id, laneIndex: dstLane, portType: 'start' }
+                        );
+
+                        if (newConn) {
+                            const xmlConnId = getChildValue(ruleEl, "id");
+                            xmlConnIdMap.set(xmlConnId, newConn.id);
+                            syncIdCounter(newConn.id);
+
+                            if (xmlNodeIdMap.get(xmlRegNodeId) === null) {
+                                xmlNodeIdMap.set(xmlRegNodeId, newConn.nodeId);
+                                syncIdCounter(newConn.nodeId);
+                            } else {
+                                newConn.nodeId = xmlNodeIdMap.get(xmlRegNodeId);
+                            }
+
+                            const geom = getChildrenByLocalName(ruleEl, "BezierCurveGeometry")[0];
+                            if (geom) {
+                                const ptsContainer = getChildrenByLocalName(geom, "ReferencePoints")[0] || getChildrenByLocalName(geom, "Points")[0];
+                                if (ptsContainer) {
+                                    const points = [];
+                                    getChildrenByLocalName(ptsContainer, "Point").forEach(pEl => {
+                                        points.push({
+                                            x: parseFloat(getChildValue(pEl, "x")),
+                                            y: parseFloat(getChildValue(pEl, "y")) * C_SYSTEM_Y_INVERT
+                                        });
+                                    });
+                                    if (points.length >= 2) {
+                                        newConn.bezierPoints = [points[0], points[points.length-1]];
+                                        newConn.konvaBezier.points(newConn.bezierPoints.flatMap(p=>[p.x, p.y]));
+                                    }
+                                }
+                            }
                         }
                     }
-                }
+                });
             }
         });
-
-        const groupsToRecreate = new Map();
-        ruleElements.forEach(ruleEl => {
-            const groupIdEl = ruleEl.querySelector("EditorGroupId");
-            if (groupIdEl) {
-                const groupId = groupIdEl.textContent;
-                const xmlConnId = ruleEl.querySelector("id").textContent;
-                const internalConnId = xmlConnIdMap.get(xmlConnId);
-                const connection = network.connections[internalConnId];
-                if (connection) {
-                    if (!groupsToRecreate.has(groupId)) {
-                        groupsToRecreate.set(groupId, []);
+    }
+    
+    // --- 4. Connection Groups ---
+    const groupsToRecreate = new Map();
+    if (nodesContainer) {
+         getChildrenByLocalName(nodesContainer, "RegularNode").forEach(nodeEl => {
+            const rulesContainer = getChildrenByLocalName(nodeEl, "TransitionRules")[0];
+            if (rulesContainer) {
+                getChildrenByLocalName(rulesContainer, "TransitionRule").forEach(ruleEl => {
+                    const groupIdEl = getChildrenByLocalName(ruleEl, "EditorGroupId")[0];
+                    if (groupIdEl) {
+                        const groupId = groupIdEl.textContent;
+                        const xmlConnId = getChildValue(ruleEl, "id");
+                        const internalConnId = xmlConnIdMap.get(xmlConnId);
+                        const connection = network.connections[internalConnId];
+                        if (connection) {
+                            if (!groupsToRecreate.has(groupId)) {
+                                groupsToRecreate.set(groupId, []);
+                            }
+                            groupsToRecreate.get(groupId).push(connection);
+                        }
                     }
-                    groupsToRecreate.get(groupId).push(connection);
+                });
+            }
+         });
+    }
+
+    groupsToRecreate.forEach((connectionsInGroup) => {
+        if (connectionsInGroup.length === 0) return;
+        const firstConn = connectionsInGroup[0];
+        const sourceLink = network.links[firstConn.sourceLinkId];
+        const destLink = network.links[firstConn.destLinkId];
+        const nodeId = firstConn.nodeId;
+        if (!sourceLink || !destLink) return;
+        const p1 = sourceLink.waypoints[sourceLink.waypoints.length - 1];
+        const p4 = destLink.waypoints[0];
+
+        const groupLine = new Konva.Line({
+            points: [p1.x, p1.y, p4.x, p4.y],
+            stroke: 'darkgreen',
+            strokeWidth: 2,
+            name: 'group-connection-visual',
+            listening: true,
+            hitStrokeWidth: 20
+        });
+        const groupMeta = {
+            type: 'ConnectionGroup',
+            connectionIds: connectionsInGroup.map(c => c.id),
+            nodeId: nodeId,
+            sourceLinkId: sourceLink.id,
+            destLinkId: destLink.id
+        };
+        groupLine.setAttr('meta', groupMeta);
+        layer.add(groupLine);
+
+        connectionsInGroup.forEach(conn => {
+            conn.konvaBezier.visible(false);
+        });
+    });
+
+    // --- 5. Parking Lots & Gates ---
+    // 使用 getElementsByTagName 兼容有無 tm: 的情況
+    const plContainer = xmlDoc.getElementsByTagName("ParkingLots")[0] || xmlDoc.getElementsByTagName("tm:ParkingLots")[0];
+    if (plContainer) {
+        getChildrenByLocalName(plContainer, "ParkingLot").forEach(plEl => {
+            const id = getChildValue(plEl, "id");
+            const name = getChildValue(plEl, "name");
+            const carCap = parseInt(getChildValue(plEl, "carCapacity") || 0, 10);
+            const motoCap = parseInt(getChildValue(plEl, "motoCapacity") || 0, 10);
+
+            const points = [];
+            const boundEl = getChildrenByLocalName(plEl, "Boundary")[0];
+            if (boundEl) {
+                getChildrenByLocalName(boundEl, "Point").forEach(pEl => {
+                    points.push(parseFloat(getChildValue(pEl, "x")));
+                    points.push(parseFloat(getChildValue(pEl, "y")) * C_SYSTEM_Y_INVERT);
+                });
+            }
+
+            if (points.length >= 6) {
+                const newPl = createParkingLot(points, false);
+                newPl.name = name;
+                newPl.carCapacity = carCap;
+                newPl.motoCapacity = motoCap;
+                syncIdCounter(newPl.id);
+
+                // Nested Parking Gates
+                const gatesContainer = getChildrenByLocalName(plEl, "ParkingGates")[0];
+                if (gatesContainer) {
+                    const gateNodes = getChildrenByLocalName(gatesContainer, "ParkingGate");
+                    gateNodes.forEach(gateEl => {
+                        const gId = getChildValue(gateEl, "id");
+                        const gType = getChildValue(gateEl, "gateType");
+                        const geoEl = getChildrenByLocalName(gateEl, "Geometry")[0];
+                        
+                        if (geoEl) {
+                            const gx = parseFloat(getChildValue(geoEl, "x"));
+                            const gy = parseFloat(getChildValue(geoEl, "y")) * C_SYSTEM_Y_INVERT;
+                            const gw = parseFloat(getChildValue(geoEl, "width"));
+                            const gh = parseFloat(getChildValue(geoEl, "height"));
+                            const gr = parseFloat(getChildValue(geoEl, "rotation") || 0);
+
+                            const newGate = createParkingGate({ x: gx, y: gy, width: gw, height: gh, rotation: gr }, gType, gId);
+                            syncIdCounter(newGate.id);
+                            
+                            // 強制連結 ID
+                            newGate.parkingLotId = newPl.id;
+                            const rectShape = newGate.konvaGroup.findOne('.gate-rect');
+                            if (rectShape) rectShape.stroke('green');
+                        }
+                    });
                 }
             }
         });
+    }
 
-        groupsToRecreate.forEach((connectionsInGroup) => {
-            if (connectionsInGroup.length === 0) return;
-            const firstConn = connectionsInGroup[0];
-            const sourceLink = network.links[firstConn.sourceLinkId];
-            const destLink = network.links[firstConn.destLinkId];
-            const nodeId = firstConn.nodeId;
-            if (!sourceLink || !destLink) return;
-            const p1 = sourceLink.waypoints[sourceLink.waypoints.length - 1];
-            const p4 = destLink.waypoints[0];
+    // --- 6. Unlinked Parking Gates ---
+    const unlinkedContainer = xmlDoc.getElementsByTagName("UnlinkedParkingGates")[0] || xmlDoc.getElementsByTagName("tm:UnlinkedParkingGates")[0];
+    if (unlinkedContainer) {
+        const gateNodes = getChildrenByLocalName(unlinkedContainer, "ParkingGate");
+        gateNodes.forEach(gateEl => {
+            const gId = getChildValue(gateEl, "id");
+            const gType = getChildValue(gateEl, "gateType");
+            const geoEl = getChildrenByLocalName(gateEl, "Geometry")[0];
 
-            const groupLine = new Konva.Line({
-                points: [p1.x, p1.y, p4.x, p4.y],
-                stroke: 'darkgreen',
-                strokeWidth: 2,
-                name: 'group-connection-visual',
-                listening: true,
-                hitStrokeWidth: 20
-            });
-            const groupMeta = {
-                type: 'ConnectionGroup',
-                connectionIds: connectionsInGroup.map(c => c.id),
-                nodeId: nodeId,
-                sourceLinkId: sourceLink.id,
-                destLinkId: destLink.id
-            };
-            groupLine.setAttr('meta', groupMeta);
-            layer.add(groupLine);
+            if (geoEl) {
+                const gx = parseFloat(getChildValue(geoEl, "x"));
+                const gy = parseFloat(getChildValue(geoEl, "y")) * C_SYSTEM_Y_INVERT;
+                const gw = parseFloat(getChildValue(geoEl, "width"));
+                const gh = parseFloat(getChildValue(geoEl, "height"));
+                const gr = parseFloat(getChildValue(geoEl, "rotation") || 0);
 
-            connectionsInGroup.forEach(conn => {
-                conn.konvaBezier.visible(false);
-            });
+                const newGate = createParkingGate({ x: gx, y: gy, width: gw, height: gh, rotation: gr }, gType, gId);
+                syncIdCounter(newGate.id);
+            }
         });
+    }
 
-        const meterElements = xmlDoc.querySelectorAll("Meters > *");
-        meterElements.forEach(meterEl => {
-            const xmlLinkId = meterEl.querySelector("linkId").textContent;
-            const internalLinkId = xmlLinkIdMap.get(xmlLinkId);
-            const link = network.links[internalLinkId];
+    // --- 7. Meters ---
+    const metersContainer = xmlDoc.querySelector("Meters");
+    if (metersContainer) {
+        Array.from(metersContainer.children).forEach(meterEl => {
+            const tagName = meterEl.localName || meterEl.nodeName.split(':').pop();
+            const linkXmlId = getChildValue(meterEl, "linkId");
+            const link = network.links[xmlLinkIdMap.get(linkXmlId)];
             if (!link) return;
-            const position = parseFloat(meterEl.querySelector("position").textContent);
-            const name = meterEl.querySelector("name")?.textContent || `det_${idCounter}`;
-            if (meterEl.tagName === 'tm:LinkAverageTravelSpeedMeter') {
-                const newDet = createDetector('PointDetector', link, position);
-                newDet.name = name;
-            } else if (meterEl.tagName === 'tm:SectionAverageTravelSpeedMeter') {
-                const length = parseFloat(meterEl.querySelector("sectionLength").textContent);
-                const newDet = createDetector('SectionDetector', link, position + length);
-                newDet.name = name;
-                newDet.length = length;
-                drawDetector(newDet);
+
+            const pos = parseFloat(getChildValue(meterEl, "position"));
+            const name = getChildValue(meterEl, "name");
+            
+            if (tagName === 'LinkAverageTravelSpeedMeter') {
+                const det = createDetector('PointDetector', link, pos);
+                det.name = name;
+                syncIdCounter(det.id);
+            } else if (tagName === 'SectionAverageTravelSpeedMeter') {
+                const len = parseFloat(getChildValue(meterEl, "sectionLength"));
+                // position in XML is start of section, function expects end?
+                // Check original createDetector: it takes 'position' as the clickable anchor. 
+                // For SectionDetector, drawDetector uses `detector.position` as end, and draws line backwards.
+                // XML format typically stores 'start position'. 
+                // So passed pos + len is correct if 'pos' is start.
+                const det = createDetector('SectionDetector', link, pos + len); 
+                det.name = name;
+                det.length = len;
+                syncIdCounter(det.id);
+                drawDetector(det);
             }
         });
+    }
+    
+    // --- 8. Background ---
+    const bgEl = xmlDoc.querySelector("Background > Tile");
+    if (bgEl) {
+        try {
+            const rectEl = getChildrenByLocalName(bgEl, "Rectangle")[0];
+            const startEl = getChildrenByLocalName(rectEl, "Start")[0];
+            const endEl = getChildrenByLocalName(rectEl, "End")[0];
+            const startX = parseFloat(getChildValue(startEl, "x"));
+            const startY = parseFloat(getChildValue(startEl, "y")) * C_SYSTEM_Y_INVERT;
+            const endX = parseFloat(getChildValue(endEl, "x"));
+            const endY = parseFloat(getChildValue(endEl, "y")) * C_SYSTEM_Y_INVERT;
+            const saturation = parseInt(getChildValue(bgEl, "saturation"), 10);
+            
+            const imgEl = getChildrenByLocalName(bgEl, "Image")[0];
+            const imageType = getChildValue(imgEl, "type");
+            const binaryData = getChildValue(imgEl, "binaryData");
+            const dataUrl = `data:image/${imageType.toLowerCase()};base64,${binaryData}`;
 
-        const backgroundEl = xmlDoc.querySelector("Background > Tile");
-        if (backgroundEl) {
-            try {
-                const startX = parseFloat(backgroundEl.querySelector("Rectangle > Start > x").textContent);
-                const startY = parseFloat(backgroundEl.querySelector("Rectangle > Start > y").textContent) * C_SYSTEM_Y_INVERT;
-                const endX = parseFloat(backgroundEl.querySelector("Rectangle > End > x").textContent);
-                const endY = parseFloat(backgroundEl.querySelector("Rectangle > End > y").textContent) * C_SYSTEM_Y_INVERT;
-                const saturation = parseInt(backgroundEl.querySelector("saturation").textContent, 10);
-                const imageType = backgroundEl.querySelector("Image > type").textContent;
-                const binaryData = backgroundEl.querySelector("Image > binaryData").textContent;
-                const dataUrl = `data:image/${imageType.toLowerCase()};base64,${binaryData}`;
-                const newBg = createBackground({ x: startX, y: startY });
-                if (newBg) {
-                    newBg.locked = true;
-                    newBg.width = Math.abs(endX - startX);
-                    newBg.height = Math.abs(endY - startY);
-                    newBg.opacity = saturation;
-                    newBg.imageDataUrl = dataUrl;
-                    newBg.imageType = imageType;
-                    const image = new window.Image();
-                    image.src = dataUrl;
-                    image.onload = () => {
-                        newBg.konvaImage.image(image);
-                        const scale = (image.width > 0) ? newBg.width / image.width : 1;
-                        newBg.scale = scale;
-                        newBg.konvaGroup.width(image.width);
-                        newBg.konvaGroup.height(image.height);
-                        newBg.konvaGroup.scale({ x: scale, y: scale });
-                        newBg.konvaGroup.opacity(newBg.opacity / 100);
-                        newBg.konvaImage.width(image.width);
-                        newBg.konvaImage.height(image.height);
-                        newBg.konvaBorder.width(image.width);
-                        newBg.konvaBorder.height(image.height);
-                        layer.batchDraw();
-                    };
-                }
-            } catch (err) {
-                console.error("Failed to parse background from XML:", err);
+            const newBg = createBackground({ x: startX, y: startY });
+            if (newBg) {
+                newBg.locked = true;
+                newBg.width = Math.abs(endX - startX);
+                newBg.height = Math.abs(endY - startY);
+                newBg.opacity = saturation;
+                newBg.imageDataUrl = dataUrl;
+                newBg.imageType = imageType;
+                const image = new window.Image();
+                image.src = dataUrl;
+                image.onload = () => {
+                    newBg.konvaImage.image(image);
+                    const scale = (image.width > 0) ? newBg.width / image.width : 1;
+                    newBg.scale = scale;
+                    newBg.konvaGroup.width(image.width);
+                    newBg.konvaGroup.height(image.height);
+                    newBg.konvaGroup.scale({ x: scale, y: scale });
+                    newBg.konvaGroup.opacity(newBg.opacity / 100);
+                    newBg.konvaImage.width(image.width);
+                    newBg.konvaImage.height(image.height);
+                    newBg.konvaBorder.width(image.width);
+                    newBg.konvaBorder.height(image.height);
+                    layer.batchDraw();
+                };
             }
+        } catch (err) {
+            console.error("Failed to parse background from XML:", err);
         }
+    }
 
-        // --- START: NEW OVERPASS IMPORT LOGIC ---
-        // 1. First, create the overpass objects based on geometry. Their `topLinkId` will be a default value.
-        updateAllOverpasses();
-
-        // 2. Now, read the XML to correct the `topLinkId` for each overpass.
-        const overpassElements = xmlDoc.querySelectorAll("Overpasses > Overpass");
-        overpassElements.forEach(opEl => {
-            const elements = opEl.querySelectorAll("Elements > Element");
-            const pairs = opEl.querySelectorAll("ElementaryPairs > Pair");
-
-            if (elements.length === 2 && pairs.length === 1) {
-                const tempIdToXmlLinkId = {};
-                elements.forEach(el => {
-                    const tempId = el.querySelector("Id").textContent;
-                    const xmlLinkId = el.querySelector("LinkId").textContent;
-                    tempIdToXmlLinkId[tempId] = xmlLinkId;
-                });
-
-                const bottomTempId = pairs[0].querySelector("Bottom").textContent;
-                const topTempId = pairs[0].querySelector("Top").textContent;
-
-                const bottomXmlLinkId = tempIdToXmlLinkId[bottomTempId];
-                const topXmlLinkId = tempIdToXmlLinkId[topTempId];
-
-                const internalBottomId = xmlLinkIdMap.get(bottomXmlLinkId);
-                const internalTopId = xmlLinkIdMap.get(topXmlLinkId);
-
-                if (internalBottomId && internalTopId) {
-                    // Find the corresponding overpass object (ID order doesn't matter)
-                    const overpassId1 = `overpass_${internalBottomId}_${internalTopId}`;
-                    const overpassId2 = `overpass_${internalTopId}_${internalBottomId}`;
-                    const overpass = network.overpasses[overpassId1] || network.overpasses[overpassId2];
-
-                    if (overpass) {
-                        // Correct the data model based on the XML file
-                        overpass.topLinkId = internalTopId;
-                    }
-                }
-            }
+    // --- 9. GeoAnchors ---
+    const anchorsContainer = xmlDoc.getElementsByTagName("GeoAnchors")[0] || xmlDoc.getElementsByTagName("tm:GeoAnchors")[0];
+    if (anchorsContainer) {
+        getChildrenByLocalName(anchorsContainer, "Anchor").forEach(anchorEl => {
+            const ax = parseFloat(getChildValue(anchorEl, "x"));
+            const ay = parseFloat(getChildValue(anchorEl, "y")) * C_SYSTEM_Y_INVERT;
+            const lat = parseFloat(getChildValue(anchorEl, "lat"));
+            const lon = parseFloat(getChildValue(anchorEl, "lon"));
+            createPushpin({x: ax, y: ay}, lat, lon);
         });
+    }
 
-        // 3. Finally, apply the visual Z-order for all overpasses based on the corrected data
-        Object.values(network.overpasses).forEach(op => {
-            applyOverpassOrder(op);
-        });
-        // --- END: NEW OVERPASS IMPORT LOGIC ---
+    // --- 10. Overpasses ---
+    updateAllOverpasses();
+    const overpassesContainer = xmlDoc.getElementsByTagName("Overpasses")[0] || xmlDoc.getElementsByTagName("tm:Overpasses")[0];
+    if (overpassesContainer) {
+         const opNodes = getChildrenByLocalName(overpassesContainer, "Overpass");
+         opNodes.forEach(opEl => {
+             const pairsEl = getChildrenByLocalName(opEl, "ElementaryPairs")[0];
+             const elementsEl = getChildrenByLocalName(opEl, "Elements")[0];
+             if (pairsEl && elementsEl) {
+                 const pair = getChildrenByLocalName(pairsEl, "Pair")[0];
+                 const topTempId = getChildValue(pair, "Top");
+                 
+                 const els = getChildrenByLocalName(elementsEl, "Element");
+                 let topXmlLinkId = null;
+                 let bottomXmlLinkId = null;
+                 
+                 els.forEach(el => {
+                     const tempId = getChildValue(el, "Id");
+                     const lnk = getChildValue(el, "LinkId");
+                     if (tempId === topTempId) topXmlLinkId = lnk;
+                     else bottomXmlLinkId = lnk;
+                 });
 
-        const agentsEl = xmlDoc.querySelector("Agents");
-        if (agentsEl) {
-            agentsEl.querySelectorAll("TrafficLightNetworks > RegularTrafficLightNetwork").forEach(tflEl => {
-                const xmlNodeId = tflEl.querySelector("regularNodeId").textContent;
-                const internalNodeId = xmlNodeIdMap.get(xmlNodeId);
-                if (!internalNodeId || !network.nodes[internalNodeId]) return;
-                const timeShift = parseInt(tflEl.querySelector("scheduleTimeShift")?.textContent || 0, 10);
-                const groupDefinitions = xmlTFLGroupMap.get(xmlNodeId);
-                if (!groupDefinitions) return;
-                const tflData = { nodeId: internalNodeId, timeShift, signalGroups: {}, schedule: [] };
-                network.trafficLights[internalNodeId] = tflData;
-                groupDefinitions.forEach((groupInfo, numericGroupId) => {
-                    const groupName = groupInfo.name;
-                    const internalConnIds = groupInfo.connXmlIds
-                        .map(xmlConnId => xmlConnIdMap.get(xmlConnId))
-                        .filter(Boolean);
-                    tflData.signalGroups[groupName] = { id: groupName, connIds: internalConnIds };
-                });
-                tflEl.querySelectorAll("Schedule > TimePeriods > TimePeriod").forEach(periodEl => {
+                 if (topXmlLinkId && bottomXmlLinkId) {
+                     const topInternalId = xmlLinkIdMap.get(topXmlLinkId);
+                     const bottomInternalId = xmlLinkIdMap.get(bottomXmlLinkId);
+                     
+                     const opId1 = `overpass_${bottomInternalId}_${topInternalId}`;
+                     const opId2 = `overpass_${topInternalId}_${bottomInternalId}`;
+                     const opObj = network.overpasses[opId1] || network.overpasses[opId2];
+                     if (opObj) {
+                         opObj.topLinkId = topInternalId;
+                         applyOverpassOrder(opObj);
+                     }
+                 }
+             }
+         });
+    }
+    
+    // --- 11. Agents (Load Demands) ---
+    const agentsEl = xmlDoc.querySelector("Agents");
+    if (agentsEl) {
+        // Traffic Light Schedule
+        const tflNetworks = getChildrenByLocalName(getChildrenByLocalName(agentsEl, "TrafficLightNetworks")[0], "RegularTrafficLightNetwork");
+        tflNetworks.forEach(tflEl => {
+            const xmlNodeId = getChildValue(tflEl, "regularNodeId");
+            const internalNodeId = xmlNodeIdMap.get(xmlNodeId);
+            if (!internalNodeId || !network.nodes[internalNodeId]) return;
+            
+            const timeShift = parseInt(getChildValue(tflEl, "scheduleTimeShift") || 0, 10);
+            const groupDefinitions = xmlTFLGroupMap.get(xmlNodeId);
+            if (!groupDefinitions) return;
+
+            const tflData = { nodeId: internalNodeId, timeShift, signalGroups: {}, schedule: [] };
+            network.trafficLights[internalNodeId] = tflData;
+            
+            groupDefinitions.forEach((groupInfo, numericGroupId) => {
+                const groupName = groupInfo.name;
+                const internalConnIds = groupInfo.connXmlIds
+                    .map(xmlConnId => xmlConnIdMap.get(xmlConnId))
+                    .filter(Boolean);
+                tflData.signalGroups[groupName] = { id: groupName, connIds: internalConnIds };
+            });
+
+            const scheduleEl = getChildrenByLocalName(tflEl, "Schedule")[0];
+            const periodsEl = getChildrenByLocalName(scheduleEl, "TimePeriods")[0];
+            if (periodsEl) {
+                getChildrenByLocalName(periodsEl, "TimePeriod").forEach(periodEl => {
                     const phase = {
-                        duration: parseInt(periodEl.querySelector("duration").textContent, 10),
+                        duration: parseInt(getChildValue(periodEl, "duration"), 10),
                         signals: {}
                     };
-                    periodEl.querySelectorAll("TrafficLightSignal").forEach(signalEl => {
-                        const numericLightId = signalEl.querySelector("trafficLightId").textContent;
+                    getChildrenByLocalName(periodEl, "TrafficLightSignal").forEach(signalEl => {
+                        const numericLightId = getChildValue(signalEl, "trafficLightId");
                         const groupInfo = groupDefinitions.get(numericLightId);
                         if (groupInfo) {
-                            const groupName = groupInfo.name;
-                            phase.signals[groupName] = signalEl.querySelector("signal").textContent;
+                            phase.signals[groupInfo.name] = getChildValue(signalEl, "signal");
                         }
                     });
                     tflData.schedule.push(phase);
                 });
-            });
-            let importedProfileCounter = 0;
-            agentsEl.querySelectorAll("Origins > Origin").forEach(originEl => {
-                const xmlOriginNodeId = originEl.querySelector("originNodeId").textContent;
+            }
+        });
+
+        // Origins / Demands
+        let importedProfileCounter = 0;
+        const originsContainer = getChildrenByLocalName(agentsEl, "Origins")[0];
+        if (originsContainer) {
+            getChildrenByLocalName(originsContainer, "Origin").forEach(originEl => {
+                const xmlOriginNodeId = getChildValue(originEl, "originNodeId");
                 const internalOriginId = xmlNodeIdMap.get(xmlOriginNodeId);
                 const origin = network.origins[internalOriginId];
                 if (!origin) return;
+
                 origin.periods = [];
-                originEl.querySelectorAll("TimePeriods > TimePeriod").forEach(periodEl => {
-                    const period = {
-                        duration: parseInt(periodEl.querySelector("duration").textContent, 10),
-                        numVehicles: parseInt(periodEl.querySelector("numberOfVehicles").textContent, 10),
-                        destinations: [],
-                        profiles: [],
-                        stops: [] // <--- 初始化 stops
-                    };
-                    periodEl.querySelectorAll("Destinations > Destination").forEach(destEl => {
-                        const xmlDestNodeId = destEl.querySelector("destinationNodeId").textContent;
-                        const internalDestId = xmlNodeIdMap.get(xmlDestNodeId);
-                        if (internalDestId) {
-                            period.destinations.push({
-                                nodeId: internalDestId,
-                                weight: parseFloat(destEl.querySelector("weight").textContent)
+                const periodsContainer = getChildrenByLocalName(originEl, "TimePeriods")[0];
+                if (periodsContainer) {
+                    getChildrenByLocalName(periodsContainer, "TimePeriod").forEach(periodEl => {
+                        const period = {
+                            duration: parseInt(getChildValue(periodEl, "duration"), 10),
+                            numVehicles: parseInt(getChildValue(periodEl, "numberOfVehicles"), 10),
+                            destinations: [],
+                            profiles: [],
+                            stops: []
+                        };
+
+                        // Destinations
+                        const destsContainer = getChildrenByLocalName(periodEl, "Destinations")[0];
+                        if (destsContainer) {
+                            getChildrenByLocalName(destsContainer, "Destination").forEach(destEl => {
+                                const xmlDestNodeId = getChildValue(destEl, "destinationNodeId");
+                                const internalDestId = xmlNodeIdMap.get(xmlDestNodeId);
+                                if (internalDestId) {
+                                    period.destinations.push({
+                                        nodeId: internalDestId,
+                                        weight: parseFloat(getChildValue(destEl, "weight"))
+                                    });
+                                }
                             });
                         }
-                    });
 
-                    // --- 新增：讀取 IntermediateStops ---
-                    const stopsContainer = periodEl.querySelector("IntermediateStops");
-                    if (stopsContainer) {
-                        stopsContainer.querySelectorAll("Stop").forEach(stopEl => {
-                            const getId = (tag) => stopEl.querySelector(tag)?.textContent;
-                            const plId = getId("parkingLotId") || getId("tm:parkingLotId");
-                            const prob = getId("probability") || getId("tm:probability");
-                            const dur = getId("duration") || getId("tm:duration");
+                        // Intermediate Stops
+                        const stopsContainer = getChildrenByLocalName(periodEl, "IntermediateStops")[0];
+                        if (stopsContainer) {
+                             getChildrenByLocalName(stopsContainer, "Stop").forEach(stopEl => {
+                                 const plId = getChildValue(stopEl, "parkingLotId");
+                                 const prob = getChildValue(stopEl, "probability");
+                                 const dur = getChildValue(stopEl, "duration");
+                                 if (plId) {
+                                     period.stops.push({
+                                         parkingLotId: plId,
+                                         probability: parseFloat(prob) || 0,
+                                         duration: parseFloat(dur) || 0
+                                     });
+                                 }
+                             });
+                        }
 
-                            if (plId) {
-                                period.stops.push({
-                                    parkingLotId: plId,
-                                    probability: parseFloat(prob) || 0,
-                                    duration: parseFloat(dur) || 0
-                                });
-                            }
-                        });
-                    }
-                    // ------------------------------------
-                    periodEl.querySelectorAll("VehicleProfiles > VehicleProfile").forEach(profEl => {
-                        const weight = parseFloat(profEl.querySelector("weight").textContent);
-                        const vehicleEl = profEl.querySelector("RegularVehicle");
-                        const driverEl = vehicleEl.querySelector("CompositeDriver > Parameters");
-                        const newProfileData = {
-                            length: parseFloat(vehicleEl.querySelector("length").textContent),
-                            width: parseFloat(vehicleEl.querySelector("width").textContent),
-                            maxSpeed: parseFloat(driverEl.querySelector("maxSpeed").textContent),
-                            maxAcceleration: parseFloat(driverEl.querySelector("maxAcceleration").textContent),
-                            comfortDeceleration: parseFloat(driverEl.querySelector("comfortDeceleration").textContent),
-                            minDistance: parseFloat(driverEl.querySelector("minDistance").textContent),
-                            desiredHeadwayTime: parseFloat(driverEl.querySelector("desiredHeadwayTime").textContent),
-                        };
-                        const profileId = `imported_profile_${importedProfileCounter++}`;
-                        newProfileData.id = profileId;
-                        network.vehicleProfiles[profileId] = newProfileData;
-                        period.profiles.push({ profileId, weight });
-                    });
-                    origin.periods.push(period);
-                });
-            });
-        }
-
-        // Final visual adjustments
-        layer.find('.group-connection-visual').forEach(g => g.moveToBottom());
-        Object.values(network.nodes).forEach(node => {
-            if (node && node.konvaShape) node.konvaShape.moveToTop();
-        });
-
-        drawGrid();
-
-        const anchorsEl = xmlDoc.querySelector("GeoAnchors");
-        if (anchorsEl) {
-            anchorsEl.querySelectorAll("Anchor").forEach(anchorEl => {
-                const x = parseFloat(anchorEl.querySelector("x").textContent);
-                // 匯入時還原 Y 軸 (除以或乘以 C_SYSTEM_Y_INVERT)
-                const y = parseFloat(anchorEl.querySelector("y").textContent) * C_SYSTEM_Y_INVERT;
-                const lat = parseFloat(anchorEl.querySelector("lat").textContent);
-                const lon = parseFloat(anchorEl.querySelector("lon").textContent);
-
-                createPushpin({ x, y }, lat, lon);
-            });
-        }
-        layer.batchDraw();
-        updateBackgroundLockState();
-
-        // --- NEW: PARKING LOT IMPORT LOGIC ---
-        // Use getElementsByTagName to avoid namespace issues (e.g. tm:ParkingLots vs ParkingLots)
-        const parkingLotsEl = xmlDoc.getElementsByTagName("ParkingLots")[0] || xmlDoc.getElementsByTagName("tm:ParkingLots")[0];
-        if (parkingLotsEl) {
-            // Handle both namespaced and non-namespaced children
-            const plNodes = parkingLotsEl.getElementsByTagName("ParkingLot").length > 0
-                ? parkingLotsEl.getElementsByTagName("ParkingLot")
-                : parkingLotsEl.getElementsByTagName("tm:ParkingLot");
-
-            Array.from(plNodes).forEach(plEl => {
-                const getId = (name) => {
-                    const el = plEl.getElementsByTagName(name)[0] || plEl.getElementsByTagName("tm:" + name)[0];
-                    return el ? el.textContent : null;
-                };
-
-                const xmlId = getId("id");
-                const name = getId("name");
-                const carCapStr = getId("carCapacity");
-                const motoCapStr = getId("motoCapacity");
-
-                const carCapacity = carCapStr ? parseInt(carCapStr, 10) : 0;
-                const motoCapacity = motoCapStr ? parseInt(motoCapStr, 10) : 0;
-
-                const points = [];
-                const boundaryEl = plEl.getElementsByTagName("Boundary")[0] || plEl.getElementsByTagName("tm:Boundary")[0];
-                if (boundaryEl) {
-                    const pointNodes = boundaryEl.getElementsByTagName("Point").length > 0
-                        ? boundaryEl.getElementsByTagName("Point")
-                        : boundaryEl.getElementsByTagName("tm:Point");
-
-                    Array.from(pointNodes).forEach(pEl => {
-                        const getCoord = (tag) => {
-                            const cEl = pEl.getElementsByTagName(tag)[0] || pEl.getElementsByTagName("tm:" + tag)[0];
-                            return cEl ? parseFloat(cEl.textContent) : 0;
-                        };
-                        const x = getCoord("x");
-                        const y = getCoord("y") * C_SYSTEM_Y_INVERT;
-                        points.push(x, y);
-                    });
-                }
-
-                if (points.length >= 6) {
-                    const newPl = createParkingLot(points, false);
-
-                    // Restore properties
-                    if (name) newPl.name = name;
-                    newPl.carCapacity = carCapacity || 0;
-                    newPl.motoCapacity = motoCapacity || 0;
-
-                    // --- NEW: NESTED PARKING GATE IMPORT LOGIC ---
-                    const gatesEl = plEl.getElementsByTagName("ParkingGates")[0] || plEl.getElementsByTagName("tm:ParkingGates")[0];
-                    if (gatesEl) {
-                        const gateNodes = gatesEl.getElementsByTagName("ParkingGate").length > 0
-                            ? gatesEl.getElementsByTagName("ParkingGate")
-                            : gatesEl.getElementsByTagName("tm:ParkingGate");
-
-                        Array.from(gateNodes).forEach(gateEl => {
-                            const gGetVal = (n) => {
-                                const el = gateEl.getElementsByTagName(n)[0] || gateEl.getElementsByTagName("tm:" + n)[0];
-                                return el ? el.textContent : null;
-                            };
-                            const gId = gGetVal("id");
-                            const gateType = gGetVal("gateType");
-                            const geoEl = gateEl.getElementsByTagName("Geometry")[0] || gateEl.getElementsByTagName("tm:Geometry")[0];
-                            if (geoEl) {
-                                const gGetCoord = (tag) => {
-                                    const el = geoEl.getElementsByTagName(tag)[0] || geoEl.getElementsByTagName("tm:" + tag)[0];
-                                    return el ? parseFloat(el.textContent) : 0;
+                        // Vehicle Profiles
+                        const profilesContainer = getChildrenByLocalName(periodEl, "VehicleProfiles")[0];
+                        if (profilesContainer) {
+                            getChildrenByLocalName(profilesContainer, "VehicleProfile").forEach(profEl => {
+                                const weight = parseFloat(getChildValue(profEl, "weight"));
+                                const vehicleEl = getChildrenByLocalName(profEl, "RegularVehicle")[0];
+                                const driverEl = getChildrenByLocalName(getChildrenByLocalName(vehicleEl, "CompositeDriver")[0], "Parameters")[0];
+                                
+                                const newProfileData = {
+                                    length: parseFloat(getChildValue(vehicleEl, "length")),
+                                    width: parseFloat(getChildValue(vehicleEl, "width")),
+                                    maxSpeed: parseFloat(getChildValue(driverEl, "maxSpeed")),
+                                    maxAcceleration: parseFloat(getChildValue(driverEl, "maxAcceleration")),
+                                    comfortDeceleration: parseFloat(getChildValue(driverEl, "comfortDeceleration")),
+                                    minDistance: parseFloat(getChildValue(driverEl, "minDistance")),
+                                    desiredHeadwayTime: parseFloat(getChildValue(driverEl, "desiredHeadwayTime")),
                                 };
-                                const gx = gGetCoord("x");
-                                const gy = gGetCoord("y") * C_SYSTEM_Y_INVERT;
-                                const gw = Math.abs(gGetCoord("width"));
-                                const gh = Math.abs(gGetCoord("height"));
-                                const gr = gGetCoord("rotation") || 0; // <--- 新增：讀取 rotation
-
-                                // <--- 修改：傳入 rotation 屬性
-                                const newGate = createParkingGate({ x: gx, y: gy, width: gw, height: gh, rotation: gr }, gateType || 'entry', gId);
-                                if (newGate) {
-                                    newGate.parkingLotId = newPl.id;
-                                    const rectShape = newGate.konvaGroup.findOne('.gate-rect');
-                                    if (rectShape) rectShape.stroke('green');
-                                }
-                            }
-                        });
-                    }
+                                const profileId = `imported_profile_${importedProfileCounter++}`;
+                                newProfileData.id = profileId;
+                                network.vehicleProfiles[profileId] = newProfileData;
+                                period.profiles.push({ profileId, weight });
+                            });
+                        }
+                        origin.periods.push(period);
+                    });
                 }
             });
         }
-        // --- END: PARKING LOT IMPORT LOGIC ---
-
-        // Support for unlinked gates in separate section
-        const unlinkedEl = xmlDoc.getElementsByTagName("UnlinkedParkingGates")[0] || xmlDoc.getElementsByTagName("tm:UnlinkedParkingGates")[0];
-        if (unlinkedEl) {
-            const gateNodes = unlinkedEl.getElementsByTagName("ParkingGate").length > 0
-                ? unlinkedEl.getElementsByTagName("ParkingGate")
-                : unlinkedEl.getElementsByTagName("tm:ParkingGate");
-            Array.from(gateNodes).forEach(gateEl => {
-                const gGetVal = (n) => {
-                    const el = gateEl.getElementsByTagName(n)[0] || gateEl.getElementsByTagName("tm:" + n)[0];
-                    return el ? el.textContent : null;
-                };
-                const gId = gGetVal("id");
-                const gateType = gGetVal("gateType");
-                const geoEl = gateEl.getElementsByTagName("Geometry")[0] || gateEl.getElementsByTagName("tm:Geometry")[0];
-                if (geoEl) {
-                    const gGetCoord = (tag) => {
-                        const el = geoEl.getElementsByTagName(tag)[0] || geoEl.getElementsByTagName("tm:" + tag)[0];
-                        return el ? parseFloat(el.textContent) : 0;
-                    };
-                    const gx = gGetCoord("x");
-                    const gy = gGetCoord("y") * C_SYSTEM_Y_INVERT;
-                    const gw = Math.abs(gGetCoord("width"));
-                    const gh = Math.abs(gGetCoord("height"));
-                    const gr = gGetCoord("rotation") || 0; // <--- 新增：讀取 rotation
-
-                    // <--- 修改：傳入 rotation 屬性
-                    createParkingGate({ x: gx, y: gy, width: gw, height: gh, rotation: gr }, gateType || 'entry', gId);
-                }
-            });
-        }
-        // --- END: PARKING GATE IMPORT LOGIC ---
-
-        setTool('select');
     }
+
+    layer.batchDraw();
+    updateStatusBar();
+    setTool('select');
+}
     // 完整替換此函數
     function exportXML() {
         const tflGroupMappings = {};
@@ -6163,6 +6332,23 @@ document.addEventListener('DOMContentLoaded', () => {
         link.download = 'traffic_network.sim';
         link.click();
         URL.revokeObjectURL(link.href);
+    }
+
+    // --- 新增：XML 解析輔助函數 ---
+    // 安全地獲取指定標籤名稱的直接子元素 (忽略 tm: 前綴)
+    function getChildrenByLocalName(parent, localName) {
+        if (!parent) return [];
+        return Array.from(parent.children).filter(child => {
+            // 兼容各種瀏覽器的 XML 解析行為
+            const nodeName = child.localName || child.baseName || child.nodeName.split(':').pop();
+            return nodeName === localName;
+        });
+    }
+
+    // 安全地獲取單個子元素的值
+    function getChildValue(parent, localName) {
+        const children = getChildrenByLocalName(parent, localName);
+        return children.length > 0 ? children[0].textContent : null;
     }
 
     function createBackground(pos) {
