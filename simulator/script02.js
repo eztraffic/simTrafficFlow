@@ -1477,16 +1477,39 @@ document.addEventListener('DOMContentLoaded', () => {
                         ctx2D.setLineDash([]);
                     }
 
-                    // Gate 本體
+                    // [已移除重複代碼]
+
+                    // [修正] Gate 本體繪製
                     ctx2D.save();
                     ctx2D.translate(gate.x, gate.y);
-                    // 如果 XML 有 rotation，可以旋轉 (這裡轉為弧度，假設 XML 是度數，需視實際數據而定，通常 XML 若無單位可能是弧度或度數，這裡暫不旋轉以保險)
-                    // ctx2D.rotate(gate.rotation); 
-                    ctx2D.fillStyle = '#ff9900';
-                    const gw = Math.max(2, gate.width || 4);
-                    const gh = Math.max(2, gate.height || 2);
-                    // 繪製一個小矩形代表出入口
+
+                    // [修正] 啟用旋轉，使用解析後的弧度
+                    if (typeof gate.rotation === 'number') {
+                        ctx2D.rotate(gate.rotation);
+                    }
+
+                    // 依據 Gate 類型給予不同顏色
+                    if (gate.type === 'entry') ctx2D.fillStyle = '#44ff44'; // 綠色入口
+                    else if (gate.type === 'exit') ctx2D.fillStyle = '#ff4444'; // 紅色出口
+                    else ctx2D.fillStyle = '#ff9900'; // 橘色雙向
+
+                    const gw = Math.max(1, gate.width || 4);
+                    const gh = Math.max(1, gate.height || 2);
+
+                    // 繪製矩形 (置中)
                     ctx2D.fillRect(-gw / 2, -gh / 2, gw, gh);
+
+                    // 繪製方向箭頭或邊框以顯示角度
+                    ctx2D.strokeStyle = '#ffffff';
+                    ctx2D.lineWidth = 0.5 / scale;
+                    ctx2D.strokeRect(-gw / 2, -gh / 2, gw, gh);
+
+                    // 畫一個小箭頭指示前方 (X軸正向)
+                    ctx2D.beginPath();
+                    ctx2D.moveTo(0, 0);
+                    ctx2D.lineTo(gw / 2, 0);
+                    ctx2D.stroke();
+
                     ctx2D.restore();
                 });
 
@@ -1932,25 +1955,33 @@ document.addEventListener('DOMContentLoaded', () => {
         trafficLightsGroup.clear();
         trafficLightMeshes = [];
 
+        // --- Materials ---
         const roadMat = new THREE.MeshLambertMaterial({ color: 0x555555, side: THREE.DoubleSide });
         const junctionMat = new THREE.MeshLambertMaterial({ color: 0x666666, side: THREE.DoubleSide });
         const lineMat = new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 2 });
         const meterMat = new THREE.MeshBasicMaterial({ color: 0xffaa00, transparent: true, opacity: 0.5 });
         const sectionMat = new THREE.MeshBasicMaterial({ color: 0x32b4ef, transparent: true, opacity: 0.5 });
-        const parkingMat = new THREE.MeshLambertMaterial({ color: 0x9999aa, side: THREE.DoubleSide }); // 停車場地面
-        const gateMat = new THREE.MeshLambertMaterial({ color: 0xffaa00 }); // 出入口
-        const connectorMat = new THREE.LineBasicMaterial({ color: 0xffff00, linewidth: 2 }); // 連接線
-        const parkingConnectorSurfaceMat = new THREE.MeshBasicMaterial({
-            color: 0xffff00,
+        // 停車場材質
+        const parkingFloorMat = new THREE.MeshLambertMaterial({ color: 0x9999aa, side: THREE.DoubleSide });
+        const parkingConnectorSurfaceMat = new THREE.MeshLambertMaterial({
+            color: 0x555555, // 與路面相同顏色
+            side: THREE.DoubleSide
+        });
+        const connectorLineMat = new THREE.LineBasicMaterial({ color: 0xffff00, linewidth: 2 });
+        // 停車格線材質
+        const slotLineMat = new THREE.MeshBasicMaterial({
+            color: 0xffffff,
             transparent: true,
-            opacity: 0.45,
+            opacity: 0.9,
             side: THREE.DoubleSide,
-            depthWrite: false,
+            depthWrite: false, // 避免 Z-fighting
             polygonOffset: true,
-            polygonOffsetFactor: -2,
+            polygonOffsetFactor: -4,
             polygonOffsetUnits: 1
         });
+        const upperFloorMat = new THREE.MeshLambertMaterial({ color: 0x778899, side: THREE.DoubleSide, transparent: true, opacity: 0.85 });
 
+        // --- Helper Functions for Geometry Clipping ---
         const segIntersect = (a, b, c, d) => {
             const r = { x: b.x - a.x, y: b.y - a.y };
             const s = { x: d.x - c.x, y: d.y - c.y };
@@ -1961,6 +1992,38 @@ document.addEventListener('DOMContentLoaded', () => {
             const u = (qmp.x * r.y - qmp.y * r.x) / denom;
             if (t < 0 || t > 1 || u < 0 || u > 1) return null;
             return { t, x: a.x + t * r.x, y: a.y + t * r.y };
+        };
+
+        const closestPointOnSegment = (p, a, b) => {
+            const abx = b.x - a.x;
+            const aby = b.y - a.y;
+            const apx = p.x - a.x;
+            const apy = p.y - a.y;
+            const abLen2 = abx * abx + aby * aby;
+            if (abLen2 < 1e-12) return { x: a.x, y: a.y };
+            let t = (apx * abx + apy * aby) / abLen2;
+            if (t < 0) t = 0;
+            else if (t > 1) t = 1;
+            return { x: a.x + abx * t, y: a.y + aby * t };
+        };
+
+        const closestPointOnPolygon = (p, polygon) => {
+            if (!polygon || polygon.length < 2) return null;
+            let best = null;
+            let bestD2 = Infinity;
+            for (let i = 0; i < polygon.length; i++) {
+                const a = polygon[i];
+                const b = polygon[(i + 1) % polygon.length];
+                const q = closestPointOnSegment(p, a, b);
+                const dx = p.x - q.x;
+                const dy = p.y - q.y;
+                const d2 = dx * dx + dy * dy;
+                if (d2 < bestD2) {
+                    bestD2 = d2;
+                    best = q;
+                }
+            }
+            return best;
         };
 
         const firstIntersectionOnSegment = (p0, p1, polygon) => {
@@ -1988,7 +2051,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return best;
         };
 
-        // Draw Links & Nodes (Same as before)
+        // --- 1. Draw Links (Roads) ---
         Object.values(netData.links).forEach(link => {
             if (link.geometry) {
                 link.geometry.forEach(geo => {
@@ -2015,6 +2078,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
 
+        // --- 2. Draw Nodes (Junctions) ---
         Object.values(netData.nodes).forEach(node => {
             if (node.polygon && node.polygon.length >= 3) {
                 const shape = new THREE.Shape();
@@ -2027,6 +2091,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 mesh.position.y = 0.2;
                 networkGroup.add(mesh);
             }
+            // Signal paths visualization
             if (node.transitions) {
                 node.transitions.forEach(transition => {
                     if (transition.bezier && transition.turnGroupId) {
@@ -2043,10 +2108,10 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
 
-        // --- Build Parking Lots (3D) ---
+        // --- 3. Build Parking Lots (3D) ---
         if (netData.parkingLots) {
             netData.parkingLots.forEach(lot => {
-                // 1. 建立停車場地面 (保持不變)
+                // A. 建立停車場地面 (Floor)
                 if (lot.boundary.length >= 3) {
                     const shape = new THREE.Shape();
                     shape.moveTo(lot.boundary[0].x, -lot.boundary[0].y);
@@ -2055,114 +2120,164 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                     const geom = new THREE.ShapeGeometry(shape);
                     geom.rotateX(-Math.PI / 2);
+                    const mesh = new THREE.Mesh(geom, parkingFloorMat);
                     // 地面高度 0.05
-                    const mesh = new THREE.Mesh(geom, new THREE.MeshLambertMaterial({ color: 0x9999aa, side: THREE.DoubleSide }));
                     mesh.position.y = 0.05;
                     mesh.receiveShadow = true;
                     networkGroup.add(mesh);
                 }
 
-                // 2. 建立出入口通道 (使用 BufferGeometry 直接構建 3D 面)
+                // B. 建立出入口 (Gates) 與 連接路面 (Connectors)
                 lot.gates.forEach(gate => {
                     const gateWidth = gate.width || 4.0;
+                    // [已移除] 不再使用單色方塊標記，避免與路面/停車場重疊
 
-                    // 起點 (Gate 中心)
+                    // --- B2. 繪製連接路面 (Connector Surface: 優化貼合邊界) ---
+                    // 起點 (Gate 中心) 與 終點 (道路連接點)
                     let pStart = { x: gate.x, y: gate.y };
-                    let pEnd = null;
+                    let pEnd = gate.connector ? { x: gate.connector.x2, y: gate.connector.y2 } : null;
 
-                    if (gate.connector) {
-                        pEnd = { x: gate.connector.x2, y: gate.connector.y2 };
-                    } else {
-                        // 無連接時，根據旋轉角度延伸一段
+                    if (!pEnd) {
+                        // 無連接時，根據旋向延伸一段
                         const len = 3.0;
                         const rad = gate.rotation || 0;
-                        pEnd = {
-                            x: gate.x + Math.cos(rad) * len,
-                            y: gate.y + Math.sin(rad) * len
-                        };
+                        pEnd = { x: gate.x + Math.cos(rad) * len, y: gate.y + Math.sin(rad) * len };
                     }
 
-                    const parkingHit = firstIntersectionOnSegment(pStart, pEnd, lot.boundary);
-                    let pStartTrim = pStart;
-                    if (parkingHit && parkingHit.t > 1e-6) {
-                        pStartTrim = { x: parkingHit.x, y: parkingHit.y };
-                    }
+                    // 1. 計算輔助參數：方向向量 U 與 垂直向量 P
+                    const mainDx = pEnd.x - pStart.x;
+                    const mainDy = pEnd.y - pStart.y;
+                    const mainLen = Math.hypot(mainDx, mainDy);
+                    if (mainLen < 0.01) return;
 
-                    let pEndTrim = pEnd;
-                    if (gate.connector && gate.connector.linkId && netData.links && netData.links[gate.connector.linkId]) {
+                    const ux = mainDx / mainLen;
+                    const uy = mainDy / mainLen;
+                    const px = -uy;
+                    const py = ux;
+                    const halfW = (gate.width || 4.0) / 2;
+
+                    // 2. 定義左、右兩條「鐵軌」線段的出發點 (相對於 Gate 中心)
+                    const gateL = { x: pStart.x + px * halfW, y: pStart.y + py * halfW };
+                    const gateR = { x: pStart.x - px * halfW, y: pStart.y - py * halfW };
+                    // 終點 (朝著道路方向延伸足够遠，確保能穿過路緣)
+                    const roadExtendLen = mainLen + 20; // 加大搜尋範圍
+                    const roadL = { x: gateL.x + ux * roadExtendLen, y: gateL.y + uy * roadExtendLen };
+                    const roadR = { x: gateR.x + ux * roadExtendLen, y: gateR.y + uy * roadExtendLen };
+
+                    // 3. 分別尋找左、右鐵軌與「停車場邊界」的交點 (V_lot_L, V_lot_R)
+                    // 如果原本沒嵌套在 lot 內，我們現場搜尋最近的 lot boundary
+                    let targetBoundary = lot.boundary;
+
+                    const hitLotL = firstIntersectionOnSegment(gateL, roadL, targetBoundary);
+                    const hitLotR = firstIntersectionOnSegment(gateR, roadR, targetBoundary);
+                    // 預設為 Gate 位置
+                    let V_lot_L = hitLotL ? { x: hitLotL.x, y: hitLotL.y } : (closestPointOnPolygon(gateL, targetBoundary) || { x: gateL.x, y: gateL.y });
+                    let V_lot_R = hitLotR ? { x: hitLotR.x, y: hitLotR.y } : (closestPointOnPolygon(gateR, targetBoundary) || { x: gateR.x, y: gateR.y });
+
+                    // 4. 分別尋找左、右鐵軌與「道路邊緣」的交點 (V_road_L, V_road_R)
+                    let V_road_L = { x: gateL.x + ux * mainLen, y: gateL.y + uy * mainLen }; // 預設終點
+                    let V_road_R = { x: gateR.x + ux * mainLen, y: gateR.y + uy * mainLen }; // 預設終點
+
+                    if (gate.connector && gate.connector.linkId && netData.links[gate.connector.linkId]) {
                         const link = netData.links[gate.connector.linkId];
-                        const roadHit = firstIntersectionWithLinkGeometry(pStartTrim, pEnd, link);
-                        if (roadHit && roadHit.t < 1 - 1e-6) {
-                            pEndTrim = { x: roadHit.x, y: roadHit.y };
-                        }
+                        const hitRoadL = firstIntersectionWithLinkGeometry(V_lot_L, roadL, link);
+                        const hitRoadR = firstIntersectionWithLinkGeometry(V_lot_R, roadR, link);
+                        if (hitRoadL) V_road_L = { x: hitRoadL.x, y: hitRoadL.y };
+                        if (hitRoadR) V_road_R = { x: hitRoadR.x, y: hitRoadR.y };
+                    } else if (mainLen > 0) {
+                        // 若無明確 connector，則嘗試搜尋「所有」道路邊緣
+                        let bestHitL = null;
+                        let bestHitR = null;
+                        Object.values(netData.links).forEach(link => {
+                            const hL = firstIntersectionWithLinkGeometry(V_lot_L, roadL, link);
+                            const hR = firstIntersectionWithLinkGeometry(V_lot_R, roadR, link);
+                            if (hL && (!bestHitL || hL.t < bestHitL.t)) bestHitL = hL;
+                            if (hR && (!bestHitR || hR.t < bestHitR.t)) bestHitR = hR;
+                        });
+                        if (bestHitL) V_road_L = { x: bestHitL.x, y: bestHitL.y };
+                        if (bestHitR) V_road_R = { x: bestHitR.x, y: bestHitR.y };
                     }
 
-                    const dx = pEndTrim.x - pStartTrim.x;
-                    const dy = pEndTrim.y - pStartTrim.y;
-                    const len = Math.hypot(dx, dy);
+                    // --- [新增修正] 延伸覆蓋 (Bleed) ---
+                    // 為了解決 Z-fighting 與縫隙，我們將計算出的交點稍微往「內」與往「外」延伸
+                    // 讓通道面(y=0.12)稍微蓋在停車場地面(y=0.05)與道路(y=0.10)之上
+                    const BLEED_AMOUNT = 0.25; // 延伸 0.25 公尺
 
-                    if (len > 0.01) {
-                        // 計算垂直向量 (Normalized)
+                    // 輔助函式：沿著向量方向延伸點
+                    const extendPoint = (pOrigin, pTarget, dist) => {
+                        const dx = pTarget.x - pOrigin.x;
+                        const dy = pTarget.y - pOrigin.y;
+                        const len = Math.hypot(dx, dy);
+                        if (len < 1e-4) return { ...pTarget };
+                        const ex = dx / len;
+                        const ey = dy / len;
+                        return {
+                            x: pTarget.x + ex * dist,
+                            y: pTarget.y + ey * dist
+                        };
+                    };
+
+                    const shiftFrom = (pFrom, pTo, dist) => {
+                        const dx = pTo.x - pFrom.x;
+                        const dy = pTo.y - pFrom.y;
+                        const len = Math.hypot(dx, dy);
+                        if (len < 1e-4) return { ...pFrom };
                         const ux = dx / len;
                         const uy = dy / len;
-                        const px = -uy;
-                        const py = ux;
+                        return { x: pFrom.x + ux * dist, y: pFrom.y + uy * dist };
+                    };
 
-                        const halfW = gateWidth / 2;
+                    const signL = Geom.Utils.isPointInPolygon(gateL, targetBoundary) ? -1 : 1;
+                    const signR = Geom.Utils.isPointInPolygon(gateR, targetBoundary) ? -1 : 1;
+                    const V_lot_L_out = shiftFrom(V_lot_L, gateL, signL * BLEED_AMOUNT);
+                    const V_lot_R_out = shiftFrom(V_lot_R, gateR, signR * BLEED_AMOUNT);
+                    const V_road_L_out = extendPoint(V_lot_L_out, V_road_L, -BLEED_AMOUNT);
+                    const V_road_R_out = extendPoint(V_lot_R_out, V_road_R, -BLEED_AMOUNT);
 
-                        // 計算四個角點 (2D 平面座標)
-                        // C1, C4 是起點左右; C2, C3 是終點左右
-                        const c1 = { x: pStartTrim.x + px * halfW, y: pStartTrim.y + py * halfW };
-                        const c2 = { x: pEndTrim.x + px * halfW, y: pEndTrim.y + py * halfW };
-                        const c3 = { x: pEndTrim.x - px * halfW, y: pEndTrim.y - py * halfW };
-                        const c4 = { x: pStartTrim.x - px * halfW, y: pStartTrim.y - py * halfW };
+                    const gapLenL = Math.hypot(V_road_L_out.x - V_lot_L_out.x, V_road_L_out.y - V_lot_L_out.y);
+                    const gapLenR = Math.hypot(V_road_R_out.x - V_lot_R_out.x, V_road_R_out.y - V_lot_R_out.y);
+                    if (gapLenL < 0.05 || gapLenR < 0.05) return;
 
-                        // 構建 3D 頂點 (x, height, z)
-                        // 注意：這裡直接將解析後的 y 映射到 z 軸 (因為 parseTrafficModel 中 y 已經是正值，對應 3D 的 Z 軸位置)
-                        const roadHeight = 0.15; // 提高高度確保可見 (高於道路0.1)
+                    V_lot_L = V_lot_L_out;
+                    V_lot_R = V_lot_R_out;
+                    V_road_L = V_road_L_out;
+                    V_road_R = V_road_R_out;
 
-                        const vertices = new Float32Array([
-                            // Triangle 1: C1 -> C2 -> C4
-                            c1.x, roadHeight, c1.y,
-                            c2.x, roadHeight, c2.y,
-                            c4.x, roadHeight, c4.y,
+                    // 5. 繪製由這四個點組成的自定義面
+                    // 設定高度略高於道路(0.1)，以覆蓋接縫
+                    const roadHeight = 0.12;
 
-                            // Triangle 2: C2 -> C3 -> C4
-                            c2.x, roadHeight, c2.y,
-                            c3.x, roadHeight, c3.y,
-                            c4.x, roadHeight, c4.y
-                        ]);
+                    const vertices = new Float32Array([
+                        V_lot_L.x, roadHeight, V_lot_L.y,
+                        V_road_L.x, roadHeight, V_road_L.y,
+                        V_lot_R.x, roadHeight, V_lot_R.y,
 
-                        const geometry = new THREE.BufferGeometry();
-                        geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
-                        geometry.computeVertexNormals();
+                        V_road_L.x, roadHeight, V_road_L.y,
+                        V_road_R.x, roadHeight, V_road_R.y,
+                        V_lot_R.x, roadHeight, V_lot_R.y
+                    ]);
 
-                        const mesh = new THREE.Mesh(geometry, parkingConnectorSurfaceMat);
-                        mesh.receiveShadow = true;
-                        mesh.renderOrder = 1000;
-                        networkGroup.add(mesh);
+                    const geometry = new THREE.BufferGeometry();
+                    geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+                    geometry.computeVertexNormals();
 
-                        const connectorHeight = roadHeight + 0.12;
-                        const connectorPoints = [
-                            to3D(pStartTrim.x, pStartTrim.y, connectorHeight),
-                            to3D(pEndTrim.x, pEndTrim.y, connectorHeight)
-                        ];
-                        const connectorGeometry = new THREE.BufferGeometry().setFromPoints(connectorPoints);
-                        const connectorLine = new THREE.Line(connectorGeometry, connectorMat);
-                        connectorLine.renderOrder = 1001;
-                        connectorLine.material.depthTest = false;
-                        networkGroup.add(connectorLine);
-                    }
+                    const mesh = new THREE.Mesh(geometry, parkingConnectorSurfaceMat);
+                    mesh.receiveShadow = true;
+                    // 稍微提高渲染順序，確保覆蓋在一般路面上
+                    mesh.renderOrder = 1001;
+                    networkGroup.add(mesh);
+
+                    // [已移除] 輔助黃線，以免重疊在路面上
                 });
 
-                // 3. 建立停車格位 (3D) - 支援樓層
+                // C. 建立停車格位與樓層 (Slots & Floors)
                 if (lot.boundary.length >= 3) {
-                    const SLOT_WIDTH = 2.5;   // 公尺
-                    const SLOT_LENGTH = 5.5;  // 公尺
-                    const SLOT_GAP = 0.1;     // 格位間隙
-                    const FLOOR_HEIGHT = 3.0; // 每層高度
+                    const SLOT_WIDTH = 2.5;
+                    const SLOT_LENGTH = 5.5;
+                    const SLOT_GAP = 0.1;
+                    const FLOOR_HEIGHT = 3.0;
 
-                    // 計算停車場邊界框
+                    // 計算邊界
                     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
                     lot.boundary.forEach(p => {
                         if (p.x < minX) minX = p.x;
@@ -2174,22 +2289,15 @@ document.addEventListener('DOMContentLoaded', () => {
                     const lotWidth = maxX - minX;
                     const lotHeight = maxY - minY;
                     const isHorizontal = lotWidth >= lotHeight;
-
-                    // 輔助函式：檢查矩形是否在多邊形內
-                    function isSlotInsidePolygon3D(x, y, w, h, polygon) {
-                        const corners = [
-                            { x: x, y: y },
-                            { x: x + w, y: y },
-                            { x: x + w, y: y + h },
-                            { x: x, y: y + h }
-                        ];
-                        return corners.every(c => Geom.Utils.isPointInPolygon(c, polygon));
-                    }
-
                     const slotW = isHorizontal ? SLOT_WIDTH : SLOT_LENGTH;
                     const slotH = isHorizontal ? SLOT_LENGTH : SLOT_WIDTH;
 
-                    // 先計算每層可放幾格
+                    function isSlotInsidePolygon3D(x, y, w, h, polygon) {
+                        const corners = [{ x: x, y: y }, { x: x + w, y: y }, { x: x + w, y: y + h }, { x: x, y: y + h }];
+                        return corners.every(c => Geom.Utils.isPointInPolygon(c, polygon));
+                    }
+
+                    // 計算每層容量
                     let slotsPerFloor = 0;
                     for (let row = 0; ; row++) {
                         const slotY = minY + SLOT_GAP + row * (slotH + SLOT_GAP);
@@ -2206,26 +2314,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
                     const renderCapacity = (lot.slots && lot.slots.length > 0) ? lot.slots.length : lot.carCapacity;
                     const totalFloors = (renderCapacity > 0) ? Math.ceil(renderCapacity / slotsPerFloor) : 1;
-
-                    // 建立材質
-                    // --- 修改後的程式碼 ---
-                    const slotLineMat = new THREE.MeshBasicMaterial({
-                        color: 0xffffff,
-                        transparent: true,
-                        opacity: 0.9,
-                        side: THREE.DoubleSide,
-                        depthTest: true,
-                        depthWrite: false,
-                        polygonOffset: true,
-                        polygonOffsetFactor: -4,
-                        polygonOffsetUnits: 1
-                    });
-                    const upperFloorMat = new THREE.MeshLambertMaterial({ color: 0x778899, side: THREE.DoubleSide, transparent: true, opacity: 0.85 });
-
-                    if (typeof window !== 'undefined' && window.DEBUG_PARKING_SLOTS) {
-                        console.log('[parkingSlots3D]', { lotId: lot.id, carCapacity: lot.carCapacity, slotsLen: lot.slots ? lot.slots.length : 0, renderCapacity, slotsPerFloor, totalFloors });
-                    }
-
                     let remainingSlots = (renderCapacity > 0) ? renderCapacity : Math.min(slotsPerFloor, 120);
 
                     for (let floor = 0; floor < totalFloors; floor++) {
@@ -2233,7 +2321,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         const slotsOnThisFloor = Math.min(remainingSlots, slotsPerFloor);
                         remainingSlots -= slotsOnThisFloor;
 
-                        // 若為上層樓（floor > 0），繪製樓板
+                        // 上層樓板
                         if (floor > 0) {
                             const shape = new THREE.Shape();
                             shape.moveTo(lot.boundary[0].x, -lot.boundary[0].y);
@@ -2248,36 +2336,26 @@ document.addEventListener('DOMContentLoaded', () => {
                             networkGroup.add(floorMesh);
                         }
 
-                        // 繪製停車格線條（只繪製在多邊形內的格位）
+                        // 繪製停車格線
                         const stripVertices = [];
                         const LINE_W = 0.10;
-
                         const pushStrip = (ax, az, bx, bz, y, w) => {
-                            const dx = bx - ax;
-                            const dz = bz - az;
+                            const dx = bx - ax, dz = bz - az;
                             const L = Math.hypot(dx, dz);
                             if (L < 1e-6) return;
-                            const ux = dx / L;
-                            const uz = dz / L;
-                            const px = -uz;
-                            const pz = ux;
+                            const ux = dx / L, uz = dz / L;
+                            const px = -uz, pz = ux;
                             const hw = w / 2;
-
-                            const a1x = ax + px * hw, a1z = az + pz * hw;
-                            const a2x = ax - px * hw, a2z = az - pz * hw;
-                            const b1x = bx + px * hw, b1z = bz + pz * hw;
-                            const b2x = bx - px * hw, b2z = bz - pz * hw;
-
                             stripVertices.push(
-                                a1x, y, a1z,
-                                b1x, y, b1z,
-                                a2x, y, a2z,
-
-                                b1x, y, b1z,
-                                b2x, y, b2z,
-                                a2x, y, a2z
+                                ax + px * hw, y, az + pz * hw,
+                                bx + px * hw, y, bz + pz * hw,
+                                ax - px * hw, y, az - pz * hw,
+                                bx + px * hw, y, bz + pz * hw,
+                                bx - px * hw, y, bz - pz * hw,
+                                ax - px * hw, y, az - pz * hw
                             );
                         };
+
                         let drawnCount = 0;
                         for (let row = 0; drawnCount < slotsOnThisFloor; row++) {
                             const slotY = minY + SLOT_GAP + row * (slotH + SLOT_GAP);
@@ -2286,18 +2364,13 @@ document.addEventListener('DOMContentLoaded', () => {
                                 const slotX = minX + SLOT_GAP + col * (slotW + SLOT_GAP);
                                 if (slotX + slotW > maxX) break;
                                 if (isSlotInsidePolygon3D(slotX, slotY, slotW, slotH, lot.boundary)) {
-                                    // 繪製格子的四條邊 (3D 座標：x, y(height), z)
-                                    // --- 修正後的程式碼 ---
                                     const x1 = slotX, x2 = slotX + slotW;
-                                    // 直接使用 slotY，因為它已經是正確的負值座標 (對應 3D 的 Z 軸)
-                                    const z1 = slotY, z2 = (slotY + slotH); 
-                                    const y = floorY + 0.05; // 高度維持稍微高一點，搭配下方的 polygonOffset
-
+                                    const z1 = slotY, z2 = (slotY + slotH);
+                                    const y = floorY + 0.05;
                                     pushStrip(x1, z1, x1, z2, y, LINE_W);
                                     pushStrip(x2, z1, x2, z2, y, LINE_W);
                                     pushStrip(x1, z2, x2, z2, y, LINE_W);
                                     pushStrip(x1, z1, x2, z1, y, LINE_W);
-
                                     drawnCount++;
                                 }
                             }
@@ -2308,35 +2381,24 @@ document.addEventListener('DOMContentLoaded', () => {
                             lineGeom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(stripVertices), 3));
                             const slotLines = new THREE.Mesh(lineGeom, slotLineMat);
                             slotLines.renderOrder = 2000;
-                            //slotLines.material.depthTest = false;
-                            //slotLines.material.depthWrite = false;
                             networkGroup.add(slotLines);
-
-                            if (typeof window !== 'undefined' && window.DEBUG_PARKING_SLOTS) {
-                                console.log('[parkingSlots3D] rendered', { lotId: lot.id, floor, segments: stripVertices.length / (3 * 6) });
-                            }
                         }
                     }
 
-                    // 若有多樓層，繪製支柱
+                    // 樓層支柱
                     if (totalFloors > 1) {
                         const pillarMat = new THREE.MeshLambertMaterial({ color: 0x888888 });
                         const pillarRadius = 0.3;
                         const pillarHeight = (totalFloors - 1) * FLOOR_HEIGHT;
-
-                        // 在四角放置支柱 (只放在多邊形內的點)
                         const potentialCorners = [
-                            { x: minX + 1, y: minY + 1 },
-                            { x: maxX - 1, y: minY + 1 },
-                            { x: minX + 1, y: maxY - 1 },
-                            { x: maxX - 1, y: maxY - 1 }
+                            { x: minX + 1, y: minY + 1 }, { x: maxX - 1, y: minY + 1 },
+                            { x: minX + 1, y: maxY - 1 }, { x: maxX - 1, y: maxY - 1 }
                         ];
-
                         potentialCorners.forEach(corner => {
                             if (Geom.Utils.isPointInPolygon(corner, lot.boundary)) {
                                 const pillarGeom = new THREE.CylinderGeometry(pillarRadius, pillarRadius, pillarHeight, 8);
                                 const pillarMesh = new THREE.Mesh(pillarGeom, pillarMat);
-                                pillarMesh.position.set(corner.x, pillarHeight / 2 + 0.06, -corner.y);
+                                pillarMesh.position.set(corner.x, pillarHeight / 2 + 0.06, corner.y); // 注意：這裡的 corner.y 是 Z
                                 pillarMesh.castShadow = true;
                                 networkGroup.add(pillarMesh);
                             }
@@ -2346,12 +2408,11 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
 
-        // --- Generate Traffic Light Poles (Near-Right Only with Dual Link Logic) ---
+        // --- 4. Traffic Light Poles ---
         if (simulation && simulation.trafficLights) {
             simulation.trafficLights.forEach(tfl => {
                 const node = netData.nodes[tfl.nodeId];
                 if (!node) return;
-
                 const incomingLinkIds = [];
                 Object.values(netData.links).forEach(l => { if (l.destination === node.id) incomingLinkIds.push(l.id); });
 
@@ -2362,7 +2423,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     const refLane = lanes[Math.floor(lanes.length / 2)];
                     if (refLane.path.length < 2) return;
 
-                    // 1. Determine Position & Angle for Near-Right Pole
                     const pEnd = refLane.path[refLane.path.length - 1];
                     const pPrev = refLane.path[refLane.path.length - 2];
                     const dirX = pEnd.x - pPrev.x;
@@ -2371,44 +2431,40 @@ document.addEventListener('DOMContentLoaded', () => {
                     const nx = dirX / len;
                     const ny = dirY / len;
                     const angle = Math.atan2(ny, nx);
-                    const rx = -ny; const ry = nx;
+                    const rx = -ny, ry = nx;
+
                     let roadWidth = 0; lanes.forEach(l => roadWidth += l.width);
                     const offset = roadWidth / 2 + 2.0;
                     const nrX = pEnd.x + rx * offset;
                     const nrY = pEnd.y + ry * offset;
                     const nearRightPos = to3D(nrX, nrY, 0);
 
-                    // 2. Identify Opposite Link (for Back Face Control)
+                    // Dual face logic check
                     let oppositeLinkId = null;
-                    const currentAngle = angle;
                     for (const otherId of incomingLinkIds) {
                         if (otherId === linkId) continue;
                         const otherLink = netData.links[otherId];
-                        const otherLanes = Object.values(otherLink.lanes);
-                        if (otherLanes.length === 0) continue;
-                        // Calculate simplified angle for other link
-                        const oPath = otherLanes[0].path;
+                        const oLanes = Object.values(otherLink.lanes);
+                        if (oLanes.length === 0) continue;
+                        const oPath = oLanes[0].path;
                         if (oPath.length < 2) continue;
-                        const oP1 = oPath[oPath.length - 2]; const oP2 = oPath[oPath.length - 1];
+                        const oP1 = oPath[oPath.length - 2], oP2 = oPath[oPath.length - 1];
                         const oAngle = Math.atan2(oP2.y - oP1.y, oP2.x - oP1.x);
-
-                        // Check if angles are roughly opposite (PI diff)
-                        let diff = Math.abs(currentAngle - oAngle);
+                        let diff = Math.abs(angle - oAngle);
                         while (diff > Math.PI) diff -= Math.PI * 2;
-                        diff = Math.abs(diff);
-                        if (Math.abs(diff - Math.PI) < 0.7) { // Tolerance approx 40 deg
+                        if (Math.abs(Math.abs(diff) - Math.PI) < 0.7) {
                             oppositeLinkId = otherId;
                             break;
                         }
                     }
 
-                    // 3. Create Pole
                     const poleGroup = createTrafficLightPole(nearRightPos, angle, node.id, linkId, oppositeLinkId);
                     trafficLightsGroup.add(poleGroup);
                 });
             });
         }
 
+        // --- 5. Debug Meters ---
         if (netData.speedMeters) {
             const boxGeo = new THREE.BoxGeometry(2, 6, 2);
             netData.speedMeters.forEach(meter => {
@@ -2431,6 +2487,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 debugGroup.add(endMesh);
             });
         }
+
         update3DVisibility();
     }
 
@@ -3736,48 +3793,82 @@ document.addEventListener('DOMContentLoaded', () => {
             this.initializePosition(network);
         }
 
-        // 2. [新增] 指派任務方法
         assignParkingTask(stopConfig, network) {
             // 尋找對應的停車場
             const lot = network.parkingLots.find(p => p.id === stopConfig.parkingLotId);
             if (!lot || !lot.gates || lot.gates.length === 0) return;
 
-            // 找到連接這條路徑的 Gate
-            let validGate = null;
+            // 尋找所有合法的入口 (Entry 或 Bidirectional) 且連接到路網
+            const validGates = [];
             for (const gate of lot.gates) {
-                if (gate.connector && this.route.includes(gate.connector.linkId)) {
-                    validGate = gate;
-                    break;
+                if (gate.connector &&
+                    this.route.includes(gate.connector.linkId) &&
+                    (gate.type === 'entry' || gate.type === 'bidirectional')) {
+                    validGates.push(gate);
                 }
             }
 
-            if (validGate) {
+            // 若有合適的入口，隨機選擇一個
+            if (validGates.length > 0) {
+                const chosenGate = validGates[Math.floor(Math.random() * validGates.length)];
+
                 const duration = Number(stopConfig.duration);
                 if (!Number.isFinite(duration) || duration < 0) return;
-                const slotData = this.getEmptySlotInLot(lot);
+
+                // [修改重點]：傳入入口座標 (chosenGate.x, chosenGate.y) 以便尋找最近車位
+                const slotData = this.getEmptySlotInLot(lot, chosenGate.x, chosenGate.y);
+
                 this.parkingTask = {
                     lotId: lot.id,
                     duration,
-                    gate: validGate,
-                    connector: validGate.connector,
-                    targetSpot: slotData,           // 包含 x, y, angle, slot
-                    occupiedSlot: slotData.slot     // 記錄佔用的格位以便離場時釋放
+                    gate: chosenGate,             // 指定選中的入口
+                    connector: chosenGate.connector,
+                    targetSpot: slotData,
+                    occupiedSlot: slotData.slot
                 };
             }
         }
 
         // 3. [修改] 取得停車場內空位 (使用預計算的格位)
-        getEmptySlotInLot(lot) {
-            // 若有預計算的格位陣列，找第一個空位
+        // [修改重點]：新增 entryX, entryY 參數
+        getEmptySlotInLot(lot, entryX, entryY) {
+            // 若有預計算的格位陣列
             if (lot.slots && lot.slots.length > 0) {
-                const emptySlot = lot.slots.find(s => !s.occupied);
-                if (emptySlot) {
-                    emptySlot.occupied = true;
-                    emptySlot.vehicleId = this.id;
-                    return { x: emptySlot.x, y: emptySlot.y, angle: emptySlot.angle, slot: emptySlot };
+                // 1. 篩選出所有未被佔用的空位
+                const freeSlots = lot.slots.filter(s => !s.occupied);
+
+                if (freeSlots.length > 0) {
+                    let bestSlot = null;
+
+                    // 2. 如果有提供入口座標，則尋找距離最近的空位
+                    if (typeof entryX === 'number' && typeof entryY === 'number') {
+                        let minDistSq = Infinity;
+                        for (const slot of freeSlots) {
+                            // 計算距離平方 (比開根號快)
+                            const dx = slot.x - entryX;
+                            const dy = slot.y - entryY;
+                            const distSq = dx * dx + dy * dy;
+
+                            if (distSq < minDistSq) {
+                                minDistSq = distSq;
+                                bestSlot = slot;
+                            }
+                        }
+                    } else {
+                        // 如果沒座標 (Fallback)，就拿第一個
+                        bestSlot = freeSlots[0];
+                    }
+
+                    // 3. 佔用該車位並回傳
+                    if (bestSlot) {
+                        bestSlot.occupied = true;
+                        bestSlot.vehicleId = this.id;
+                        return { x: bestSlot.x, y: bestSlot.y, angle: bestSlot.angle, slot: bestSlot };
+                    }
                 }
             }
-            // 回退：使用中心點
+
+            // 回退邏輯 (如果沒有格位資料，隨機停在停車場範圍內)
             const gate = (lot.gates && lot.gates[0]) ? lot.gates[0] : { x: 0, y: 0, rotation: 0 };
             if (lot.boundary.length > 0) {
                 let sx = 0, sy = 0;
@@ -3818,32 +3909,71 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 // 3. 已停妥 (計時中)
                 else if (this.parkingState === 'parked') {
-                    // 初始化計時器 (只做一次)
+                    // 初始化計時器
                     if (this.parkingStartSimTime === null) {
                         this.parkingStartSimTime = simulation.time;
-                        if (typeof window !== 'undefined' && window.DEBUG_PARKING) {
-                            console.log('[parking] start timer', { id: this.id, time: simulation.time, duration: this.parkingTask.duration });
-                        }
+                        // ... debug log ...
                     }
 
                     // 檢查停留時間
                     const elapsed = simulation.time - this.parkingStartSimTime;
                     if (elapsed < this.parkingTask.duration) {
-                        return; // 時間未到，繼續停留
+                        return; // 時間未到
                     }
 
-                    // 時間到，切換至離場
-                    if (typeof window !== 'undefined' && window.DEBUG_PARKING) {
-                        console.log('[parking] time up, exiting', { id: this.id, elapsed });
-                    }
+                    // --- [修改重點] 時間到，準備離場，隨機選擇出口 ---
                     this.parkingState = 'exiting';
                     this.parkingAnimTime = 0;
-                    this.parkingStartSimTime = null; // 清除計時標記
+                    this.parkingStartSimTime = null;
 
-                    // 設定離場起點 (原來的停車位) 與 終點 (道路接口)
+                    // 設定離場動畫起點 (目前的停車格)
                     this.parkingOriginPos = { x: this.x, y: this.y, angle: this.angle };
+
+                    // 1. 獲取停車場物件
+                    const lot = network.parkingLots.find(p => p.id === this.parkingTask.lotId);
+                    let exitGate = this.parkingTask.gate; // 預設使用原本的入口(fallback)
+
+                    if (lot && lot.gates) {
+                        // 2. 篩選所有合法的出口 (Exit 或 Bidirectional)
+                        const validExitGates = lot.gates.filter(g =>
+                            g.connector &&
+                            (g.type === 'exit' || g.type === 'bidirectional')
+                        );
+
+                        // 3. 隨機選擇一個出口
+                        if (validExitGates.length > 0) {
+                            exitGate = validExitGates[Math.floor(Math.random() * validExitGates.length)];
+                        }
+                    }
+
+                    // 4. 更新任務中的 Gate 與 Connector 資訊，讓離場動畫走向新出口
+                    this.parkingTask.gate = exitGate;
+                    this.parkingTask.connector = exitGate.connector;
+
+                    // 5. 設定離場動畫終點 (出口連接道路的座標)
                     const gate = this.parkingTask.gate;
                     this.parkingTargetPos = { x: gate.connector.x2, y: gate.connector.y2, angle: gate.rotation };
+
+                    // 6. [重要] 更新車輛的道路邏輯狀態
+                    // 因為出口可能連接著不同的 Link，或者在同一 Link 的不同位置
+                    // 我們需要更新 currentLinkId, currentLinkIndex 以及 distanceOnPath
+                    // 這樣當車輛回到 'onLink' 狀態時，才不會瞬間跳回入口處
+
+                    // 檢查出口是否在原本的路線上
+                    const newLinkId = gate.connector.linkId;
+                    const newRouteIndex = this.route.indexOf(newLinkId);
+
+                    if (newRouteIndex !== -1) {
+                        this.currentLinkId = newLinkId;
+                        this.currentLinkIndex = newRouteIndex;
+                        // 注意：distanceOnPath 會在 handleParkingExit 動畫結束時被更新為 connector.distance
+                    } else {
+                        // 如果隨機選到的出口連到了不在原本導航路徑上的路 (極端情況)
+                        // 這裡可以選擇強制修正 route 或者保持原樣 (這取決於路網設計)
+                        // 簡單起見，我們假設所有出口都連回合法路徑，或者僅更新 Link ID
+                        this.currentLinkId = newLinkId;
+                    }
+
                     return;
                 }
                 // 4. 離場動畫中
@@ -3898,22 +4028,43 @@ document.addEventListener('DOMContentLoaded', () => {
             this.parkingAnimTime += dt;
             const t = Math.min(1, this.parkingAnimTime / ANIM_DURATION);
 
-            // 貝茲曲線插值
+            // [修正] 使用三次貝茲曲線 (Cubic Bezier)
+            // P0: 車輛起始位置
+            // P1: 道路上的連接點 (Connector Point) -> 確保車輛先轉入通道口
+            // P2: 大門位置 (Gate) -> 沿著通道行駛
+            // P3: 停車格位 (Target Spot)
+
             const p0 = this.parkingOriginPos;
-            const p1 = { x: this.parkingTask.gate.x, y: this.parkingTask.gate.y };
-            const p2 = this.parkingTask.targetSpot;
+            // 透過 Connector 座標確保車輛看起來是「轉進去」的
+            const p1 = { x: this.parkingTask.connector.x2, y: this.parkingTask.connector.y2 };
+            const p2 = { x: this.parkingTask.gate.x, y: this.parkingTask.gate.y };
+            const p3 = this.parkingTask.targetSpot;
 
+            // 三次貝茲公式
             const invT = 1 - t;
-            this.x = invT * invT * p0.x + 2 * invT * t * p1.x + t * t * p2.x;
-            this.y = invT * invT * p0.y + 2 * invT * t * p1.y + t * t * p2.y;
+            const invT2 = invT * invT;
+            const invT3 = invT2 * invT;
+            const t2 = t * t;
+            const t3 = t2 * t;
 
-            // 角度計算
+            this.x = invT3 * p0.x + 3 * invT2 * t * p1.x + 3 * invT * t2 * p2.x + t3 * p3.x;
+            this.y = invT3 * p0.y + 3 * invT2 * t * p1.y + 3 * invT * t2 * p2.y + t3 * p3.y;
+
+            // 角度計算 (計算切線方向)
+            // 為了平滑，我們取稍微前面一點的時間點來計算差值
             const nextT = Math.min(1, t + 0.01);
             const nInvT = 1 - nextT;
-            const nx = nInvT * nInvT * p0.x + 2 * nInvT * nextT * p1.x + nextT * nextT * p2.x;
-            const ny = nInvT * nInvT * p0.y + 2 * nInvT * nextT * p1.y + nextT * nextT * p2.y;
+            const nInvT2 = nInvT * nInvT;
+            const nInvT3 = nInvT2 * nInvT;
+            const nt2 = nextT * nextT;
+            const nt3 = nt2 * nextT;
+
+            const nx = nInvT3 * p0.x + 3 * nInvT2 * nextT * p1.x + 3 * nInvT * nt2 * p2.x + nt3 * p3.x;
+            const ny = nInvT3 * p0.y + 3 * nInvT2 * nextT * p1.y + 3 * nInvT * nt2 * p2.y + nt3 * p3.y;
+
             const pathAngle = Math.atan2(ny - this.y, nx - this.x);
 
+            // 平滑轉動角度
             const normalizeAngleDiff = (diff) => {
                 while (diff <= -Math.PI) diff += Math.PI * 2;
                 while (diff > Math.PI) diff -= Math.PI * 2;
@@ -3924,7 +4075,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 return u * u * (3 - 2 * u);
             };
 
-            const targetAngle = (p2 && typeof p2.angle === 'number') ? p2.angle : pathAngle;
+            const targetAngle = (p3 && typeof p3.angle === 'number') ? p3.angle : pathAngle;
+            // 最後 20% 的時間慢慢對齊停車格角度
             const w = smoothstep(0.8, 1.0, t);
             this.angle = pathAngle + normalizeAngleDiff(targetAngle - pathAngle) * w;
 
@@ -3932,8 +4084,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (t >= 1) {
                 this.parkingState = 'parked';
                 this.parkingAnimTime = 0;
-                if (p2 && typeof p2.angle === 'number') this.angle = p2.angle;
-                // [關鍵] 重置為 null，強制 update 在下一幀以當前 simulation.time 作為開始時間
+                if (p3 && typeof p3.angle === 'number') this.angle = p3.angle;
                 this.parkingStartSimTime = null;
             }
         }
@@ -4709,16 +4860,40 @@ document.addEventListener('DOMContentLoaded', () => {
                 const gates = [];
                 lotEl.querySelectorAll('ParkingGates > ParkingGate').forEach(gateEl => {
                     const gId = gateEl.querySelector('id')?.textContent;
+                    const gType = gateEl.querySelector('gateType')?.textContent || 'bidirectional';
+
                     const geoEl = gateEl.querySelector('Geometry');
                     if (geoEl) {
-                        const gx = parseFloat(geoEl.querySelector('x').textContent);
-                        const gy = -parseFloat(geoEl.querySelector('y').textContent); // 注意 Y 軸反轉
+                        // [修正] 解析幾何參數
+                        const gx_tl = parseFloat(geoEl.querySelector('x').textContent);
+                        const gy_tl = -parseFloat(geoEl.querySelector('y').textContent); // Y 軸反轉
                         const gw = parseFloat(geoEl.querySelector('width').textContent);
                         const gh = parseFloat(geoEl.querySelector('height').textContent);
-                        const gr = parseFloat(geoEl.querySelector('rotation').textContent);
-                        gates.push({ id: gId, x: gx, y: gy, width: gw, height: gh, rotation: gr, connector: null });
+                        let rawRotation = parseFloat(geoEl.querySelector('rotation').textContent);
+
+                        // [修正] 角度轉為弧度 (XML 為度，順時針)
+                        const gr = rawRotation * (Math.PI / 180.0);
+
+                        // [修正] 計算中心點。XML 座標 (gx_tl, gy_tl) 是左上角，且旋轉是以該點為中心。
+                        // 我們在模擬器中需要中心座標，以便 2D/3D 繪製對齊。
+                        const cos = Math.cos(gr);
+                        const sin = Math.sin(gr);
+                        const cx = gx_tl + (gw / 2) * cos - (gh / 2) * sin;
+                        const cy = gy_tl + (gw / 2) * sin + (gh / 2) * cos;
+
+                        gates.push({
+                            id: gId,
+                            type: gType.toLowerCase(),
+                            x: cx,
+                            y: cy,
+                            width: gw,
+                            height: gh,
+                            rotation: gr,
+                            connector: null
+                        });
                     }
                 });
+
 
                 // 3. 計算出入口連接道路 (30公尺內)
                 gates.forEach(gate => {
@@ -4731,23 +4906,27 @@ document.addEventListener('DOMContentLoaded', () => {
                     Object.values(links).forEach(link => {
                         const lanes = Object.values(link.lanes);
                         if (lanes.length === 0) return;
-                        // 使用第一條車道的路徑作為參考
-                        const path = lanes[0].path;
-                        const best = getClosestPointOnPathWithDistance(path, { x: gate.x, y: gate.y });
-                        if (!best) return;
-                        if (best.dist < minDst) {
-                            minDst = best.dist;
-                            bestPoint = { x: best.x, y: best.y };
-                            bestLinkId = link.id;
-                            bestS = best.s;
-                        }
+
+                        // [修正]：遍歷「每一條車道」，找出離 Gate 最近的那一條
+                        // 原本代碼是 const path = lanes[0].path; 這會導致強制連到左側車道
+                        lanes.forEach(lane => {
+                            const path = lane.path;
+                            const best = getClosestPointOnPathWithDistance(path, { x: gate.x, y: gate.y });
+
+                            if (best && best.dist < minDst) {
+                                minDst = best.dist;
+                                bestPoint = { x: best.x, y: best.y };
+                                bestLinkId = link.id;
+                                bestS = best.s;
+                            }
+                        });
                     });
 
                     // 限制 30 公尺內
                     if (minDst <= 30 && bestPoint && typeof bestS === 'number') {
                         gate.connector = {
-                            x1: gate.x, y1: gate.y,
-                            x2: bestPoint.x, y2: bestPoint.y,
+                            x1: gate.x, y1: gate.y, // Gate 座標
+                            x2: bestPoint.x, y2: bestPoint.y, // 道路上的連接點 (現在會是最近的車道)
                             linkId: bestLinkId,
                             distance: bestS,
                             offset: minDst
@@ -4824,7 +5003,7 @@ document.addEventListener('DOMContentLoaded', () => {
             Promise.all(imagePromises).then(() => {
                 resolve({
                     links, nodes, spawners, trafficLights, staticVehicles, speedMeters, sectionMeters,
-                    parkingLots, // <--- 新增這裡
+                    parkingLots,
                     bounds: { minX, minY, maxX, maxY },
                     pathfinder: new Pathfinder(links, nodes),
                     backgroundTiles
