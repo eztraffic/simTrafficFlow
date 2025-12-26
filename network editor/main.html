@@ -13,6 +13,13 @@
     <header>
         <h1>simTrafficFlow Network Editor</h1>
         <div class="header-actions">
+            <label for="simulationModeSelect" style="margin-right: 8px;">
+                Mode
+            </label>
+            <select id="simulationModeSelect" title="Switch simulation configuration mode" style="margin-right: 12px;">
+                <option value="od_path">OD路徑模式</option>
+                <option value="flow_turning">流量轉向模式</option>
+            </select>
             <button id="importXmlBtn" title="Import from .sim">Import File</button>
             <button id="exportXmlBtn" title="Export network to .sim file">Export File</button>
         </div>
@@ -165,3 +172,4 @@
     <script src="editor.js"></script>
 </body>
 </html>
+
