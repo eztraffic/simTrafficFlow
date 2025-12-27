@@ -4014,7 +4014,157 @@ document.addEventListener('DOMContentLoaded', () => {
             // Data Collection
             this.sectionEntryData = {};
 
+            // --- [修復] 補回停車相關狀態變數 ---
+            this.parkingTask = null; // { lotId, duration, gate, connector }
+            this.parkingState = 'none'; // 'none', 'approaching', 'entering', 'parked', 'exiting'
+            this.parkingTimer = 0;
+            this.parkingStartSimTime = null;
+            this.parkingAnimTime = 0;
+            this.parkingOriginPos = { x: 0, y: 0, angle: 0 }; // 進場動畫起點
+            this.parkingTargetPos = { x: 0, y: 0, angle: 0 }; // 停車格位置
+            // ---------------------------------
+
             this.initializePosition(network);
+        }
+
+        // [修復] 指派停車任務
+        assignParkingTask(stopConfig, network) {
+            const lot = network.parkingLots.find(p => p.id === stopConfig.parkingLotId);
+            if (!lot || !lot.gates || lot.gates.length === 0) return;
+
+            const validGates = [];
+            for (const gate of lot.gates) {
+                if (gate.connector &&
+                    this.route.includes(gate.connector.linkId) &&
+                    (gate.type === 'entry' || gate.type === 'bidirectional')) {
+                    validGates.push(gate);
+                }
+            }
+
+            if (validGates.length > 0) {
+                const chosenGate = validGates[Math.floor(Math.random() * validGates.length)];
+                const duration = Number(stopConfig.duration);
+                if (!Number.isFinite(duration) || duration < 0) return;
+
+                const slotData = this.getEmptySlotInLot(lot, chosenGate.x, chosenGate.y);
+
+                this.parkingTask = {
+                    lotId: lot.id,
+                    duration,
+                    gate: chosenGate,
+                    connector: chosenGate.connector,
+                    targetSpot: slotData,
+                    occupiedSlot: slotData.slot
+                };
+            }
+        }
+
+        // [修復] 尋找空車位
+        getEmptySlotInLot(lot, entryX, entryY) {
+            if (lot.slots && lot.slots.length > 0) {
+                const freeSlots = lot.slots.filter(s => !s.occupied);
+                if (freeSlots.length > 0) {
+                    let bestSlot = null;
+                    if (typeof entryX === 'number' && typeof entryY === 'number') {
+                        let minDistSq = Infinity;
+                        for (const slot of freeSlots) {
+                            const dx = slot.x - entryX;
+                            const dy = slot.y - entryY;
+                            const distSq = dx * dx + dy * dy;
+                            if (distSq < minDistSq) {
+                                minDistSq = distSq;
+                                bestSlot = slot;
+                            }
+                        }
+                    } else {
+                        bestSlot = freeSlots[0];
+                    }
+                    if (bestSlot) {
+                        bestSlot.occupied = true;
+                        bestSlot.vehicleId = this.id;
+                        return { x: bestSlot.x, y: bestSlot.y, angle: bestSlot.angle, slot: bestSlot };
+                    }
+                }
+            }
+            // Fallback: 隨機位置
+            const gate = (lot.gates && lot.gates[0]) ? lot.gates[0] : { x: 0, y: 0, rotation: 0 };
+            return { x: gate.x, y: gate.y, angle: 0, slot: null };
+        }
+
+        // [修復] 處理進場動畫
+        handleParkingEntry(dt, simulation) {
+            const ANIM_DURATION = 4.0;
+            this.parkingAnimTime += dt;
+            const t = Math.min(1, this.parkingAnimTime / ANIM_DURATION);
+
+            const p0 = this.parkingOriginPos;
+            const p1 = { x: this.parkingTask.connector.x2, y: this.parkingTask.connector.y2 };
+            const p2 = { x: this.parkingTask.gate.x, y: this.parkingTask.gate.y };
+            const p3 = this.parkingTask.targetSpot;
+
+            const invT = 1 - t;
+            const invT2 = invT * invT;
+            const invT3 = invT2 * invT;
+            const t2 = t * t;
+            const t3 = t2 * t;
+
+            this.x = invT3 * p0.x + 3 * invT2 * t * p1.x + 3 * invT * t2 * p2.x + t3 * p3.x;
+            this.y = invT3 * p0.y + 3 * invT2 * t * p1.y + 3 * invT * t2 * p2.y + t3 * p3.y;
+
+            // 角度計算
+            const nextT = Math.min(1, t + 0.01);
+            const nInvT = 1 - nextT;
+            const nInvT2 = nInvT * nInvT;
+            const nInvT3 = nInvT2 * nInvT;
+            const nt2 = nextT * nextT;
+            const nt3 = nt2 * nextT;
+            const nx = nInvT3 * p0.x + 3 * nInvT2 * nextT * p1.x + 3 * nInvT * nt2 * p2.x + nt3 * p3.x;
+            const ny = nInvT3 * p0.y + 3 * nInvT2 * nextT * p1.y + 3 * nInvT * nt2 * p2.y + nt3 * p3.y;
+
+            const pathAngle = Math.atan2(ny - this.y, nx - this.x);
+            // 簡單平滑
+            this.angle = pathAngle;
+
+            if (t >= 1) {
+                this.parkingState = 'parked';
+                this.parkingAnimTime = 0;
+                if (p3 && typeof p3.angle === 'number') this.angle = p3.angle;
+                this.parkingStartSimTime = null;
+            }
+        }
+
+        // [修復] 處理離場動畫
+        handleParkingExit(dt, simulation) {
+            const ANIM_DURATION = 4.0;
+            this.parkingAnimTime += dt;
+            const t = Math.min(1, this.parkingAnimTime / ANIM_DURATION);
+
+            const p0 = this.parkingOriginPos;
+            const p1 = { x: this.parkingTask.gate.x, y: this.parkingTask.gate.y };
+            const conn = this.parkingTask.connector;
+            const p2 = { x: conn.x2, y: conn.y2 };
+
+            const invT = 1 - t;
+            this.x = invT * invT * p0.x + 2 * invT * t * p1.x + t * t * p2.x;
+            this.y = invT * invT * p0.y + 2 * invT * t * p1.y + t * t * p2.y;
+
+            const nextT = Math.min(1, t + 0.01);
+            const nInvT = 1 - nextT;
+            const nx = nInvT * nInvT * p0.x + 2 * nInvT * nextT * p1.x + nextT * nextT * p2.x;
+            const ny = nInvT * nInvT * p0.y + 2 * nInvT * nextT * p1.y + nextT * nextT * p2.y;
+            this.angle = Math.atan2(ny - this.y, nx - this.x);
+
+            if (t >= 1) {
+                if (this.parkingTask.occupiedSlot) {
+                    this.parkingTask.occupiedSlot.occupied = false;
+                    this.parkingTask.occupiedSlot.vehicleId = null;
+                }
+                this.parkingState = 'none';
+                this.distanceOnPath = this.parkingTask.connector.distance;
+                this.speed = 0;
+                this.parkingStartSimTime = null;
+                this.parkingTask = null; // 任務結束
+            }
         }
 
         initializePosition(network) {
@@ -4042,6 +4192,76 @@ document.addEventListener('DOMContentLoaded', () => {
         update(dt, allVehicles, simulation) {
             if (this.finished) return;
             const network = simulation.network;
+            // =========================================================
+            // [修復] 插入停車狀態機邏輯
+            // =========================================================
+            if (this.parkingTask) {
+                // 1. 準備進場
+                if (this.state === 'onLink' && this.parkingState === 'none') {
+                    if (this.currentLinkId === this.parkingTask.connector.linkId) {
+                        const distToGate = this.parkingTask.connector.distance;
+                        // 接近入口 5 米內觸發
+                        if (Math.abs(this.distanceOnPath - distToGate) < 5.0) {
+                            this.parkingState = 'entering';
+                            this.state = 'parking_maneuver'; // 脫離道路物理
+                            this.parkingAnimTime = 0;
+                            this.speed = 10 / 3.6;
+                            this.parkingOriginPos = { x: this.x, y: this.y, angle: this.angle };
+                            return;
+                        }
+                    }
+                }
+                // 2. 進場動畫中
+                else if (this.parkingState === 'entering') {
+                    this.handleParkingEntry(dt, simulation);
+                    return;
+                }
+                // 3. 已停妥 (計時)
+                else if (this.parkingState === 'parked') {
+                    if (this.parkingStartSimTime === null) this.parkingStartSimTime = simulation.time;
+                    const elapsed = simulation.time - this.parkingStartSimTime;
+                    if (elapsed < this.parkingTask.duration) return;
+
+                    // 時間到，準備離場
+                    this.parkingState = 'exiting';
+                    this.parkingAnimTime = 0;
+                    this.parkingStartSimTime = null;
+                    this.parkingOriginPos = { x: this.x, y: this.y, angle: this.angle };
+
+                    // 選擇出口
+                    const lot = network.parkingLots.find(p => p.id === this.parkingTask.lotId);
+                    let exitGate = this.parkingTask.gate;
+                    if (lot && lot.gates) {
+                        const validExits = lot.gates.filter(g => g.connector && (g.type === 'exit' || g.type === 'bidirectional'));
+                        if (validExits.length > 0) exitGate = validExits[Math.floor(Math.random() * validExits.length)];
+                    }
+                    this.parkingTask.gate = exitGate;
+                    this.parkingTask.connector = exitGate.connector;
+                    this.parkingTargetPos = { x: exitGate.connector.x2, y: exitGate.connector.y2 };
+
+                    // 更新車輛邏輯位置到出口所在的 Link
+                    const newLinkId = exitGate.connector.linkId;
+                    const newRouteIndex = this.route.indexOf(newLinkId);
+                    if (newRouteIndex !== -1) {
+                        this.currentLinkId = newLinkId;
+                        this.currentLinkIndex = newRouteIndex;
+                    } else {
+                        this.currentLinkId = newLinkId;
+                    }
+                    return;
+                }
+                // 4. 離場動畫中
+                else if (this.parkingState === 'exiting') {
+                    this.handleParkingExit(dt, simulation);
+                    if (this.parkingState === 'none') {
+                        this.state = 'onLink';
+                        this.speed = 0;
+                    } else {
+                        return;
+                    }
+                }
+            }
+            // =========================================================
             const oldDistanceOnPath = this.distanceOnPath;
 
             if (this.laneChangeCooldown > 0) { this.laneChangeCooldown -= dt; }
@@ -4659,6 +4879,36 @@ document.addEventListener('DOMContentLoaded', () => {
                 return null;
             }
 
+            // [修復] 補回遺失的輔助函數，用於計算停車場出入口最近的道路點
+            function getClosestPointOnPathWithDistance(path, point) {
+                if (!path || path.length < 2) return null;
+                let best = null;
+                let accumulatedLength = 0;
+                for (let i = 0; i < path.length - 1; i++) {
+                    const v = path[i];
+                    const w = path[i + 1];
+                    const dx = w.x - v.x;
+                    const dy = w.y - v.y;
+                    const l2 = dx * dx + dy * dy;
+                    if (l2 <= 0) continue;
+
+                    let t = ((point.x - v.x) * dx + (point.y - v.y) * dy) / l2;
+                    t = Math.max(0, Math.min(1, t));
+
+                    const x = v.x + t * dx;
+                    const y = v.y + t * dy;
+                    const dist = Math.hypot(point.x - x, point.y - y);
+                    const s = accumulatedLength + t * Math.sqrt(l2);
+
+                    if (!best || dist < best.dist) {
+                        best = { x, y, dist, s };
+                    }
+
+                    accumulatedLength += Math.sqrt(l2);
+                }
+                return best;
+            }
+
             // --- 1. 解析全域參數 (ModelParameters) ---
             const paramsEl = xmlDoc.getElementsByTagName("ModelParameters")[0] || xmlDoc.getElementsByTagName("tm:ModelParameters")[0];
             if (paramsEl) {
@@ -4967,6 +5217,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     const periodConfig = {
                         duration: parseFloat(timePeriodEl.querySelector('duration').textContent),
                         numVehicles: parseInt(timePeriodEl.querySelector('numberOfVehicles').textContent, 10),
+                        stops: [], // [修復] 必須補上這一行初始化，否則下面 push 會報錯
                         destinations: [],
                         vehicleProfiles: []
                     };
@@ -4976,6 +5227,44 @@ document.addEventListener('DOMContentLoaded', () => {
                             destinationNodeId: destEl.querySelector('destinationNodeId').textContent
                         });
                     });
+
+                    // =                ======================================================
+                    // [修復] 補回停車任務 (IntermediateStops) 解析邏輯
+                    // =======================================================
+                    // 嘗試抓取 IntermediateStops (兼容有無 namespace)
+                    let stopsElList = timePeriodEl.getElementsByTagName('IntermediateStops');
+                    if (stopsElList.length === 0) stopsElList = timePeriodEl.getElementsByTagName('tm:IntermediateStops');
+
+                    if (stopsElList.length > 0) {
+                        const stopsEl = stopsElList[0];
+                        // 遍歷所有子節點 (Stop)
+                        for (let k = 0; k < stopsEl.children.length; k++) {
+                            const stopEl = stopsEl.children[k];
+                            if (stopEl.nodeType !== 1) continue; // 跳過非 Element 節點
+
+                            // 輔助函數：取得標籤內容 (兼容 tm: 前綴)
+                            const getVal = (tag) => {
+                                const els = stopEl.getElementsByTagName(tag);
+                                if (els.length > 0) return els[0].textContent;
+                                const elsNS = stopEl.getElementsByTagName('tm:' + tag);
+                                return elsNS.length > 0 ? elsNS[0].textContent : null;
+                            };
+
+                            const pId = getVal('parkingLotId');
+                            const prob = getVal('probability');
+                            const dur = getVal('duration');
+
+                            if (pId) {
+                                periodConfig.stops.push({
+                                    parkingLotId: pId,
+                                    probability: prob ? parseFloat(prob) : 100,
+                                    duration: dur ? parseFloat(dur) * 60 : 300 // 分鐘轉秒，預設 5 分鐘
+                                });
+                            }
+                        }
+                    }
+                    // =======================================================
+
                     timePeriodEl.querySelectorAll('VehicleProfiles > VehicleProfile').forEach(profEl => {
                         const driverParams = profEl.querySelector('Parameters');
                         const vehicleEl = profEl.querySelector('RegularVehicle');
@@ -5131,6 +5420,155 @@ document.addEventListener('DOMContentLoaded', () => {
                 backgroundTiles.push({ image: img, x, y, width, height, opacity });
             });
 
+            // =======================================================
+            // [修復] 補回遺失的停車場解析邏輯
+            // =======================================================
+            const parkingLots = [];
+            xmlDoc.querySelectorAll('ParkingLots > ParkingLot').forEach(lotEl => {
+                const id = lotEl.querySelector('id')?.textContent || `parking_${parkingLots.length}`;
+                const name = lotEl.querySelector('name')?.textContent || '';
+
+                // 1. 解析邊界
+                const boundary = [];
+                lotEl.querySelectorAll('Boundary > Point').forEach(p => {
+                    boundary.push({
+                        x: parseFloat(p.querySelector('x').textContent),
+                        y: -parseFloat(p.querySelector('y').textContent) // 注意 Y 軸反轉
+                    });
+                });
+
+                // 2. 解析出入口
+                const gates = [];
+                lotEl.querySelectorAll('ParkingGates > ParkingGate').forEach(gateEl => {
+                    const gId = gateEl.querySelector('id')?.textContent;
+                    const gType = gateEl.querySelector('gateType')?.textContent || 'bidirectional';
+
+                    const geoEl = gateEl.querySelector('Geometry');
+                    if (geoEl) {
+                        const gx_tl = parseFloat(geoEl.querySelector('x').textContent);
+                        const gy_tl = -parseFloat(geoEl.querySelector('y').textContent); // Y 軸反轉
+                        const gw = parseFloat(geoEl.querySelector('width').textContent);
+                        const gh = parseFloat(geoEl.querySelector('height').textContent);
+                        let rawRotation = parseFloat(geoEl.querySelector('rotation').textContent);
+
+                        // 角度轉為弧度
+                        const gr = rawRotation * (Math.PI / 180.0);
+
+                        // 計算中心點 (XML是左上角，轉為中心以便繪製)
+                        const cos = Math.cos(gr);
+                        const sin = Math.sin(gr);
+                        const cx = gx_tl + (gw / 2) * cos - (gh / 2) * sin;
+                        const cy = gy_tl + (gw / 2) * sin + (gh / 2) * cos;
+
+                        gates.push({
+                            id: gId,
+                            type: gType.toLowerCase(),
+                            x: cx,
+                            y: cy,
+                            width: gw,
+                            height: gh,
+                            rotation: gr,
+                            connector: null
+                        });
+                    }
+                });
+
+                // 3. 計算出入口連接道路 (30公尺內)
+                gates.forEach(gate => {
+                    let minDst = Infinity;
+                    let bestPoint = null;
+                    let bestLinkId = null;
+                    let bestS = null;
+
+                    // 遍歷所有道路尋找最近點
+                    Object.values(links).forEach(link => {
+                        const lanes = Object.values(link.lanes);
+                        if (lanes.length === 0) return;
+
+                        lanes.forEach(lane => {
+                            const path = lane.path;
+                            // 使用新版代碼中已存在的 getClosestPointOnPathWithDistance 函數
+                            const best = getClosestPointOnPathWithDistance(path, { x: gate.x, y: gate.y });
+
+                            if (best && best.dist < minDst) {
+                                minDst = best.dist;
+                                bestPoint = { x: best.x, y: best.y };
+                                bestLinkId = link.id;
+                                bestS = best.s;
+                            }
+                        });
+                    });
+
+                    // 限制 30 公尺內
+                    if (minDst <= 30 && bestPoint && typeof bestS === 'number') {
+                        gate.connector = {
+                            x1: gate.x, y1: gate.y, // Gate 座標
+                            x2: bestPoint.x, y2: bestPoint.y, // 道路上的連接點
+                            linkId: bestLinkId,
+                            distance: bestS,
+                            offset: minDst
+                        };
+                    }
+                });
+
+                // 解析車位數量
+                const carCapacity = parseInt(lotEl.querySelector('carCapacity')?.textContent || '0', 10);
+                const motoCapacity = parseInt(lotEl.querySelector('motoCapacity')?.textContent || '0', 10);
+
+                // 4. 預先計算停車格位陣列
+                const slots = [];
+                if (carCapacity > 0 && boundary.length >= 3) {
+                    const SLOT_WIDTH = 2.5;
+                    const SLOT_LENGTH = 5.5;
+                    const SLOT_GAP = 0.1;
+
+                    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+                    boundary.forEach(p => {
+                        if (p.x < minX) minX = p.x;
+                        if (p.x > maxX) maxX = p.x;
+                        if (p.y < minY) minY = p.y;
+                        if (p.y > maxY) maxY = p.y;
+                    });
+
+                    const lotWidth = maxX - minX;
+                    const lotHeight = maxY - minY;
+                    const isHorizontal = lotWidth >= lotHeight;
+                    const slotW = isHorizontal ? SLOT_WIDTH : SLOT_LENGTH;
+                    const slotH = isHorizontal ? SLOT_LENGTH : SLOT_WIDTH;
+
+                    function isSlotInsidePoly(sx, sy, sw, sh, poly) {
+                        const corners = [
+                            { x: sx, y: sy },
+                            { x: sx + sw, y: sy },
+                            { x: sx + sw, y: sy + sh },
+                            { x: sx, y: sy + sh }
+                        ];
+                        return corners.every(c => Geom.Utils.isPointInPolygon(c, poly));
+                    }
+
+                    for (let row = 0; slots.length < carCapacity; row++) {
+                        const sy = minY + SLOT_GAP + row * (slotH + SLOT_GAP);
+                        if (sy + slotH > maxY) break;
+                        for (let col = 0; slots.length < carCapacity; col++) {
+                            const sx = minX + SLOT_GAP + col * (slotW + SLOT_GAP);
+                            if (sx + slotW > maxX) break;
+                            if (isSlotInsidePoly(sx, sy, slotW, slotH, boundary)) {
+                                const cx = sx + slotW / 2;
+                                const cy = sy + slotH / 2;
+                                const angle = isHorizontal ? Math.PI / 2 : 0;
+                                slots.push({
+                                    x: cx, y: cy, width: slotW, height: slotH,
+                                    angle: angle, occupied: false, vehicleId: null
+                                });
+                            }
+                        }
+                    }
+                }
+
+                parkingLots.push({ id, name, boundary, gates, carCapacity, motoCapacity, slots });
+            });
+            // =======================================================
+
             Promise.all(imagePromises).then(() => {
                 resolve({
                     links,
@@ -5140,11 +5578,14 @@ document.addEventListener('DOMContentLoaded', () => {
                     staticVehicles,
                     speedMeters,
                     sectionMeters,
+                    // ↓↓↓↓↓ 記得加入這行 ↓↓↓↓↓
+                    parkingLots,
+                    // ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
                     bounds: { minX, minY, maxX, maxY },
                     pathfinder: new Pathfinder(links, nodes),
                     backgroundTiles,
-                    navigationMode, // [新增]
-                    vehicleProfiles // [新增]
+                    navigationMode,
+                    vehicleProfiles
                 });
             }).catch(() => reject(new Error(translations[currentLang].imageLoadError)));
         });
