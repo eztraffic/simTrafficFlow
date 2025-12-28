@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <tm:TrafficModel parserVersion="1.2" xmlns:tm="http://traffic.cos.ru/cossim/TrafficModelDefinitionFile0.1">
+  <tm:ModelParameters>
+    <tm:randomSeed>20028</tm:randomSeed>
+    <tm:immutableVehiclesPercent>70</tm:immutableVehiclesPercent>
+    <tm:NavigationMode>FLOW_BASED</tm:NavigationMode>
+  </tm:ModelParameters>
   <tm:RoadNetwork>
     <tm:Links>
       <tm:Link>
@@ -49,13 +54,6 @@
             <tm:Destinations>
               <tm:Destination><tm:weight>1</tm:weight><tm:destinationNodeId>1</tm:destinationNodeId></tm:Destination>
             </tm:Destinations>
-            <tm:IntermediateStops>
-              <tm:Stop>
-                <tm:parkingLotId>parking_4</tm:parkingLotId>
-                <tm:probability>100</tm:probability>
-                <tm:duration>20</tm:duration>
-              </tm:Stop>
-            </tm:IntermediateStops>
             <tm:VehicleProfiles>
               <tm:VehicleProfile><tm:weight>1</tm:weight>
                 <tm:RegularVehicle>
@@ -74,30 +72,32 @@
   </tm:Agents>
   <tm:Meters>
   </tm:Meters>
-  <tm:ModelParameters><tm:randomSeed>65921</tm:randomSeed><tm:immutableVehiclesPercent>70</tm:immutableVehiclesPercent></tm:ModelParameters>
   <tm:ParkingLots>
     <tm:ParkingLot>
       <tm:id>parking_4</tm:id>
-      <tm:name>Parking Lot 2</tm:name>
+      <tm:name>Parking Lot 4</tm:name>
       <tm:carCapacity>100</tm:carCapacity>
       <tm:motoCapacity>0</tm:motoCapacity>
+      <tm:attractionProb>90</tm:attractionProb>
+      <tm:stayDuration>1</tm:stayDuration>
       <tm:Boundary>
-        <tm:Point><tm:x>308.0186</tm:x><tm:y>-220.1391</tm:y></tm:Point>
-        <tm:Point><tm:x>452.6580</tm:x><tm:y>-329.9735</tm:y></tm:Point>
-        <tm:Point><tm:x>579.9814</tm:x><tm:y>-230.4040</tm:y></tm:Point>
-        <tm:Point><tm:x>370.1524</tm:x><tm:y>-177.0265</tm:y></tm:Point>
-        <tm:Point><tm:x>324.3160</tm:x><tm:y>-177.0265</tm:y></tm:Point>
-        <tm:Point><tm:x>324.3160</tm:x><tm:y>-177.0265</tm:y></tm:Point>
+        <tm:Point><tm:x>358.0000</tm:x><tm:y>-209.0000</tm:y></tm:Point>
+        <tm:Point><tm:x>348.0000</tm:x><tm:y>-333.0000</tm:y></tm:Point>
+        <tm:Point><tm:x>531.0000</tm:x><tm:y>-335.0000</tm:y></tm:Point>
+        <tm:Point><tm:x>575.0000</tm:x><tm:y>-241.0000</tm:y></tm:Point>
+        <tm:Point><tm:x>567.0000</tm:x><tm:y>-193.0000</tm:y></tm:Point>
+        <tm:Point><tm:x>567.0000</tm:x><tm:y>-193.0000</tm:y></tm:Point>
+        <tm:Point><tm:x>567.0000</tm:x><tm:y>-193.0000</tm:y></tm:Point>
       </tm:Boundary>
       <tm:ParkingGates>
         <tm:ParkingGate>
-          <tm:id>gate_3</tm:id>
+          <tm:id>gate_5</tm:id>
           <tm:gateType>bidirectional</tm:gateType>
           <tm:Geometry>
-            <tm:x>329.8947</tm:x>
-            <tm:y>-165.3553</tm:y>
-            <tm:width>24.0000</tm:width>
-            <tm:height>26.0000</tm:height>
+            <tm:x>400.0000</tm:x>
+            <tm:y>-149.0000</tm:y>
+            <tm:width>54.0000</tm:width>
+            <tm:height>78.0000</tm:height>
             <tm:rotation>0.0000</tm:rotation>
           </tm:Geometry>
         </tm:ParkingGate>
