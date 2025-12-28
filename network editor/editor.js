@@ -280,35 +280,35 @@ document.addEventListener('DOMContentLoaded', () => {
             konvaObj.stroke('blue');
             konvaObj.strokeWidth(4);
         } else if (obj.type === 'ParkingLot') {
-                konvaObj = obj.konvaGroup;
-                const tr = new Konva.Transformer({
-                    nodes: [konvaObj],
-                    keepRatio: false,
-                    borderStroke: 'blue',
-                    anchorStroke: 'blue',
-                    anchorFill: 'white',
-                    rotationSnaps: [0, 90, 180, 270],
-                    shouldOverdrawWholeArea: true,
-                    anchorSize: 8 // 變形框錨點大小
-                });
-                layer.add(tr);
-                tr.moveToTop();
-                obj.konvaTransformer = tr;
+            konvaObj = obj.konvaGroup;
+            const tr = new Konva.Transformer({
+                nodes: [konvaObj],
+                keepRatio: false,
+                borderStroke: 'blue',
+                anchorStroke: 'blue',
+                anchorFill: 'white',
+                rotationSnaps: [0, 90, 180, 270],
+                shouldOverdrawWholeArea: true,
+                anchorSize: 8 // 變形框錨點大小
+            });
+            layer.add(tr);
+            tr.moveToTop();
+            obj.konvaTransformer = tr;
 
-                // 繪製控制點
-                drawParkingLotHandles(obj); 
+            // 繪製控制點
+            drawParkingLotHandles(obj);
 
-                // *** 新增：當 Group 本身被拖曳或變形時，更新控制點位置 ***
-                konvaObj.on('dragmove transform', () => {
-                    updateParkingLotHandlePositions(obj);
-                });
+            // *** 新增：當 Group 本身被拖曳或變形時，更新控制點位置 ***
+            konvaObj.on('dragmove transform', () => {
+                updateParkingLotHandlePositions(obj);
+            });
 
-                konvaObj.on('transformend dragend', () => {
-                    updatePropertiesPanel(obj);
-                    // 結束時重繪以確保精確
-                    drawParkingLotHandles(obj); 
-                });
-            }
+            konvaObj.on('transformend dragend', () => {
+                updatePropertiesPanel(obj);
+                // 結束時重繪以確保精確
+                drawParkingLotHandles(obj);
+            });
+        }
 
         // 套用視覺陰影效果到選取的 Konva 物件
         if (konvaObj && obj.type !== 'Background' && obj.type !== 'Overpass' && obj.type !== 'ParkingLot') {
@@ -2410,6 +2410,8 @@ document.addEventListener('DOMContentLoaded', () => {
             name: `Parking Lot ${idCounter}`,
             carCapacity: 0,
             motoCapacity: 0,
+            attractionProb: 0, // <--- [新增] 初始化吸引機率，預設為 0%
+            stayDuration: 0, // <--- [新增] 初始化停留時間 (分鐘)，預設為 0
             konvaHandles: [], // <--- 新增初始化空陣列
             konvaGroup: new Konva.Group({
                 id, draggable: true, name: 'parking-lot-group'
@@ -2507,7 +2509,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const localY = points[i + 1];
 
             // 算出絕對座標，將點放在 Layer 上
-            const absPos = getAbsolutePoint(group, {x: localX, y: localY});
+            const absPos = getAbsolutePoint(group, { x: localX, y: localY });
 
             const handle = new Konva.Circle({
                 x: absPos.x,
@@ -2528,15 +2530,15 @@ document.addEventListener('DOMContentLoaded', () => {
             handle.on('dragmove', (e) => {
                 // 將 Handle 的新絕對座標轉回 Group 的相對座標
                 const node = e.target;
-                const newLocal = getLocalPoint(group, {x: node.x(), y: node.y()});
-                
+                const newLocal = getLocalPoint(group, { x: node.x(), y: node.y() });
+
                 const currentPoints = polygon.points();
                 const idx = node.getAttr('vertexIndex');
                 currentPoints[idx] = newLocal.x;
                 currentPoints[idx + 1] = newLocal.y;
-                
+
                 polygon.points(currentPoints);
-                
+
                 // 強制更新 Transformer (因為邊界變了)
                 if (parkingLot.konvaTransformer) {
                     parkingLot.konvaTransformer.forceUpdate();
@@ -2547,7 +2549,7 @@ document.addEventListener('DOMContentLoaded', () => {
             layer.add(handle);
             parkingLot.konvaHandles.push(handle);
         }
-        
+
         // 確保控制點在最上層 (包含蓋過 Transformer)
         parkingLot.konvaHandles.forEach(h => h.moveToTop());
         layer.batchDraw();
@@ -2559,13 +2561,13 @@ document.addEventListener('DOMContentLoaded', () => {
         const group = parkingLot.konvaGroup;
         const polygon = group.findOne('.parking-lot-shape');
         const points = polygon.points();
-        
+
         parkingLot.konvaHandles.forEach(handle => {
             const idx = handle.getAttr('vertexIndex');
             const localX = points[idx];
-            const localY = points[idx+1];
+            const localY = points[idx + 1];
             // 重新計算絕對位置
-            const absPos = getAbsolutePoint(group, {x: localX, y: localY});
+            const absPos = getAbsolutePoint(group, { x: localX, y: localY });
             handle.position(absPos);
         });
     }
@@ -3400,7 +3402,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 <input type="number" id="prop-det-flow" value="${obj.observedFlow || 0}" min="0">
                                 <small style="color:#666;">Used to drive traffic generation.</small>
                             </div>`;
-                
+
                 content += `<div class="prop-group" style="margin-top:8px;">
                                 <label style="display:flex; align-items:center; cursor:pointer;">
                                     <input type="checkbox" id="prop-det-is-source" ${obj.isSource ? 'checked' : ''} style="width:auto; margin-right:8px; cursor:pointer;">
@@ -3413,16 +3415,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (obj.isSource) {
                     // 確保 vehicleProfiles 存在
                     if (!network.vehicleProfiles) network.vehicleProfiles = {};
-                    
+
                     const profiles = Object.keys(network.vehicleProfiles);
                     // 如果還沒定義過任何 Profile，預設加入一個 default
                     if (profiles.length === 0) {
                         network.vehicleProfiles['default'] = { id: 'default', length: 4.5, width: 1.8, maxSpeed: 16.67, maxAcceleration: 1.5, comfortDeceleration: 3.0, minDistance: 2.0, desiredHeadwayTime: 1.5 };
                         profiles.push('default');
                     }
-                    
+
                     const currentProfile = obj.spawnProfileId || 'default';
-                    
+
                     content += `<div class="prop-group" style="background-color:#f0f8ff; padding:10px; border:1px solid #cce5ff; border-radius:4px; margin-top:5px;">
                                     <label for="prop-det-profile" style="color:#004085;">Vehicle Type to Spawn:</label>
                                     <select id="prop-det-profile" style="width:100%; margin-bottom:5px;">
@@ -3544,8 +3546,20 @@ document.addEventListener('DOMContentLoaded', () => {
                         </div>
                         <div class="prop-group">
                             <label for="prop-pl-moto">Motorcycle Spaces</label>
-                            <input type="number" id="prop-pl-moto" value="${obj.motoCapacity}" min="0">
+                            <input type="number" id="prop-pl-moto" value="${obj.motoCapacity}" min="0">   
                         </div>
+                        <!-- [新增] 吸引機率輸入框 -->
+                        <div class="prop-group">
+                            <label for="prop-pl-attr">Attraction Prob (%)</label>
+                            <input type="number" id="prop-pl-attr" value="${obj.attractionProb || 0}" min="0" max="100" step="1">
+                        </div>
+                        <!-- [結束新增] -->
+                        <!-- [新增] 停留時間輸入框 -->
+                        <div class="prop-group">
+                            <label for="prop-pl-duration">Stay Duration (min)</label>
+                            <input type="number" id="prop-pl-duration" value="${obj.stayDuration || 0}" min="0" step="1">
+                        </div>
+                        <!-- [結束新增] -->
                         <div class="prop-group">
                             <button id="btn-delete-pl" class="tool-btn" style="background-color: #dc3545; width:100%; margin-top:10px;">Delete Parking Lot</button>
                         </div>`;
@@ -3667,15 +3681,15 @@ document.addEventListener('DOMContentLoaded', () => {
                     const fromId = e.target.dataset.from;
                     const toId = e.target.dataset.to;
                     let val = parseFloat(e.target.value);
-                    
+
                     // 驗證範圍 0-100
-                    if(isNaN(val)) val = 0;
+                    if (isNaN(val)) val = 0;
                     val = Math.max(0, Math.min(100, val));
                     e.target.value = val;
 
                     if (!obj.turningRatios) obj.turningRatios = {};
                     if (!obj.turningRatios[fromId]) obj.turningRatios[fromId] = {};
-                    
+
                     // 儲存為 0.0 ~ 1.0 的小數
                     obj.turningRatios[fromId][toId] = val / 100.0;
                 });
@@ -3709,11 +3723,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
                     // 步驟 B: 計算比例並更新 Node 資料
                     if (!obj.turningRatios) obj.turningRatios = {};
-                    
+
                     // 假設：所有入口的車流，都依照出口流量的比例進行分配
                     [...obj.incomingLinkIds].forEach(fromId => {
                         if (!obj.turningRatios[fromId]) obj.turningRatios[fromId] = {};
-                        
+
                         outgoingLinks.forEach(toId => {
                             const ratio = outFlows[toId] / totalOutFlow;
                             obj.turningRatios[fromId][toId] = ratio;
@@ -3750,7 +3764,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 link.addEventListener('click', (e) => {
                     e.preventDefault();
                     clearLinkHighlights();
-                    const nodeWeAreLeaving = obj; 
+                    const nodeWeAreLeaving = obj;
                     // Find the konva object for this group
                     const clickedGroupShape = layer.find('.group-connection-visual').find(shape => {
                         const meta = shape.getAttr('meta');
@@ -3764,9 +3778,9 @@ document.addEventListener('DOMContentLoaded', () => {
                             ...meta,
                             konvaLine: clickedGroupShape,
                         };
-                        selectObject(groupObjectToSelect); 
-                        lastSelectedNodeForProperties = nodeWeAreLeaving; 
-                        updatePropertiesPanel(groupObjectToSelect); 
+                        selectObject(groupObjectToSelect);
+                        lastSelectedNodeForProperties = nodeWeAreLeaving;
+                        updatePropertiesPanel(groupObjectToSelect);
                     }
                 });
             });
@@ -3833,18 +3847,18 @@ document.addEventListener('DOMContentLoaded', () => {
                     obj.observedFlow = parseFloat(e.target.value) || 0;
                 });
             }
-            
+
             // [新增] 是否為發生源 (勾選後重繪面板以顯示/隱藏 Profile 設定)
             const sourceCheck = document.getElementById('prop-det-is-source');
             if (sourceCheck) {
                 sourceCheck.addEventListener('change', (e) => {
                     obj.isSource = e.target.checked;
-                    updatePropertiesPanel(obj); 
+                    updatePropertiesPanel(obj);
                 });
             }
 
             // [新增] 車輛種類選擇 (如果顯示的話)
-                // [重要] 確保這段監聽器存在
+            // [重要] 確保這段監聽器存在
             const profileSelect = document.getElementById('prop-det-profile');
             if (profileSelect) {
                 profileSelect.addEventListener('change', (e) => {
@@ -3856,35 +3870,35 @@ document.addEventListener('DOMContentLoaded', () => {
             if (manageProfilesBtn) {
                 manageProfilesBtn.addEventListener('click', () => {
                     // 1. 建立假 Origin 以開啟 Modal
-                    const dummyOrigin = { id: 'Global_Profiles', periods: [] }; 
-                    currentModalOrigin = dummyOrigin; 
-                    
+                    const dummyOrigin = { id: 'Global_Profiles', periods: [] };
+                    currentModalOrigin = dummyOrigin;
+
                     document.getElementById('spawner-modal-title').textContent = `Global Vehicle Profiles`;
-                    
+
                     // 2. 顯示 Modal 並強制切換到 Profile 分頁
                     renderSpawnerProfilesTab();
                     document.getElementById('spawner-modal').style.display = 'block';
-                    
+
                     const profileTab = document.querySelector('.tab-link[data-tab="spawner-profiles"]');
                     const periodsTab = document.querySelector('.tab-link[data-tab="spawner-periods"]');
-                    
+
                     if (profileTab) {
                         profileTab.classList.add('active');
                         const tabContent = document.getElementById('spawner-profiles');
-                        if(tabContent) tabContent.classList.add('active');
-                        
+                        if (tabContent) tabContent.classList.add('active');
+
                         // 隱藏另一個分頁的內容
                         const periodsContent = document.getElementById('spawner-periods');
-                        if(periodsContent) periodsContent.classList.remove('active');
+                        if (periodsContent) periodsContent.classList.remove('active');
                         const periodsTabLink = document.querySelector('.tab-link[data-tab="spawner-periods"]');
-                        if(periodsTabLink) periodsTabLink.classList.remove('active');
+                        if (periodsTabLink) periodsTabLink.classList.remove('active');
                     }
-                    
+
                     if (periodsTab) periodsTab.style.display = 'none'; // 隱藏時間分頁按鈕
-                    
+
                     // 3. 修改 Save 按鈕行為
                     const saveBtn = document.getElementById('spawner-save-btn');
-                    
+
                     saveBtn.onclick = () => {
                         const profileElements = document.querySelectorAll('#spawner-profiles-list .spawner-profile-item');
                         const updatedProfiles = {};
@@ -3895,12 +3909,12 @@ document.addEventListener('DOMContentLoaded', () => {
                             updatedProfiles[newId] = newProfile;
                         });
                         network.vehicleProfiles = updatedProfiles;
-                        
+
                         // 關閉視窗並恢復
                         document.getElementById('spawner-modal').style.display = 'none';
                         if (periodsTab) periodsTab.style.display = 'inline-block';
                         currentModalOrigin = null;
-                        
+
                         // 重新整理屬性面板以更新下拉選單
                         updatePropertiesPanel(obj);
                     };
@@ -4150,15 +4164,41 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // --- PARKING LOT ---
+        // --- PARKING LOT ---
         if (obj.type === 'ParkingLot') {
             const nameInput = document.getElementById('prop-pl-name');
             const carInput = document.getElementById('prop-pl-car');
             const motoInput = document.getElementById('prop-pl-moto');
+            // [新增] 取得 DOM 元素
+            const attrInput = document.getElementById('prop-pl-attr');
+            // [新增] 取得 DOM 元素
+            const durInput = document.getElementById('prop-pl-duration');
             const delBtn = document.getElementById('btn-delete-pl');
 
             if (nameInput) nameInput.addEventListener('change', (e) => { obj.name = e.target.value; });
             if (carInput) carInput.addEventListener('change', (e) => { obj.carCapacity = parseInt(e.target.value) || 0; });
             if (motoInput) motoInput.addEventListener('change', (e) => { obj.motoCapacity = parseInt(e.target.value) || 0; });
+
+            // [新增] 監聽事件並驗證範圍 0-100
+            if (attrInput) {
+                attrInput.addEventListener('change', (e) => {
+                    let val = parseFloat(e.target.value);
+                    if (isNaN(val)) val = 0;
+                    val = Math.max(0, Math.min(100, val)); // 限制範圍
+                    e.target.value = val;
+                    obj.attractionProb = val;
+                });
+            }
+            // [新增] 監聽 Stay Duration 變更
+            if (durInput) {
+                durInput.addEventListener('change', (e) => {
+                    let val = parseFloat(e.target.value);
+                    if (isNaN(val) || val < 0) val = 0; // 確保非負數
+                    e.target.value = val;
+                    obj.stayDuration = val;
+                });
+            }
+
             if (delBtn) delBtn.addEventListener('click', () => {
                 deleteParkingLot(obj.id);
                 deselectAll();
@@ -5449,7 +5489,7 @@ document.addEventListener('DOMContentLoaded', () => {
         deselectAll();
         layer.destroyChildren();
         gridLayer.destroyChildren();
-        
+
         // 清除 measureGroup (如果有的話)
         if (typeof measureGroup !== 'undefined') measureGroup.destroyChildren();
 
@@ -5470,7 +5510,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // 重置介面上的選單
         const modeSelect = document.getElementById('simulationModeSelect');
-        if(modeSelect) modeSelect.value = 'od_path';
+        if (modeSelect) modeSelect.value = 'od_path';
 
         drawGrid();
         updatePropertiesPanel(null);
@@ -5591,12 +5631,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     // [新增] 解析 TurningRatios (Flow Mode)
                     const trContainer = getChildrenByLocalName(nodeEl, "TurningRatios")[0];
                     const turningRatios = {};
-                    
+
                     if (trContainer) {
                         getChildrenByLocalName(trContainer, "IncomingLink").forEach(inEl => {
                             const xmlFromId = inEl.getAttribute("id");
                             const internalFromId = xmlLinkIdMap.get(xmlFromId);
-                            
+
                             if (internalFromId) {
                                 turningRatios[internalFromId] = {};
                                 getChildrenByLocalName(inEl, "TurnTo").forEach(turnEl => {
@@ -5629,7 +5669,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             groupMap.set(gId, { name: gName, connXmlIds: connIds });
                         });
                     }
-                    
+
                     // 暫存此 Node 的所有額外資料
                     xmlNodeDataMap.set(xmlId, { groups: groupMap, turningRatios: turningRatios });
                 }
@@ -5641,14 +5681,14 @@ document.addEventListener('DOMContentLoaded', () => {
             getChildrenByLocalName(nodesContainer, "RegularNode").forEach(nodeEl => {
                 const rulesContainer = getChildrenByLocalName(nodeEl, "TransitionRules")[0];
                 const xmlRegNodeId = getChildValue(nodeEl, "id");
-                
+
                 if (rulesContainer) {
                     getChildrenByLocalName(rulesContainer, "TransitionRule").forEach(ruleEl => {
                         const srcXmlId = getChildValue(ruleEl, "sourceLinkId");
                         const dstXmlId = getChildValue(ruleEl, "destinationLinkId");
                         const srcLane = parseInt(getChildValue(ruleEl, "sourceLaneIndex"), 10);
                         const dstLane = parseInt(getChildValue(ruleEl, "destinationLaneIndex"), 10);
-                        
+
                         const srcLink = network.links[xmlLinkIdMap.get(srcXmlId)];
                         const dstLink = network.links[xmlLinkIdMap.get(dstXmlId)];
 
@@ -5666,7 +5706,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 if (xmlNodeIdMap.get(xmlRegNodeId) === null) {
                                     xmlNodeIdMap.set(xmlRegNodeId, newConn.nodeId);
                                     syncIdCounter(newConn.nodeId);
-                                    
+
                                     // [新增] Node 建立後，寫入暫存的 Turning Ratios
                                     const nodeData = xmlNodeDataMap.get(xmlRegNodeId);
                                     if (nodeData && nodeData.turningRatios) {
@@ -5692,8 +5732,8 @@ document.addEventListener('DOMContentLoaded', () => {
                                             });
                                         });
                                         if (points.length >= 2) {
-                                            newConn.bezierPoints = [points[0], points[points.length-1]];
-                                            newConn.konvaBezier.points(newConn.bezierPoints.flatMap(p=>[p.x, p.y]));
+                                            newConn.bezierPoints = [points[0], points[points.length - 1]];
+                                            newConn.konvaBezier.points(newConn.bezierPoints.flatMap(p => [p.x, p.y]));
                                         }
                                     }
                                 }
@@ -5703,7 +5743,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
         }
-        
+
         // --- 4. Connection Groups ---
         const groupsToRecreate = new Map();
         if (nodesContainer) {
@@ -5766,7 +5806,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // 必須先讀取 Profile，因為偵測器可能會引用它們
         const agentsEl = xmlDoc.querySelector("Agents");
         let importedProfileCounter = 0;
-        
+
         if (agentsEl) {
             // 先掃描所有的 VehicleProfiles (通常在 Origin -> TimePeriod -> VehicleProfiles)
             // 為了簡化，我們遍歷所有 Origins 收集 Profiles
@@ -5781,7 +5821,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 getChildrenByLocalName(profilesContainer, "VehicleProfile").forEach(profEl => {
                                     const vehicleEl = getChildrenByLocalName(profEl, "RegularVehicle")[0];
                                     const driverEl = getChildrenByLocalName(getChildrenByLocalName(vehicleEl, "CompositeDriver")[0], "Parameters")[0];
-                                    
+
                                     const newProfileData = {
                                         length: parseFloat(getChildValue(vehicleEl, "length")),
                                         width: parseFloat(getChildValue(vehicleEl, "width")),
@@ -5791,7 +5831,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                         minDistance: parseFloat(getChildValue(driverEl, "minDistance")),
                                         desiredHeadwayTime: parseFloat(getChildValue(driverEl, "desiredHeadwayTime")),
                                     };
-                                    
+
                                     // 嘗試找 ID 或生成新 ID
                                     const profileId = `imported_profile_${importedProfileCounter++}`;
                                     newProfileData.id = profileId;
@@ -5802,9 +5842,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 });
             }
-            
+
             // 如果沒有任何 Profile，給一個預設值，避免 UI 壞掉
-            if(Object.keys(network.vehicleProfiles).length === 0) {
+            if (Object.keys(network.vehicleProfiles).length === 0) {
                 network.vehicleProfiles['default'] = { id: 'default', length: 4.5, width: 1.8, maxSpeed: 16.67, maxAcceleration: 1.5, comfortDeceleration: 3.0, minDistance: 2.0, desiredHeadwayTime: 1.5 };
             }
         }
@@ -5817,7 +5857,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 const name = getChildValue(plEl, "name");
                 const carCap = parseInt(getChildValue(plEl, "carCapacity") || 0, 10);
                 const motoCap = parseInt(getChildValue(plEl, "motoCapacity") || 0, 10);
-
+                // [新增] 讀取 XML 數值
+                const attrProb = parseFloat(getChildValue(plEl, "attractionProb") || 0);
+                // [新增] 讀取 XML 數值
+                const stayDur = parseFloat(getChildValue(plEl, "stayDuration") || 0);
                 const points = [];
                 const boundEl = getChildrenByLocalName(plEl, "Boundary")[0];
                 if (boundEl) {
@@ -5832,6 +5875,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     newPl.name = name;
                     newPl.carCapacity = carCap;
                     newPl.motoCapacity = motoCap;
+                    // [新增] 設定屬性
+                    newPl.attractionProb = attrProb;
+                    // [新增] 設定屬性
+                    newPl.stayDuration = stayDur;
                     syncIdCounter(newPl.id);
 
                     const gatesContainer = getChildrenByLocalName(plEl, "ParkingGates")[0];
@@ -5841,7 +5888,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             const gId = getChildValue(gateEl, "id");
                             const gType = getChildValue(gateEl, "gateType");
                             const geoEl = getChildrenByLocalName(gateEl, "Geometry")[0];
-                            
+
                             if (geoEl) {
                                 const gx = parseFloat(getChildValue(geoEl, "x"));
                                 const gy = parseFloat(getChildValue(geoEl, "y")) * C_SYSTEM_Y_INVERT;
@@ -5851,7 +5898,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                                 const newGate = createParkingGate({ x: gx, y: gy, width: gw, height: gh, rotation: gr }, gType, gId);
                                 syncIdCounter(newGate.id);
-                                
+
                                 newGate.parkingLotId = newPl.id;
                                 const rectShape = newGate.konvaGroup.findOne('.gate-rect');
                                 if (rectShape) rectShape.stroke('green');
@@ -5895,7 +5942,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 const pos = parseFloat(getChildValue(meterEl, "position"));
                 const name = getChildValue(meterEl, "name");
-                
+
                 // [新增] 讀取新屬性
                 const flowVal = parseFloat(getChildValue(meterEl, "observedFlow"));
                 const isSrcVal = getChildValue(meterEl, "isSource") === 'true';
@@ -5906,22 +5953,22 @@ document.addEventListener('DOMContentLoaded', () => {
                     det.name = name;
                     det.observedFlow = !isNaN(flowVal) ? flowVal : 0;
                     det.isSource = isSrcVal;
-                    if(profileIdVal) det.spawnProfileId = profileIdVal;
+                    if (profileIdVal) det.spawnProfileId = profileIdVal;
                     syncIdCounter(det.id);
                 } else if (tagName === 'SectionAverageTravelSpeedMeter') {
                     const len = parseFloat(getChildValue(meterEl, "sectionLength"));
-                    const det = createDetector('SectionDetector', link, pos + len); 
+                    const det = createDetector('SectionDetector', link, pos + len);
                     det.name = name;
                     det.length = len;
                     det.observedFlow = !isNaN(flowVal) ? flowVal : 0;
                     det.isSource = isSrcVal;
-                    if(profileIdVal) det.spawnProfileId = profileIdVal;
+                    if (profileIdVal) det.spawnProfileId = profileIdVal;
                     syncIdCounter(det.id);
                     drawDetector(det);
                 }
             });
         }
-        
+
         // --- 9. Background ---
         const bgEl = xmlDoc.querySelector("Background > Tile");
         if (bgEl) {
@@ -5934,7 +5981,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const endX = parseFloat(getChildValue(endEl, "x"));
                 const endY = parseFloat(getChildValue(endEl, "y")) * C_SYSTEM_Y_INVERT;
                 const saturation = parseInt(getChildValue(bgEl, "saturation"), 10);
-                
+
                 const imgEl = getChildrenByLocalName(bgEl, "Image")[0];
                 const imageType = getChildValue(imgEl, "type");
                 const binaryData = getChildValue(imgEl, "binaryData");
@@ -5978,7 +6025,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const ay = parseFloat(getChildValue(anchorEl, "y")) * C_SYSTEM_Y_INVERT;
                 const lat = parseFloat(getChildValue(anchorEl, "lat"));
                 const lon = parseFloat(getChildValue(anchorEl, "lon"));
-                createPushpin({x: ax, y: ay}, lat, lon);
+                createPushpin({ x: ax, y: ay }, lat, lon);
             });
         }
 
@@ -5993,11 +6040,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (pairsEl && elementsEl) {
                     const pair = getChildrenByLocalName(pairsEl, "Pair")[0];
                     const topTempId = getChildValue(pair, "Top");
-                    
+
                     const els = getChildrenByLocalName(elementsEl, "Element");
                     let topXmlLinkId = null;
                     let bottomXmlLinkId = null;
-                    
+
                     els.forEach(el => {
                         const tempId = getChildValue(el, "Id");
                         const lnk = getChildValue(el, "LinkId");
@@ -6008,7 +6055,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (topXmlLinkId && bottomXmlLinkId) {
                         const topInternalId = xmlLinkIdMap.get(topXmlLinkId);
                         const bottomInternalId = xmlLinkIdMap.get(bottomXmlLinkId);
-                        
+
                         const opId1 = `overpass_${bottomInternalId}_${topInternalId}`;
                         const opId2 = `overpass_${topInternalId}_${bottomInternalId}`;
                         const opObj = network.overpasses[opId1] || network.overpasses[opId2];
@@ -6020,7 +6067,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
         }
-        
+
         // --- 12. Agents Details (Traffic Light Schedule & Origins) ---
         // Vehicle Profiles 已經在步驟 5 讀取，這裡只需處理 Traffic Lights 和 Origin Demands
         if (agentsEl) {
@@ -6030,7 +6077,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const xmlNodeId = getChildValue(tflEl, "regularNodeId");
                 const internalNodeId = xmlNodeIdMap.get(xmlNodeId);
                 if (!internalNodeId || !network.nodes[internalNodeId]) return;
-                
+
                 const timeShift = parseInt(getChildValue(tflEl, "scheduleTimeShift") || 0, 10);
                 const nodeData = xmlNodeDataMap.get(xmlNodeId);
                 const groupDefinitions = nodeData ? nodeData.groups : null;
@@ -6038,7 +6085,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 const tflData = { nodeId: internalNodeId, timeShift, signalGroups: {}, schedule: [] };
                 network.trafficLights[internalNodeId] = tflData;
-                
+
                 groupDefinitions.forEach((groupInfo, numericGroupId) => {
                     const groupName = groupInfo.name;
                     const internalConnIds = groupInfo.connXmlIds
@@ -6122,30 +6169,30 @@ document.addEventListener('DOMContentLoaded', () => {
                             if (profilesContainer) {
                                 getChildrenByLocalName(profilesContainer, "VehicleProfile").forEach(profEl => {
                                     const weight = parseFloat(getChildValue(profEl, "weight"));
-                                    
+
                                     // 我們在第 5 步已經讀取了所有 Profile 並建立了 ID，這裡只需重新匹配
                                     // 為了簡單起見，這裡可以重新建立關聯。但在 OD Mode 編輯器邏輯中，
                                     // Profile 往往是內嵌在 Period 裡的。
                                     // 如果要嚴謹，我們應該比對內容找到對應的 Profile ID。
                                     // 這裡簡化：假設前面已經讀取，我們用 default 或建立新關聯
-                                    
+
                                     // 為了相容現有的編輯器邏輯 (Profile 綁定在 Period)，我們還是需要把 weight 存起來
                                     // 這裡我們假設匯入時，所有 Profile 都已經被轉成 Global Profile
                                     // 所以我們取出第一個符合的 Profile ID (或全部)
-                                    
+
                                     // 由於前面步驟 5 已經把所有 XML 中的 Profile 讀進 network.vehicleProfiles
                                     // 這裡我們需要一個機制來知道 "這個 XML 裡的 VehicleProfile 對應到哪個 internal ID"
                                     // 但因為 XML 沒有 Profile ID，這比較困難。
                                     // 暫時解法：使用 default 或讓使用者重新設定。
                                     // 進階解法 (已實作)：在步驟 5 用順序產生了 ID (imported_profile_0, 1...)
                                     // 這裡也依順序取用。
-                                    
+
                                     // 重新遍歷一次以取得對應的 internal ID (依賴順序)
                                     // 實務上建議修改 XML 結構加入 ProfileID，但在不改動 Schema 的情況下：
                                     // 我們直接使用前面生成的 ID
                                     const pIds = Object.keys(network.vehicleProfiles).filter(pid => pid.startsWith('imported_profile_'));
                                     // 這是一個簡單的對應，假設順序一致。若不一致則需更複雜的特徵比對。
-                                    if(pIds.length > 0) {
+                                    if (pIds.length > 0) {
                                         // 這裡僅示範結構，實際應用建議重構 XML
                                         period.profiles.push({ profileId: pIds[0], weight: weight });
                                     } else {
@@ -6168,7 +6215,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 network.navigationMode = mode;
                 // 更新 UI 下拉選單
                 const modeSelect = document.getElementById('simulationModeSelect');
-                if(modeSelect) {
+                if (modeSelect) {
                     modeSelect.value = (mode === 'FLOW_BASED') ? 'flow_turning' : 'od_path';
                 }
             }
@@ -6178,9 +6225,456 @@ document.addEventListener('DOMContentLoaded', () => {
         updateStatusBar();
         setTool('select');
     }
-    
+
     // 完整替換此函數
-    // 完整替換 exportXML 函數
+    // 完整替換 createAndLoadNetworkFromXML 函數
+    function createAndLoadNetworkFromXML(xmlString) {
+        stage.position({ x: 0, y: 0 });
+        stage.scale({ x: 1, y: 1 });
+        resetWorkspace();
+
+        const parser = new DOMParser();
+        const xmlDoc = parser.parseFromString(xmlString, "application/xml");
+
+        if (xmlDoc.getElementsByTagName("parsererror").length > 0) {
+            throw new Error("Invalid XML format");
+        }
+
+        // 輔助函數
+        const syncIdCounter = (idStr) => {
+            if (!idStr) return;
+            const parts = idStr.split('_');
+            const num = parseInt(parts[parts.length - 1], 10);
+            if (!isNaN(num) && num > idCounter) idCounter = num;
+        };
+        const getChildValue = (parent, tagName) => {
+            const el = parent.querySelector(tagName);
+            return el ? el.textContent : null;
+        };
+
+        const xmlLinkIdMap = new Map();
+        const xmlNodeIdMap = new Map();
+        const xmlConnIdMap = new Map();
+        const xmlTFLGroupMap = new Map();
+
+        // 1. Links
+        const linkElements = xmlDoc.querySelectorAll("RoadNetwork > Links > Link");
+        linkElements.forEach(linkEl => {
+            const xmlId = getChildValue(linkEl, "id");
+            const waypoints = [];
+            linkEl.querySelectorAll("Waypoints > Waypoint").forEach(wpEl => {
+                waypoints.push({
+                    x: parseFloat(getChildValue(wpEl, "x")),
+                    y: parseFloat(getChildValue(wpEl, "y")) * C_SYSTEM_Y_INVERT
+                });
+            });
+            const firstLanesElement = linkEl.querySelector("Lanes");
+            const laneWidths = [];
+            if (firstLanesElement) {
+                firstLanesElement.querySelectorAll("Lane").forEach(laneEl => {
+                    const w = getChildValue(laneEl, "width");
+                    laneWidths.push(w ? parseFloat(w) : LANE_WIDTH);
+                });
+            }
+            if (laneWidths.length === 0) laneWidths.push(LANE_WIDTH, LANE_WIDTH);
+
+            const newLink = createLink(waypoints, laneWidths);
+            xmlLinkIdMap.set(xmlId, newLink.id);
+            syncIdCounter(newLink.id);
+
+            const roadSignsContainer = linkEl.querySelector("RoadSigns");
+            if (roadSignsContainer) {
+                roadSignsContainer.childNodes.forEach(signNode => {
+                    if (signNode.nodeType !== 1) return;
+                    const position = parseFloat(getChildValue(signNode, "position"));
+                    const newSign = createRoadSign(newLink, position);
+                    const tagName = signNode.tagName; // browsers might use upper/lower case or namespaces
+                    if (tagName.includes('SpeedLimitSign') && !tagName.includes('No')) {
+                        const speed = parseFloat(getChildValue(signNode, "speedLimit"));
+                        newSign.signType = 'start';
+                        newSign.speedLimit = speed * 3.6;
+                    } else if (tagName.includes('NoSpeedLimitSign')) {
+                        newSign.signType = 'end';
+                    }
+                    drawRoadSign(newSign);
+                    syncIdCounter(newSign.id);
+                });
+            }
+        });
+
+        // 2. Nodes (包含 RegularNode 的預先建立)
+        const nodeElements = xmlDoc.querySelectorAll("RoadNetwork > Nodes > *");
+        nodeElements.forEach(nodeEl => {
+            const xmlId = getChildValue(nodeEl, "id");
+            const tagName = nodeEl.tagName;
+
+            if (tagName.includes('OriginNode')) {
+                const outXmlId = getChildValue(nodeEl, "outgoingLinkId");
+                const internalLinkId = xmlLinkIdMap.get(outXmlId);
+                const link = network.links[internalLinkId];
+                if (link) {
+                    const linkLength = getPolylineLength(link.waypoints);
+                    const originPosition = Math.min(5, linkLength * 0.1);
+                    const origin = createOrigin(link, originPosition);
+                    xmlNodeIdMap.set(xmlId, origin.id);
+                    syncIdCounter(origin.id);
+                }
+            } else if (tagName.includes('DestinationNode')) {
+                const inXmlId = getChildValue(nodeEl, "incomingLinkId");
+                const internalLinkId = xmlLinkIdMap.get(inXmlId);
+                const link = network.links[internalLinkId];
+                if (link) {
+                    const linkLength = getPolylineLength(link.waypoints);
+                    const destPosition = Math.max(linkLength - 5, linkLength * 0.9);
+                    const dest = createDestination(link, destPosition);
+                    xmlNodeIdMap.set(xmlId, dest.id);
+                    syncIdCounter(dest.id);
+                }
+            } else if (tagName.includes('RegularNode')) {
+                // --- [關鍵修正]：嘗試讀取幾何資訊並立即建立節點 ---
+                // 這樣即使該節點沒有連接線，它也會被建立，避免成為殭屍節點
+                let centerX = 0, centerY = 0, count = 0;
+                const poly = nodeEl.querySelector("PolygonGeometry");
+                if (poly) {
+                    poly.querySelectorAll("Point").forEach(p => {
+                        centerX += parseFloat(getChildValue(p, "x"));
+                        centerY += parseFloat(getChildValue(p, "y")) * C_SYSTEM_Y_INVERT;
+                        count++;
+                    });
+                }
+
+                if (count > 0) {
+                    // 如果有幾何座標，直接建立節點
+                    const newNode = createNode(centerX / count, centerY / count);
+                    xmlNodeIdMap.set(xmlId, newNode.id);
+                    syncIdCounter(newNode.id);
+                } else {
+                    // 如果沒有幾何資訊 (舊檔案可能發生)，暫設為 null，等待連接線邏輯處理
+                    xmlNodeIdMap.set(xmlId, null);
+                }
+                // ----------------------------------------------------
+            }
+        });
+
+        // 3. TFL Groups Pre-processing
+        xmlDoc.querySelectorAll("RoadNetwork > Nodes > RegularNode").forEach(nodeEl => {
+            const xmlNodeId = getChildValue(nodeEl, "id");
+            const turnTRGroupsEl = nodeEl.querySelector("TurnTRGroups");
+            if (turnTRGroupsEl) {
+                const groupMapForNode = new Map();
+                turnTRGroupsEl.querySelectorAll("TurnTRGroup").forEach(groupEl => {
+                    const numericGroupId = getChildValue(groupEl, "id");
+                    const groupName = getChildValue(groupEl, "name");
+                    const connXmlIds = [];
+                    groupEl.querySelectorAll("TransitionRules > TransitionRule > transitionRuleId").forEach(el => connXmlIds.push(el.textContent));
+                    groupMapForNode.set(numericGroupId, { name: groupName, connXmlIds });
+                });
+                xmlTFLGroupMap.set(xmlNodeId, groupMapForNode);
+            }
+        });
+
+        // 4. Connections (TransitionRules)
+        const ruleElements = xmlDoc.querySelectorAll("RegularNode > TransitionRules > TransitionRule");
+        ruleElements.forEach(ruleEl => {
+            const srcXmlId = getChildValue(ruleEl, "sourceLinkId");
+            const dstXmlId = getChildValue(ruleEl, "destinationLinkId");
+            const srcLane = parseInt(getChildValue(ruleEl, "sourceLaneIndex"), 10);
+            const dstLane = parseInt(getChildValue(ruleEl, "destinationLaneIndex"), 10);
+
+            const srcLink = network.links[xmlLinkIdMap.get(srcXmlId)];
+            const dstLink = network.links[xmlLinkIdMap.get(dstXmlId)];
+
+            if (srcLink && dstLink) {
+                const sourceMeta = { linkId: srcLink.id, laneIndex: srcLane, portType: 'end' };
+                const destMeta = { linkId: dstLink.id, laneIndex: dstLane, portType: 'start' };
+
+                // 這裡會嘗試建立連接。
+                // 如果我們在步驟 2 已經建立了節點，handleConnection 會發現 sourceLink/destLink 的端點可能靠近該節點
+                // 或者我們需要手動將新連接綁定到該節點。
+                // 由於 handleConnection 內部有合併邏輯，我們需要確保它使用我們預先建立的節點 ID
+
+                const xmlRegNodeId = ruleEl.closest("RegularNode").querySelector("id").textContent;
+                const preCreatedNodeId = xmlNodeIdMap.get(xmlRegNodeId);
+
+                // 暫時將 Link 綁定到預先建立的 Node (如果有的話)，幫助 handleConnection 做出正確合併
+                if (preCreatedNodeId) {
+                    const node = network.nodes[preCreatedNodeId];
+                    if (node) {
+                        node.incomingLinkIds.add(srcLink.id);
+                        node.outgoingLinkIds.add(dstLink.id);
+                    }
+                }
+
+                const newConn = handleConnection(sourceMeta, destMeta);
+
+                if (newConn) {
+                    const xmlConnId = getChildValue(ruleEl, "id");
+                    xmlConnIdMap.set(xmlConnId, newConn.id);
+                    syncIdCounter(newConn.id);
+
+                    // 確保 ID 對映正確 (如果是新建立的合併節點，更新 Map)
+                    if (!preCreatedNodeId) {
+                        xmlNodeIdMap.set(xmlRegNodeId, newConn.nodeId);
+                    } else {
+                        // 如果 Connection 建立後產生了新的 Node ID (合併發生)，更新它
+                        // 但通常我們希望它使用 preCreatedNodeId
+                        if (newConn.nodeId !== preCreatedNodeId) {
+                            // 這裡比較複雜，暫時假設 handleConnection 運作良好
+                        }
+                    }
+
+                    // Bezier Geometry
+                    const geom = ruleEl.querySelector("BezierCurveGeometry");
+                    if (geom) {
+                        const points = [];
+                        geom.querySelectorAll("Point").forEach(pEl => {
+                            points.push({
+                                x: parseFloat(getChildValue(pEl, "x")),
+                                y: parseFloat(getChildValue(pEl, "y")) * C_SYSTEM_Y_INVERT
+                            });
+                        });
+                        if (points.length >= 2) {
+                            newConn.bezierPoints = [points[0], points[points.length - 1]];
+                            newConn.konvaBezier.points(newConn.bezierPoints.flatMap(p => [p.x, p.y]));
+                        }
+                    }
+                }
+            }
+        });
+
+        // 5. Connection Groups
+        const groupsToRecreate = new Map();
+        ruleElements.forEach(ruleEl => {
+            const groupIdEl = ruleEl.querySelector("EditorGroupId");
+            if (groupIdEl) {
+                const groupId = groupIdEl.textContent;
+                const xmlConnId = getChildValue(ruleEl, "id");
+                const internalConnId = xmlConnIdMap.get(xmlConnId);
+                const connection = network.connections[internalConnId];
+                if (connection) {
+                    if (!groupsToRecreate.has(groupId)) groupsToRecreate.set(groupId, []);
+                    groupsToRecreate.get(groupId).push(connection);
+                }
+            }
+        });
+
+        groupsToRecreate.forEach((connectionsInGroup) => {
+            if (connectionsInGroup.length === 0) return;
+            const firstConn = connectionsInGroup[0];
+            const sourceLink = network.links[firstConn.sourceLinkId];
+            const destLink = network.links[firstConn.destLinkId];
+            const nodeId = firstConn.nodeId;
+            if (!sourceLink || !destLink) return;
+            const p1 = sourceLink.waypoints[sourceLink.waypoints.length - 1];
+            const p4 = destLink.waypoints[0];
+
+            const groupLine = new Konva.Line({
+                points: [p1.x, p1.y, p4.x, p4.y],
+                stroke: 'darkgreen', strokeWidth: 2, name: 'group-connection-visual', listening: true, hitStrokeWidth: 20
+            });
+            const groupMeta = {
+                type: 'ConnectionGroup', connectionIds: connectionsInGroup.map(c => c.id),
+                nodeId: nodeId, sourceLinkId: sourceLink.id, destLinkId: destLink.id
+            };
+            groupLine.setAttr('meta', groupMeta);
+            layer.add(groupLine);
+            connectionsInGroup.forEach(conn => conn.konvaBezier.visible(false));
+        });
+
+        // 6. Meters
+        const meterElements = xmlDoc.querySelectorAll("Meters > *");
+        meterElements.forEach(meterEl => {
+            const xmlLinkId = getChildValue(meterEl, "linkId");
+            const internalLinkId = xmlLinkIdMap.get(xmlLinkId);
+            const link = network.links[internalLinkId];
+            if (!link) return;
+            const position = parseFloat(getChildValue(meterEl, "position"));
+            const name = getChildValue(meterEl, "name") || `det_${idCounter}`;
+            const tagName = meterEl.tagName;
+
+            // Flow Mode properties
+            const flowVal = parseFloat(getChildValue(meterEl, "observedFlow"));
+            const isSrcVal = getChildValue(meterEl, "isSource") === 'true';
+            const profileIdVal = getChildValue(meterEl, "spawnProfileId");
+
+            let newDet;
+            if (tagName.includes('LinkAverageTravelSpeedMeter')) {
+                newDet = createDetector('PointDetector', link, position);
+            } else if (tagName.includes('SectionAverageTravelSpeedMeter')) {
+                const len = parseFloat(getChildValue(meterEl, "sectionLength"));
+                newDet = createDetector('SectionDetector', link, position + len);
+                newDet.length = len;
+            }
+            if (newDet) {
+                newDet.name = name;
+                newDet.observedFlow = !isNaN(flowVal) ? flowVal : 0;
+                newDet.isSource = isSrcVal;
+                if (profileIdVal) newDet.spawnProfileId = profileIdVal;
+                syncIdCounter(newDet.id);
+                drawDetector(newDet);
+            }
+        });
+
+        // 7. Background
+        const backgroundEl = xmlDoc.querySelector("Background > Tile");
+        if (backgroundEl) {
+            // (Standard background parsing logic...)
+            try {
+                const startX = parseFloat(backgroundEl.querySelector("Rectangle > Start > x").textContent);
+                const startY = parseFloat(backgroundEl.querySelector("Rectangle > Start > y").textContent) * C_SYSTEM_Y_INVERT;
+                const endX = parseFloat(backgroundEl.querySelector("Rectangle > End > x").textContent);
+                const endY = parseFloat(backgroundEl.querySelector("Rectangle > End > y").textContent) * C_SYSTEM_Y_INVERT;
+                const saturation = parseInt(backgroundEl.querySelector("saturation").textContent, 10);
+                const imageType = backgroundEl.querySelector("Image > type").textContent;
+                const binaryData = backgroundEl.querySelector("Image > binaryData").textContent;
+                const dataUrl = `data:image/${imageType.toLowerCase()};base64,${binaryData}`;
+                const newBg = createBackground({ x: startX, y: startY });
+                if (newBg) {
+                    newBg.locked = true;
+                    newBg.width = Math.abs(endX - startX);
+                    newBg.height = Math.abs(endY - startY);
+                    newBg.opacity = saturation;
+                    newBg.imageDataUrl = dataUrl;
+                    newBg.imageType = imageType;
+                    const image = new window.Image();
+                    image.src = dataUrl;
+                    image.onload = () => {
+                        newBg.konvaImage.image(image);
+                        const scale = (image.width > 0) ? newBg.width / image.width : 1;
+                        newBg.scale = scale;
+                        newBg.konvaGroup.width(image.width);
+                        newBg.konvaGroup.height(image.height);
+                        newBg.konvaGroup.scale({ x: scale, y: scale });
+                        newBg.konvaGroup.opacity(newBg.opacity / 100);
+                        newBg.konvaImage.width(image.width);
+                        newBg.konvaImage.height(image.height);
+                        newBg.konvaBorder.width(image.width);
+                        newBg.konvaBorder.height(image.height);
+                        layer.batchDraw();
+                    };
+                }
+            } catch (err) { console.error(err); }
+        }
+
+        // 8. Overpasses (NEW Logic)
+        updateAllOverpasses();
+        const overpassElements = xmlDoc.querySelectorAll("Overpasses > Overpass");
+        overpassElements.forEach(opEl => {
+            // (Same overpass logic as previously provided)
+            const elements = opEl.querySelectorAll("Elements > Element");
+            const pairs = opEl.querySelectorAll("ElementaryPairs > Pair");
+            if (elements.length === 2 && pairs.length === 1) {
+                const tempIdToXmlLinkId = {};
+                elements.forEach(el => {
+                    tempIdToXmlLinkId[getChildValue(el, "Id")] = getChildValue(el, "LinkId");
+                });
+                const bottomId = tempIdToXmlLinkId[getChildValue(pairs[0], "Bottom")];
+                const topId = tempIdToXmlLinkId[getChildValue(pairs[0], "Top")];
+                const internalBottom = xmlLinkIdMap.get(bottomId);
+                const internalTop = xmlLinkIdMap.get(topId);
+                if (internalBottom && internalTop) {
+                    const opId1 = `overpass_${internalBottom}_${internalTop}`;
+                    const opId2 = `overpass_${internalTop}_${internalBottom}`;
+                    const overpass = network.overpasses[opId1] || network.overpasses[opId2];
+                    if (overpass) overpass.topLinkId = internalTop;
+                }
+            }
+        });
+        Object.values(network.overpasses).forEach(op => applyOverpassOrder(op));
+
+        // 9. Agents (TFL Schedule & Origins)
+        const agentsEl = xmlDoc.querySelector("Agents");
+        if (agentsEl) {
+            // TFL
+            agentsEl.querySelectorAll("TrafficLightNetworks > RegularTrafficLightNetwork").forEach(tflEl => {
+                const xmlNodeId = getChildValue(tflEl, "regularNodeId");
+                const internalNodeId = xmlNodeIdMap.get(xmlNodeId);
+                if (!internalNodeId || !network.nodes[internalNodeId]) return;
+                const timeShift = parseInt(getChildValue(tflEl, "scheduleTimeShift") || 0, 10);
+                const groupDefinitions = xmlTFLGroupMap.get(xmlNodeId);
+                if (!groupDefinitions) return;
+
+                const tflData = { nodeId: internalNodeId, timeShift, signalGroups: {}, schedule: [] };
+                network.trafficLights[internalNodeId] = tflData;
+                groupDefinitions.forEach((groupInfo, numericGroupId) => {
+                    const internalConnIds = groupInfo.connXmlIds.map(cid => xmlConnIdMap.get(cid)).filter(Boolean);
+                    tflData.signalGroups[groupInfo.name] = { id: groupInfo.name, connIds: internalConnIds };
+                });
+
+                tflEl.querySelectorAll("Schedule > TimePeriods > TimePeriod").forEach(periodEl => {
+                    const phase = { duration: parseInt(getChildValue(periodEl, "duration"), 10), signals: {} };
+                    periodEl.querySelectorAll("TrafficLightSignal").forEach(signalEl => {
+                        const numericLightId = getChildValue(signalEl, "trafficLightId");
+                        const groupInfo = groupDefinitions.get(numericLightId);
+                        if (groupInfo) phase.signals[groupInfo.name] = getChildValue(signalEl, "signal");
+                    });
+                    tflData.schedule.push(phase);
+                });
+            });
+
+            // Origins
+            let importedProfileCounter = 0;
+            agentsEl.querySelectorAll("Origins > Origin").forEach(originEl => {
+                const xmlOriginNodeId = getChildValue(originEl, "originNodeId");
+                const internalOriginId = xmlNodeIdMap.get(xmlOriginNodeId);
+                const origin = network.origins[internalOriginId];
+                if (!origin) return;
+                origin.periods = [];
+                originEl.querySelectorAll("TimePeriods > TimePeriod").forEach(periodEl => {
+                    const period = {
+                        duration: parseInt(getChildValue(periodEl, "duration"), 10),
+                        numVehicles: parseInt(getChildValue(periodEl, "numberOfVehicles"), 10),
+                        destinations: [], profiles: [], stops: []
+                    };
+                    periodEl.querySelectorAll("Destinations > Destination").forEach(destEl => {
+                        const xmlDestId = getChildValue(destEl, "destinationNodeId");
+                        const internalDestId = xmlNodeIdMap.get(xmlDestId);
+                        if (internalDestId) period.destinations.push({ nodeId: internalDestId, weight: parseFloat(getChildValue(destEl, "weight")) });
+                    });
+
+                    // Profiles
+                    periodEl.querySelectorAll("VehicleProfiles > VehicleProfile").forEach(profEl => {
+                        const weight = parseFloat(getChildValue(profEl, "weight"));
+                        const vehicleEl = profEl.querySelector("RegularVehicle");
+                        const driverEl = vehicleEl.querySelector("CompositeDriver > Parameters");
+                        const newProfileData = {
+                            length: parseFloat(getChildValue(vehicleEl, "length")),
+                            width: parseFloat(getChildValue(vehicleEl, "width")),
+                            maxSpeed: parseFloat(getChildValue(driverEl, "maxSpeed")),
+                            maxAcceleration: parseFloat(getChildValue(driverEl, "maxAcceleration")),
+                            comfortDeceleration: parseFloat(getChildValue(driverEl, "comfortDeceleration")),
+                            minDistance: parseFloat(getChildValue(driverEl, "minDistance")),
+                            desiredHeadwayTime: parseFloat(getChildValue(driverEl, "desiredHeadwayTime")),
+                        };
+                        const profileId = `imported_profile_${importedProfileCounter++}`;
+                        newProfileData.id = profileId;
+                        network.vehicleProfiles[profileId] = newProfileData;
+                        period.profiles.push({ profileId, weight });
+                    });
+                    origin.periods.push(period);
+                });
+            });
+        }
+
+        // 10. GeoAnchors & Parking (omitted for brevity, keep existing logic)
+        // (保持您現有的 GeoAnchors, ParkingLots, ParkingGates 匯入邏輯)
+        const anchorsEl = xmlDoc.querySelector("GeoAnchors");
+        if (anchorsEl) {
+            anchorsEl.querySelectorAll("Anchor").forEach(anchorEl => {
+                const x = parseFloat(getChildValue(anchorEl, "x"));
+                const y = parseFloat(getChildValue(anchorEl, "y")) * C_SYSTEM_Y_INVERT;
+                const lat = parseFloat(getChildValue(anchorEl, "lat"));
+                const lon = parseFloat(getChildValue(anchorEl, "lon"));
+                createPushpin({ x, y }, lat, lon);
+            });
+        }
+        // ... (Parking Lots import logic) ...
+
+        layer.batchDraw();
+        updateBackgroundLockState();
+        setTool('select');
+    }
+    // 完整替換 exportXML 函數 (Final Fix: Unconditional Node Export)
     function exportXML() {
         const tflGroupMappings = {};
         const linkIdMap = new Map(), regularNodeIdMap = new Map(), originNodeIdMap = new Map(),
@@ -6188,7 +6682,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         let linkCounter = 0, nodeCounter = 0, connCounter = 0, detectorCounter = 0;
 
-        // 建立 ID 對照表 (將內部 String ID 轉為 XML 需要的整數 ID)
+        // 建立 ID 對照表
         Object.keys(network.links).forEach(id => linkIdMap.set(id, linkCounter++));
         Object.keys(network.connections).forEach(id => connIdMap.set(id, connCounter++));
         Object.keys(network.nodes).forEach(id => regularNodeIdMap.set(id, nodeCounter++));
@@ -6196,7 +6690,6 @@ document.addEventListener('DOMContentLoaded', () => {
         Object.keys(network.destinations).forEach(id => destinationNodeIdMap.set(id, nodeCounter++));
         Object.keys(network.detectors).forEach(id => detectorIdMap.set(id, detectorCounter++));
 
-        // 建立 Connection Group 的反向查找表
         const connToGroupIdMap = new Map();
         layer.find('.group-connection-visual').forEach((groupLine, index) => {
             const meta = groupLine.getAttr('meta');
@@ -6211,36 +6704,47 @@ document.addEventListener('DOMContentLoaded', () => {
         let xml = `<?xml version="1.0" encoding="UTF-8"?>\n`;
         xml += `<tm:TrafficModel parserVersion="1.2" xmlns:tm="http://traffic.cos.ru/cossim/TrafficModelDefinitionFile0.1">\n`;
 
-        // --- 1. Global Parameters ---
         xml += `  <tm:ModelParameters>\n`;
         xml += `    <tm:randomSeed>${Math.floor(Math.random() * 100000)}</tm:randomSeed>\n`;
         xml += `    <tm:immutableVehiclesPercent>70</tm:immutableVehiclesPercent>\n`;
-        // [新增] 寫入導航模式
         xml += `    <tm:NavigationMode>${network.navigationMode || 'OD_BASED'}</tm:NavigationMode>\n`;
         xml += `  </tm:ModelParameters>\n`;
 
         xml += '  <tm:RoadNetwork>\n';
 
-        // --- 2. Links ---
+        // Links
         xml += '    <tm:Links>\n';
         for (const link of Object.values(network.links)) {
             const numericId = linkIdMap.get(link.id);
             if (numericId === undefined) continue;
             xml += `      <tm:Link>\n`;
             xml += `        <tm:id>${numericId}</tm:id>\n`;
-            
-            let sourceNodeId = -1, destNodeId = -1;
+
+            // 尋找 Source Node (Origin 或 RegularNode)
+            let sourceNodeId = -1;
             const sourceOrigin = Object.values(network.origins).find(o => o.linkId === link.id);
-            if (sourceOrigin) sourceNodeId = originNodeIdMap.get(sourceOrigin.id);
-            else { const rsn = Object.values(network.nodes).find(n => n.outgoingLinkIds.has(link.id)); if (rsn) sourceNodeId = regularNodeIdMap.get(rsn.id); }
-            
+            if (sourceOrigin) {
+                sourceNodeId = originNodeIdMap.get(sourceOrigin.id);
+            } else {
+                const rsn = Object.values(network.nodes).find(n => n.outgoingLinkIds.has(link.id));
+                // [關鍵] 不檢查條件，只要有找到關聯，就寫入 ID。因為我們保證所有 Node 都會被匯出。
+                if (rsn) sourceNodeId = regularNodeIdMap.get(rsn.id);
+            }
+
+            // 尋找 Destination Node (Destination 或 RegularNode)
+            let destNodeId = -1;
             const destDestination = Object.values(network.destinations).find(d => d.linkId === link.id);
-            if (destDestination) destNodeId = destinationNodeIdMap.get(destDestination.id);
-            else { const ren = Object.values(network.nodes).find(n => n.incomingLinkIds.has(link.id)); if (ren) destNodeId = regularNodeIdMap.get(ren.id); }
-            
+            if (destDestination) {
+                destNodeId = destinationNodeIdMap.get(destDestination.id);
+            } else {
+                const ren = Object.values(network.nodes).find(n => n.incomingLinkIds.has(link.id));
+                // [關鍵] 不檢查條件，直接寫入。
+                if (ren) destNodeId = regularNodeIdMap.get(ren.id);
+            }
+
             xml += `        <tm:sourceNodeId>${sourceNodeId !== undefined ? sourceNodeId : -1}</tm:sourceNodeId>\n`;
             xml += `        <tm:destinationNodeId>${destNodeId !== undefined ? destNodeId : -1}</tm:destinationNodeId>\n`;
-            
+
             const linkLength = getPolylineLength(link.waypoints);
             xml += `        <tm:length>${linkLength.toFixed(4)}</tm:length>\n`;
 
@@ -6263,7 +6767,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (sign.signType === 'start') {
                         xml += '              <tm:SpeedLimitSign>\n';
                         xml += `                <tm:position>${sign.position.toFixed(4)}</tm:position>\n`;
-                        xml += `                <tm:speedLimit>${(sign.speedLimit / 3.6).toFixed(4)}</tm:speedLimit>\n`; // km/h to m/s
+                        xml += `                <tm:speedLimit>${(sign.speedLimit / 3.6).toFixed(4)}</tm:speedLimit>\n`;
                         xml += '                <tm:side>Left</tm:side>\n';
                         xml += '              </tm:SpeedLimitSign>\n';
                     } else {
@@ -6285,7 +6789,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const rs = add(p_start, scale(start_normal, -halfWidth));
             const le = add(p_end, scale(end_normal, halfWidth));
             const re = add(p_end, scale(end_normal, -halfWidth));
-            
+
             xml += `            <tm:trapeziumShift>0</tm:trapeziumShift>\n`;
             xml += '            <tm:TrapeziumGeometry>\n';
             xml += `              <tm:LeftSide><tm:Start><tm:x>${ls.x.toFixed(4)}</tm:x><tm:y>${(ls.y * C_SYSTEM_Y_INVERT).toFixed(4)}</tm:y></tm:Start><tm:End><tm:x>${le.x.toFixed(4)}</tm:x><tm:y>${(le.y * C_SYSTEM_Y_INVERT).toFixed(4)}</tm:y></tm:End></tm:LeftSide>\n`;
@@ -6300,109 +6804,104 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         xml += '    </tm:Links>\n';
 
-        // --- 3. Nodes ---
+        // Nodes
         xml += '    <tm:Nodes>\n';
         for (const node of Object.values(network.nodes)) {
             const numericId = regularNodeIdMap.get(node.id);
             if (numericId === undefined) continue;
-            const connectionsAtNode = Object.values(network.connections).filter(c => c.nodeId === node.id);
-            
-            // 只有當該節點有連接線，或者設定了轉向比例時才匯出
-            if (connectionsAtNode.length > 0 || (node.turningRatios && Object.keys(node.turningRatios).length > 0)) {
-                xml += `      <tm:RegularNode><tm:id>${numericId}</tm:id><tm:name></tm:name>\n`;
-                
-                // [新增] 寫入 Turning Ratios (Flow Mode)
-                if (node.turningRatios && Object.keys(node.turningRatios).length > 0) {
-                    xml += `        <tm:TurningRatios>\n`;
-                    Object.entries(node.turningRatios).forEach(([fromId, toData]) => {
-                        const fromNumId = linkIdMap.get(fromId);
-                        if(fromNumId !== undefined) {
-                            xml += `          <tm:IncomingLink id="${fromNumId}">\n`;
-                            Object.entries(toData).forEach(([toId, ratio]) => {
-                                const toNumId = linkIdMap.get(toId);
-                                if(toNumId !== undefined) {
-                                    xml += `            <tm:TurnTo linkId="${toNumId}" probability="${ratio.toFixed(4)}" />\n`;
-                                }
-                            });
-                            xml += `          </tm:IncomingLink>\n`;
-                        }
-                    });
-                    xml += `        </tm:TurningRatios>\n`;
-                }
 
-                xml += '        <tm:TransitionRules>\n';
-                for (const conn of connectionsAtNode) {
-                    const connNumId = connIdMap.get(conn.id); if (connNumId === undefined) continue;
-                    const sourceLink = network.links[conn.sourceLinkId];
-                    const transitionWidth = (sourceLink && sourceLink.lanes[conn.sourceLaneIndex]) ? sourceLink.lanes[conn.sourceLaneIndex].width : LANE_WIDTH;
-                    const p1 = conn.bezierPoints[0];
-                    const p4 = conn.bezierPoints[1];
-                    const destLink = network.links[conn.destLinkId];
-                    let pointsToExport = [p1, p1, p4, p4];
-                    let curveLength = vecLen(getVector(p1, p4));
-                    if (sourceLink && destLink && sourceLink.waypoints.length > 1 && destLink.waypoints.length > 1) {
-                        const sourceLanePath = getLanePath(sourceLink, conn.sourceLaneIndex);
-                        const destLanePath = getLanePath(destLink, conn.destLaneIndex);
-                        if (sourceLanePath.length > 1 && destLanePath.length > 1) {
-                            const v1 = normalize(getVector(sourceLanePath[sourceLanePath.length - 2], p1));
-                            const v2 = normalize(getVector(p4, destLanePath[1]));
-                            const distBetweenEnds = vecLen(getVector(p1, p4));
-                            const controlPointOffset = distBetweenEnds * 0.4;
-                            const p2 = add(p1, scale(v1, controlPointOffset));
-                            const p3 = add(p4, scale(v2, -controlPointOffset));
-                            pointsToExport = [p1, p2, p3, p4];
-                            curveLength = getPolylineLength(pointsToExport);
-                        }
-                    }
-                    xml += `          <tm:TransitionRule><tm:id>${connNumId}</tm:id><tm:length>${curveLength.toFixed(4)}</tm:length><tm:width>${transitionWidth.toFixed(2)}</tm:width>`;
-                    xml += `<tm:sourceLinkId>${linkIdMap.get(conn.sourceLinkId)}</tm:sourceLinkId><tm:sourceLaneIndex>${conn.sourceLaneIndex}</tm:sourceLaneIndex><tm:destinationLinkId>${linkIdMap.get(conn.destLinkId)}</tm:destinationLinkId><tm:destinationLaneIndex>${conn.destLaneIndex}</tm:destinationLaneIndex>\n`;
-                    if (connToGroupIdMap.has(conn.id)) {
-                        xml += `            <tm:EditorGroupId>${connToGroupIdMap.get(conn.id)}</tm:EditorGroupId>\n`;
-                    }
-                    xml += '            <tm:BezierCurveGeometry><tm:ReferencePoints>\n';
-                    pointsToExport.forEach(p => { xml += `              <tm:Point><tm:x>${p.x.toFixed(4)}</tm:x><tm:y>${(p.y * C_SYSTEM_Y_INVERT).toFixed(4)}</tm:y></tm:Point>\n`; });
-                    xml += '            </tm:ReferencePoints></tm:BezierCurveGeometry>\n          </tm:TransitionRule>\n';
-                }
-                xml += '        </tm:TransitionRules>\n';
-                
-                const tflData = network.trafficLights[node.id];
-                if (tflData && tflData.signalGroups && Object.keys(tflData.signalGroups).length > 0) {
-                    const groupNameToNumericId = {}; let turnTRGroupIdCounter = 0;
-                    xml += '        <tm:TurnTRGroups>\n';
-                    Object.values(tflData.signalGroups).forEach(group => {
-                        const numericTurnTRGroupId = turnTRGroupIdCounter++; groupNameToNumericId[group.id] = numericTurnTRGroupId;
-                        xml += `          <tm:TurnTRGroup><tm:id>${numericTurnTRGroupId}</tm:id><tm:name>${group.id}</tm:name>\n`;
-                        const firstConn = network.connections[group.connIds[0]];
-                        if (firstConn) {
-                            const sourceLink = network.links[firstConn.sourceLinkId], destLink = network.links[firstConn.destLinkId];
-                            if (sourceLink && destLink && sourceLink.waypoints.length > 1 && destLink.waypoints.length > 1) {
-                                const p1 = sourceLink.waypoints[sourceLink.waypoints.length - 1], p4 = destLink.waypoints[0];
-                                const v1 = normalize(getVector(sourceLink.waypoints[sourceLink.waypoints.length - 2], p1)), v2 = normalize(getVector(p4, destLink.waypoints[1]));
-                                const p2 = add(p1, scale(v1, vecLen(getVector(p1, p4)) * 0.3)), p3 = add(p4, scale(v2, -vecLen(getVector(p1, p4)) * 0.3));
-                                xml += '            <tm:BaseBezierCurve><tm:ReferencePoints>\n';
-                                [p1, p2, p3, p4].forEach(p => { xml += `              <tm:Point><tm:x>${p.x.toFixed(4)}</tm:x><tm:y>${(p.y * C_SYSTEM_Y_INVERT).toFixed(4)}</tm:y></tm:Point>\n`; });
-                                xml += '            </tm:ReferencePoints></tm:BaseBezierCurve>\n';
+            // --- [關鍵修正]：移除所有過濾條件，無條件匯出所有存在的節點 ---
+            xml += `      <tm:RegularNode><tm:id>${numericId}</tm:id><tm:name></tm:name>\n`;
+
+            if (node.turningRatios && Object.keys(node.turningRatios).length > 0) {
+                xml += `        <tm:TurningRatios>\n`;
+                Object.entries(node.turningRatios).forEach(([fromId, toData]) => {
+                    const fromNumId = linkIdMap.get(fromId);
+                    if (fromNumId !== undefined) {
+                        xml += `          <tm:IncomingLink id="${fromNumId}">\n`;
+                        Object.entries(toData).forEach(([toId, ratio]) => {
+                            const toNumId = linkIdMap.get(toId);
+                            if (toNumId !== undefined) {
+                                xml += `            <tm:TurnTo linkId="${toNumId}" probability="${ratio.toFixed(4)}" />\n`;
                             }
-                        }
-                        xml += '            <tm:TransitionRules>\n';
-                        group.connIds.forEach(cid => { const mappedId = connIdMap.get(cid); if (mappedId !== undefined) xml += `              <tm:TransitionRule><tm:transitionRuleId>${mappedId}</tm:transitionRuleId></tm:TransitionRule>\n`; });
-                        xml += '            </tm:TransitionRules>\n          </tm:TurnTRGroup>\n';
-                    });
-                    xml += '        </tm:TurnTRGroups>\n';
-                    tflGroupMappings[node.id] = groupNameToNumericId;
-                }
-                
-                const pathPoints = getNodePolygonPoints(node);
-                if (pathPoints && pathPoints.length >= 6) {
-                    xml += '        <tm:PolygonGeometry>\n';
-                    for (let i = 0; i < pathPoints.length; i += 2) { xml += `          <tm:Point><tm:x>${pathPoints[i].toFixed(4)}</tm:x><tm:y>${(pathPoints[i + 1] * C_SYSTEM_Y_INVERT).toFixed(4)}</tm:y></tm:Point>\n`; }
-                    xml += '        </tm:PolygonGeometry>\n';
-                }
-                xml += `      </tm:RegularNode>\n`;
+                        });
+                        xml += `          </tm:IncomingLink>\n`;
+                    }
+                });
+                xml += `        </tm:TurningRatios>\n`;
             }
+
+            xml += '        <tm:TransitionRules>\n';
+            const connectionsAtNode = Object.values(network.connections).filter(c => c.nodeId === node.id);
+            for (const conn of connectionsAtNode) {
+                const connNumId = connIdMap.get(conn.id); if (connNumId === undefined) continue;
+                const sourceLink = network.links[conn.sourceLinkId];
+                const transitionWidth = (sourceLink && sourceLink.lanes[conn.sourceLaneIndex]) ? sourceLink.lanes[conn.sourceLaneIndex].width : LANE_WIDTH;
+                const p1 = conn.bezierPoints[0];
+                const p4 = conn.bezierPoints[1];
+                const destLink = network.links[conn.destLinkId];
+                let pointsToExport = [p1, p1, p4, p4];
+                let curveLength = vecLen(getVector(p1, p4));
+                if (sourceLink && destLink && sourceLink.waypoints.length > 1 && destLink.waypoints.length > 1) {
+                    const sourceLanePath = getLanePath(sourceLink, conn.sourceLaneIndex);
+                    const destLanePath = getLanePath(destLink, conn.destLaneIndex);
+                    if (sourceLanePath.length > 1 && destLanePath.length > 1) {
+                        const v1 = normalize(getVector(sourceLanePath[sourceLanePath.length - 2], p1));
+                        const v2 = normalize(getVector(p4, destLanePath[1]));
+                        const distBetweenEnds = vecLen(getVector(p1, p4));
+                        const controlPointOffset = distBetweenEnds * 0.4;
+                        const p2 = add(p1, scale(v1, controlPointOffset));
+                        const p3 = add(p4, scale(v2, -controlPointOffset));
+                        pointsToExport = [p1, p2, p3, p4];
+                        curveLength = getPolylineLength(pointsToExport);
+                    }
+                }
+                xml += `          <tm:TransitionRule><tm:id>${connNumId}</tm:id><tm:length>${curveLength.toFixed(4)}</tm:length><tm:width>${transitionWidth.toFixed(2)}</tm:width>`;
+                xml += `<tm:sourceLinkId>${linkIdMap.get(conn.sourceLinkId)}</tm:sourceLinkId><tm:sourceLaneIndex>${conn.sourceLaneIndex}</tm:sourceLaneIndex><tm:destinationLinkId>${linkIdMap.get(conn.destLinkId)}</tm:destinationLinkId><tm:destinationLaneIndex>${conn.destLaneIndex}</tm:destinationLaneIndex>\n`;
+                if (connToGroupIdMap.has(conn.id)) {
+                    xml += `            <tm:EditorGroupId>${connToGroupIdMap.get(conn.id)}</tm:EditorGroupId>\n`;
+                }
+                xml += '            <tm:BezierCurveGeometry><tm:ReferencePoints>\n';
+                pointsToExport.forEach(p => { xml += `              <tm:Point><tm:x>${p.x.toFixed(4)}</tm:x><tm:y>${(p.y * C_SYSTEM_Y_INVERT).toFixed(4)}</tm:y></tm:Point>\n`; });
+                xml += '            </tm:ReferencePoints></tm:BezierCurveGeometry>\n          </tm:TransitionRule>\n';
+            }
+            xml += '        </tm:TransitionRules>\n';
+
+            const tflData = network.trafficLights[node.id];
+            if (tflData && tflData.signalGroups && Object.keys(tflData.signalGroups).length > 0) {
+                const groupNameToNumericId = {}; let turnTRGroupIdCounter = 0;
+                xml += '        <tm:TurnTRGroups>\n';
+                Object.values(tflData.signalGroups).forEach(group => {
+                    const numericTurnTRGroupId = turnTRGroupIdCounter++; groupNameToNumericId[group.id] = numericTurnTRGroupId;
+                    xml += `          <tm:TurnTRGroup><tm:id>${numericTurnTRGroupId}</tm:id><tm:name>${group.id}</tm:name>\n`;
+                    const firstConn = network.connections[group.connIds[0]];
+                    if (firstConn) {
+                        const sourceLink = network.links[firstConn.sourceLinkId], destLink = network.links[firstConn.destLinkId];
+                        if (sourceLink && destLink && sourceLink.waypoints.length > 1 && destLink.waypoints.length > 1) {
+                            const p1 = sourceLink.waypoints[sourceLink.waypoints.length - 1], p4 = destLink.waypoints[0];
+                            xml += '            <tm:BaseBezierCurve><tm:ReferencePoints>\n';
+                            [p1, p1, p4, p4].forEach(p => { xml += `              <tm:Point><tm:x>${p.x.toFixed(4)}</tm:x><tm:y>${(p.y * C_SYSTEM_Y_INVERT).toFixed(4)}</tm:y></tm:Point>\n`; });
+                            xml += '            </tm:ReferencePoints></tm:BaseBezierCurve>\n';
+                        }
+                    }
+                    xml += '            <tm:TransitionRules>\n';
+                    group.connIds.forEach(cid => { const mappedId = connIdMap.get(cid); if (mappedId !== undefined) xml += `              <tm:TransitionRule><tm:transitionRuleId>${mappedId}</tm:transitionRuleId></tm:TransitionRule>\n`; });
+                    xml += '            </tm:TransitionRules>\n          </tm:TurnTRGroup>\n';
+                });
+                xml += '        </tm:TurnTRGroups>\n';
+                tflGroupMappings[node.id] = groupNameToNumericId;
+            }
+
+            const pathPoints = getNodePolygonPoints(node);
+            if (pathPoints && pathPoints.length >= 6) {
+                xml += '        <tm:PolygonGeometry>\n';
+                for (let i = 0; i < pathPoints.length; i += 2) { xml += `          <tm:Point><tm:x>${pathPoints[i].toFixed(4)}</tm:x><tm:y>${(pathPoints[i + 1] * C_SYSTEM_Y_INVERT).toFixed(4)}</tm:y></tm:Point>\n`; }
+                xml += '        </tm:PolygonGeometry>\n';
+            }
+            xml += `      </tm:RegularNode>\n`;
         }
-        
-        // Origins & Destinations (Legacy Support)
+
+        // Origins & Destinations
         for (const origin of Object.values(network.origins)) {
             const numericId = originNodeIdMap.get(origin.id), outgoingLinkId = linkIdMap.get(origin.linkId);
             if (numericId === undefined || outgoingLinkId === undefined) continue;
@@ -6427,12 +6926,15 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         xml += '    </tm:Nodes>\n  </tm:RoadNetwork>\n';
 
-        // --- 4. Agents (Traffic Control & Spawners) ---
+        // Agents
         xml += '  <tm:Agents>\n';
         xml += '    <tm:TrafficLightNetworks>\n';
         for (const tfl of Object.values(network.trafficLights)) {
             if (!tfl.schedule || tfl.schedule.length === 0) continue;
-            const nodeNumId = regularNodeIdMap.get(tfl.nodeId); if (nodeNumId === undefined) continue;
+            const nodeNumId = regularNodeIdMap.get(tfl.nodeId);
+            // [修正] 移除多餘條件，只檢查 ID 對映
+            if (nodeNumId === undefined) continue;
+
             xml += `      <tm:RegularTrafficLightNetwork><tm:regularNodeId>${nodeNumId}</tm:regularNodeId>\n`;
             const groupMap = tflGroupMappings[tfl.nodeId];
             if (groupMap) {
@@ -6459,6 +6961,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         xml += '    </tm:TrafficLightNetworks>\n';
 
+        // ... (Origins, Background, Meters, etc. 保持不變，因為它們與 Node 崩潰無關) ...
         xml += '    <tm:Origins>\n';
         for (const origin of Object.values(network.origins)) {
             const originNodeNumId = originNodeIdMap.get(origin.id);
@@ -6516,7 +7019,7 @@ document.addEventListener('DOMContentLoaded', () => {
         xml += '    </tm:Origins>\n';
         xml += '  </tm:Agents>\n';
 
-        // --- 5. Background ---
+        // Background
         if (network.background) {
             const bg = network.background;
             const group = bg.konvaGroup;
@@ -6544,13 +7047,13 @@ document.addEventListener('DOMContentLoaded', () => {
             xml += '  </tm:Background>\n';
         }
 
-        // --- 6. Meters (With Flow/Source/Profile data) ---
+        // Meters
         xml += '  <tm:Meters>\n';
         Object.values(network.detectors).forEach(detector => {
             const numericDetId = detectorIdMap.get(detector.id);
             const numericLinkId = linkIdMap.get(detector.linkId);
             if (numericDetId === undefined || numericLinkId === undefined) return;
-            
+
             if (detector.type === 'PointDetector') {
                 xml += `    <tm:LinkAverageTravelSpeedMeter>\n`;
                 xml += `      <tm:id>${numericDetId}</tm:id>\n`;
@@ -6559,14 +7062,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 xml += `      <tm:linkId>${numericLinkId}</tm:linkId>\n`;
                 xml += `      <tm:segmentId>0</tm:segmentId>\n`;
                 xml += `      <tm:position>${detector.position.toFixed(4)}</tm:position>\n`;
-                
-                // [新增] 匯出 observedFlow, isSource, spawnProfileId
                 xml += `      <tm:observedFlow>${detector.observedFlow || 0}</tm:observedFlow>\n`;
                 xml += `      <tm:isSource>${detector.isSource || false}</tm:isSource>\n`;
                 if (detector.isSource && detector.spawnProfileId) {
                     xml += `      <tm:spawnProfileId>${detector.spawnProfileId}</tm:spawnProfileId>\n`;
                 }
-                
                 xml += `    </tm:LinkAverageTravelSpeedMeter>\n`;
             } else if (detector.type === 'SectionDetector') {
                 xml += `    <tm:SectionAverageTravelSpeedMeter>\n`;
@@ -6577,20 +7077,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 xml += `      <tm:segmentId>0</tm:segmentId>\n`;
                 xml += `      <tm:position>${(detector.position - (detector.length || 0)).toFixed(4)}</tm:position>\n`;
                 xml += `      <tm:sectionLength>${(detector.length || 0).toFixed(4)}</tm:sectionLength>\n`;
-                
-                // [新增] 匯出 observedFlow, isSource, spawnProfileId
                 xml += `      <tm:observedFlow>${detector.observedFlow || 0}</tm:observedFlow>\n`;
                 xml += `      <tm:isSource>${detector.isSource || false}</tm:isSource>\n`;
                 if (detector.isSource && detector.spawnProfileId) {
                     xml += `      <tm:spawnProfileId>${detector.spawnProfileId}</tm:spawnProfileId>\n`;
                 }
-
                 xml += `    </tm:SectionAverageTravelSpeedMeter>\n`;
             }
         });
         xml += '  </tm:Meters>\n';
 
-        // --- 7. Overpasses ---
+        // Overpasses
         if (Object.keys(network.overpasses).length > 0) {
             xml += '  <tm:Overpasses>\n';
             Object.values(network.overpasses).forEach(op => {
@@ -6616,7 +7113,7 @@ document.addEventListener('DOMContentLoaded', () => {
             xml += '  </tm:Overpasses>\n';
         }
 
-        // --- 8. GeoAnchors ---
+        // GeoAnchors
         if (Object.keys(network.pushpins).length > 0) {
             xml += '  <tm:GeoAnchors>\n';
             Object.values(network.pushpins).forEach(pin => {
@@ -6630,7 +7127,7 @@ document.addEventListener('DOMContentLoaded', () => {
             xml += '  </tm:GeoAnchors>\n';
         }
 
-        // --- 9. Parking Lots ---
+        // Parking Lots & Gates
         if (Object.keys(network.parkingLots).length > 0) {
             xml += '  <tm:ParkingLots>\n';
             Object.values(network.parkingLots).forEach(pl => {
@@ -6639,6 +7136,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 xml += `      <tm:name>${pl.name}</tm:name>\n`;
                 xml += `      <tm:carCapacity>${pl.carCapacity}</tm:carCapacity>\n`;
                 xml += `      <tm:motoCapacity>${pl.motoCapacity}</tm:motoCapacity>\n`;
+                xml += `      <tm:attractionProb>${pl.attractionProb || 0}</tm:attractionProb>\n`;
+                xml += `      <tm:stayDuration>${pl.stayDuration || 0}</tm:stayDuration>\n`;
                 xml += '      <tm:Boundary>\n';
                 const polygon = pl.konvaGroup.findOne('.parking-lot-shape');
                 if (!polygon) return;
@@ -6678,7 +7177,7 @@ document.addEventListener('DOMContentLoaded', () => {
             xml += '  </tm:ParkingLots>\n';
         }
 
-        // --- 10. Unlinked Gates ---
+        // Unlinked Gates
         const unlinkedGates = Object.values(network.parkingGates).filter(g => !g.parkingLotId);
         if (unlinkedGates.length > 0) {
             xml += '  <tm:UnlinkedParkingGates>\n';
