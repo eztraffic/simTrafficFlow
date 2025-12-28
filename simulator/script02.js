@@ -2851,6 +2851,107 @@ document.addEventListener('DOMContentLoaded', () => {
         return carGroup;
     }
 
+    // --- 新增：建立機車專用的 3D Mesh ---
+    function createMotorcycleMesh(length, width, colorValue) {
+        const bikeGroup = new THREE.Group();
+
+        // 材質定義
+        const paintMat = new THREE.MeshLambertMaterial({ color: colorValue }); // 車身顏色
+        const darkMat = new THREE.MeshLambertMaterial({ color: 0x333333 });    // 輪胎、坐墊
+        const metalMat = new THREE.MeshLambertMaterial({ color: 0xCCCCCC });   // 金屬部件 (前叉、排氣管)
+        const skinMat = new THREE.MeshLambertMaterial({ color: 0xF1C27D });    // 膚色 (騎士)
+        const shirtMat = new THREE.MeshLambertMaterial({ color: 0xFFFFFF });   // 騎士衣服 (白T)
+        const helmetMat = new THREE.MeshLambertMaterial({ color: 0x222222 });  // 安全帽 (深色)
+
+        // 尺寸參數
+        const wheelRadius = 0.25;
+        const wheelThickness = 0.1;
+        const chassisHeight = 0.4; // 離地高
+
+        // 1. 輪胎 (前後輪)
+        const wheelGeo = new THREE.CylinderGeometry(wheelRadius, wheelRadius, wheelThickness, 12);
+        // 前輪 (X+)
+        const frontWheel = new THREE.Mesh(wheelGeo, darkMat);
+        frontWheel.rotation.x = Math.PI / 2;
+        frontWheel.position.set(length * 0.35, wheelRadius, 0);
+        frontWheel.castShadow = true;
+        bikeGroup.add(frontWheel);
+
+        // 後輪 (X-)
+        const backWheel = new THREE.Mesh(wheelGeo, darkMat);
+        backWheel.rotation.x = Math.PI / 2;
+        backWheel.position.set(-length * 0.35, wheelRadius, 0);
+        backWheel.castShadow = true;
+        bikeGroup.add(backWheel);
+
+        // 2. 車身主體 (連接前後輪)
+        const bodyGeo = new THREE.BoxGeometry(length * 0.5, 0.25, width * 0.4);
+        const body = new THREE.Mesh(bodyGeo, paintMat);
+        body.position.set(0, wheelRadius + 0.1, 0);
+        body.castShadow = true;
+        bikeGroup.add(body);
+
+        // 3. 龍頭與前叉 (Front Fork)
+        // 一根斜向的桿子
+        const forkGeo = new THREE.BoxGeometry(0.1, 0.6, 0.1);
+        const fork = new THREE.Mesh(forkGeo, metalMat);
+        fork.position.set(length * 0.25, wheelRadius + 0.35, 0);
+        fork.rotation.z = -Math.PI / 6; // 向後傾斜
+        bikeGroup.add(fork);
+
+        // 握把 (Handlebar)
+        const handleBarGeo = new THREE.CylinderGeometry(0.03, 0.03, 0.7, 8);
+        const handleBar = new THREE.Mesh(handleBarGeo, darkMat);
+        handleBar.rotation.x = Math.PI / 2;
+        handleBar.position.set(length * 0.22, wheelRadius + 0.6, 0);
+        bikeGroup.add(handleBar);
+
+        // 4. 簡易騎士 (Rider) - 讓機車看起來有人在騎
+        const riderGroup = new THREE.Group();
+
+        // 軀幹
+        const torsoGeo = new THREE.BoxGeometry(0.2, 0.45, 0.3);
+        const torso = new THREE.Mesh(torsoGeo, shirtMat);
+        torso.position.set(-0.1, 0.25, 0); // 稍微靠後
+        torso.castShadow = true;
+        riderGroup.add(torso);
+
+        // 頭部 (安全帽)
+        const headGeo = new THREE.BoxGeometry(0.22, 0.25, 0.22);
+        const head = new THREE.Mesh(headGeo, helmetMat);
+        head.position.set(0, 0.6, 0); // 在軀幹上方
+        riderGroup.add(head);
+
+        // 手臂 (簡單示意，伸向握把)
+        const armGeo = new THREE.BoxGeometry(0.35, 0.08, 0.08);
+        const leftArm = new THREE.Mesh(armGeo, skinMat);
+        leftArm.position.set(0.15, 0.35, 0.2);
+        leftArm.rotation.y = -0.5;
+        leftArm.rotation.z = -0.3;
+        riderGroup.add(leftArm);
+
+        const rightArm = new THREE.Mesh(armGeo, skinMat);
+        rightArm.position.set(0.15, 0.35, -0.2);
+        rightArm.rotation.y = 0.5;
+        rightArm.rotation.z = -0.3;
+        riderGroup.add(rightArm);
+
+        // 將騎士放到車身上
+        riderGroup.position.set(-0.1, wheelRadius + 0.3, 0);
+        // 身體稍微前傾
+        riderGroup.rotation.z = 0.2;
+
+        bikeGroup.add(riderGroup);
+
+        // 5. 車頭燈
+        const lightGeo = new THREE.BoxGeometry(0.1, 0.15, 0.15);
+        const headLight = new THREE.Mesh(lightGeo, new THREE.MeshBasicMaterial({ color: 0xFFFFCC }));
+        headLight.position.set(length * 0.3, wheelRadius + 0.45, 0);
+        bikeGroup.add(headLight);
+
+        return bikeGroup;
+    }
+
     function update3DScene() {
         if (!simulation) { renderer.render(scene, camera); return; }
         if (showTurnPaths) update3DSignals();
@@ -2864,7 +2965,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (!mesh) {
                 const color = new THREE.Color().setHSL(Math.random(), 0.7, 0.5);
-                mesh = createDetailedCarMesh(v.length, v.width, color);
+
+                // [修改] 根據車寬判斷車種
+                // 如果寬度小於 1.0 (機車)，使用 createMotorcycleMesh
+                // 否則使用 createDetailedCarMesh
+                if (v.width < 1.0) {
+                    mesh = createMotorcycleMesh(v.length, v.width, color);
+                } else {
+                    mesh = createDetailedCarMesh(v.length, v.width, color);
+                }
+
                 mesh.userData.vehicleId = v.id;
                 mesh.traverse((child) => {
                     child.userData.vehicleId = v.id;
@@ -2878,32 +2988,19 @@ document.addEventListener('DOMContentLoaded', () => {
             mesh.rotation.y = -v.angle;
         });
 
-        // 移除已經消失的車輛
+        // (後續移除消失車輛的代碼保持不變...)
         for (const [id, mesh] of vehicleMeshes) {
             if (!activeIds.has(id)) {
                 scene.remove(mesh);
-
-                // [修正] 更嚴謹的資源釋放邏輯
                 mesh.traverse((child) => {
                     if (child.isMesh) {
-                        // 釋放幾何體
-                        if (child.geometry) {
-                            child.geometry.dispose();
-                        }
-
-                        // 釋放材質 (需判斷是單一材質還是陣列)
+                        if (child.geometry) child.geometry.dispose();
                         if (child.material) {
-                            if (Array.isArray(child.material)) {
-                                // 如果是材質陣列 (例如車頂)，遍歷釋放
-                                child.material.forEach(mat => mat.dispose());
-                            } else {
-                                // 如果是單一材質 (例如輪胎、底盤)，直接釋放
-                                child.material.dispose();
-                            }
+                            if (Array.isArray(child.material)) child.material.forEach(mat => mat.dispose());
+                            else child.material.dispose();
                         }
                     }
                 });
-
                 vehicleMeshes.delete(id);
             }
         }
@@ -3984,6 +4081,14 @@ document.addEventListener('DOMContentLoaded', () => {
             this.headwayTime = profile.params.desiredHeadwayTime;
             this.delta = 4; // Acceleration exponent
 
+            // --- [NEW] Lateral Control Properties ---
+            this.lateralOffset = 0;       // Current offset from lane center (meters), negative=right, positive=left
+            this.targetLateralOffset = 0; // Target offset
+            this.lateralSpeed = 1.5;      // Lateral movement speed (m/s)
+
+            // Determine if vehicle is a motorcycle (width < 1.0m)
+            this.isMotorcycle = this.width < 1.0;
+
             // --- 運動狀態 (Kinematic State) ---
             this.accel = 0;
             this.speed = initialState ? initialState.speed : 0;
@@ -4025,6 +4130,34 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // [新增] 防止對同一個停車場入口重複判定機率
             this.checkedParkingGates = new Set();
+
+            // [新增/修改] 機車專屬動力學參數
+            if (this.isMotorcycle) {
+                // 1. 隨機擺動參數 (維持微幅擺動，模擬平衡感)
+                this.wanderPhase = Math.random() * Math.PI * 2;
+                this.wanderSpeed = 0.5 + Math.random() * 1.5;
+                this.wanderAmplitude = 0.05 + Math.random() * 0.1; // [縮小] 幅度改小，避免像喝醉
+
+                // 2. [新增] 決策計時器：錯開每輛車的思考時間
+                // 初始值隨機 1~5 秒，避免所有車同時開始動作
+                this.decisionTimer = 1.0 + Math.random() * 4.0;
+
+                // 3. [新增] 駕駛偏好 (Bias)
+                // 這是這輛車習慣騎的位置 (正規化 -1 ~ 1)
+                // -0.8 (靠最外側), 0 (路中間), +0.8 (靠最內側/鑽縫)
+                // 我們讓 60% 的機車傾向靠外側 (右側/負值)，20% 居中，20% 鑽縫
+                const rand = Math.random();
+                if (rand < 0.6) {
+                    this.preferredBias = -0.5 - (Math.random() * 0.4); // -0.5 ~ -0.9 (靠右)
+                } else if (rand < 0.8) {
+                    this.preferredBias = (Math.random() - 0.5) * 0.4;  // -0.2 ~ +0.2 (居中)
+                } else {
+                    this.preferredBias = 0.5 + (Math.random() * 0.4);  // +0.5 ~ +0.9 (靠左鑽縫)
+                }
+
+                // 初始目標就設為偏好位置
+                this.targetLateralOffset = 0; // 稍後在 update 裡會根據車道寬度計算
+            }
 
             // 初始化位置
             this.initializePosition(network);
@@ -4103,6 +4236,21 @@ document.addEventListener('DOMContentLoaded', () => {
             // [新增] 檢查動態停車機會 (Flow Mode)
             this.checkForDynamicParking(network);
 
+            // ---------------------------------------------------
+            // [新增] 插入機車動力學更新
+            if (this.isMotorcycle) {
+                this.updateMotorcycleDynamics(dt, network, allVehicles);
+            }
+            // ---------------------------------------------------
+
+            // [NEW] Update lateral position
+            this.updateLateralPosition(dt);
+
+            // [NEW] Motorcycle filtering decision
+            if (this.isMotorcycle && this.state === 'onLink') {
+                this.decideLaneFiltering(allVehicles, network);
+            }
+
             // [機率導航] 若為 Flow Mode 且快到路盡頭，決定下一條路
             const distToEnd = this.currentPathLength - this.distanceOnPath;
             const hasNextRoute = this.currentLinkIndex + 1 < this.route.length;
@@ -4117,6 +4265,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (this.state === 'onLink') { this.checkRoadSigns(network); }
 
             // 跟車模型 (IDM) 計算加速度
+            // Note: findLeader will be updated in later steps
             const { leader, gap } = this.findLeader(allVehicles, network);
             // IDM 公式
             const s_star = this.minGap + Math.max(0, this.speed * this.headwayTime + (this.speed * (this.speed - (leader ? leader.speed : 0))) / (2 * Math.sqrt(this.maxAccel * this.comfortDecel)));
@@ -4146,7 +4295,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 this.handlePathTransition(leftoverDistance, network);
             }
 
-            // 更新繪圖座標 (x, y, angle)
+            // [MODIFIED] Ensure drawing uses lateral offset
             if (!this.finished) this.updateDrawingPosition(network);
         }
 
@@ -4394,6 +4543,187 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // ==================================================================================
+        // 橫向控制與機車鑽車手法 (Lateral Control & Lane Filtering)
+        // ==================================================================================
+
+        // [新增] 機車專屬動態：模擬自由騎行與自然擺動
+        // [修正 V2] 機車專屬動態：加入速度抑制，解決停等時跳動問題
+        // [修正 V3] 機車專屬動態：加入駕駛習慣與決策慣性，消除魚群效應
+        updateMotorcycleDynamics(dt, network, allVehicles) {
+            if (this.state !== 'onLink' || this.laneChangeState) return;
+
+            const link = network.links[this.currentLinkId];
+            if (!link) return;
+            const lane = link.lanes[this.currentLaneIndex];
+            if (!lane) return;
+
+            // 速度因子 (用於停等時保持穩定)
+            const speedFactor = Math.min(1, Math.max(0, (this.speed - 0.5) / 4.5));
+
+            // 1. 微幅自然擺動 (模擬平衡維持，非換道)
+            if (this.speed > 0.1) {
+                this.wanderPhase += dt * this.wanderSpeed;
+            }
+            // 靜止時不擺動
+            const wanderOffset = Math.sin(this.wanderPhase) * this.wanderAmplitude * speedFactor;
+
+            // 2. 長週期決策邏輯 (取代原本的高頻率隨機)
+            // 只有在移動中才倒數計時
+            if (this.speed > 2.0) {
+                this.decisionTimer -= dt;
+            }
+
+            // 當計時器歸零，騎士決定調整行駛線
+            if (this.decisionTimer <= 0) {
+                // 重置計時器：每 5~12 秒才改變一次心意，這會大幅增加穩定感
+                this.decisionTimer = 5.0 + Math.random() * 7.0;
+
+                // 計算可用的半寬
+                const halfWidth = (lane.width / 2) - 0.4; // 扣除邊距
+
+                // 根據「駕駛偏好」決定基準目標
+                // 例如偏好靠右(-0.7)的車，在 8m 車道(半寬4m)會傾向騎在 -2.8m 處
+                let biasTarget = this.preferredBias * halfWidth;
+
+                // 加入一點點隨機性 (Noise)，讓它不會永遠死板地騎在同一條線上
+                // 隨機偏移 +/- 0.8m
+                const noise = (Math.random() - 0.5) * 1.6;
+                let newTarget = biasTarget + noise;
+
+                // [關鍵] 限制單次改變幅度 (不要一次橫跨太遠)
+                // 讓改變看起來像是在微調，而不是換車道
+                const current = this.targetLateralOffset;
+                const maxStep = 1.5; // 一次最多移動 1.5 米
+                if (newTarget - current > maxStep) newTarget = current + maxStep;
+                if (newTarget - current < -maxStep) newTarget = current - maxStep;
+
+                this.targetLateralOffset = newTarget;
+            }
+
+            // 3. 最終邊界限制 (Clamp)
+            // 確保計算結果還在車道內
+            const limit = (lane.width / 2) - 0.3;
+            if (this.targetLateralOffset > limit) this.targetLateralOffset = limit;
+            if (this.targetLateralOffset < -limit) this.targetLateralOffset = -limit;
+
+            // 4. 強制穩定機制
+            // 如果剛生成還沒初始化目標，或停等時，讓它快速收斂到偏好位置
+            if (Math.abs(this.speed) < 0.1) {
+                // 靜止時不改變 target，只應用 wander (而 wander 也是 0)
+                // 保持現狀
+            }
+        }
+
+        // Smoothly update lateral offset
+        // [修正 V2] 更新橫向位置 (加入阻尼平滑算法，解決機車偏移過快過硬的問題)
+        updateLateralPosition(dt) {
+            const diff = this.targetLateralOffset - this.lateralOffset;
+
+            // 如果差距極小，直接對齊以節省運算
+            if (Math.abs(diff) < 0.005) {
+                this.lateralOffset = this.targetLateralOffset;
+                return;
+            }
+
+            if (this.isMotorcycle) {
+                // --- 機車專用：漸進式平滑 (Lerp / Damping) ---
+
+                // 設定平滑因子 (Smoothing Factor)
+                // 值越小越慢越黏滯，值越大越快越靈敏。
+                // 0.8 ~ 1.5 是模擬悠閒騎行的好範圍。
+                const smoothingFactor = 1.0;
+
+                // 使用插值公式：目前的 += (目標 - 目前) * 因子 * dt
+                // 這會產生 "一開始快，接近目標時變慢" 的 Ease-Out 效果
+                let move = diff * Math.min(1, dt * smoothingFactor);
+
+                // [安全限制] 雖然 Lerp 很平滑，但為了防止目標突然大幅改變導致瞬間加速過快，
+                // 我們還是限制一下物理上的最大橫向速度 (例如不超過 1.0 m/s)
+                const maxSpeed = 1.0;
+                const maxMove = maxSpeed * dt;
+
+                if (move > maxMove) move = maxMove;
+                if (move < -maxMove) move = -maxMove;
+
+                this.lateralOffset += move;
+
+            } else {
+                // --- 汽車/卡車：原本的機械式定速移動 ---
+                // 汽車轉向系統較穩定，維持原本的定速邏輯看起來較有重量感
+                const dir = Math.sign(diff);
+                const move = this.lateralSpeed * dt;
+
+                if (Math.abs(diff) < move) {
+                    this.lateralOffset = this.targetLateralOffset;
+                } else {
+                    this.lateralOffset += dir * move;
+                }
+            }
+        }
+
+        // [新增] 取得相對於道路左側(或右側)基準線的絕對橫向位置
+        getAbsoluteLateralPos(network) {
+            const link = network.links[this.currentLinkId];
+            if (!link) return 0;
+
+            let cumWidth = 0;
+            // 假設 lanes 是以 index 0, 1, 2... 排列
+            // 我們累加寬度直到到達當前車道的中心
+            for (let i = 0; i < this.currentLaneIndex; i++) {
+                if (link.lanes[i]) {
+                    cumWidth += link.lanes[i].width;
+                }
+            }
+
+            const myLaneWidth = link.lanes[this.currentLaneIndex] ? link.lanes[this.currentLaneIndex].width : 3.5;
+            // 絕對位置 = 之前車道總寬 + 當前車道一半 + 自身的偏移
+            return cumWidth + (myLaneWidth / 2) + this.lateralOffset;
+        }
+
+        // [修正] 決定是否鑽車 (Lane Filtering Decision)
+        // [修正 V2] 決定是否鑽車 (支援多車併排群游)
+        // [修正 V3] 決定是否鑽車 (加強邊界檢查)
+        decideLaneFiltering(allVehicles, network) {
+            // 狀態檢查
+            if (!this.isMotorcycle || this.state !== 'onLink' || Math.abs(this.targetLateralOffset) > 0.1) return;
+
+            const link = network.links[this.currentLinkId];
+            if (!link) return;
+            const myLane = link.lanes[this.currentLaneIndex];
+            // 確保讀取到正確的寬度，若讀取失敗則給予一個極小值(3.0)強迫不鑽車
+            const laneWidth = myLane ? myLane.width : 3.0;
+
+            // 取得前車資訊
+            const { leader, gap } = this.findLeader(allVehicles, network);
+
+            // 如果被阻擋 (距離近 < 20m)
+            if (leader && gap < 20) {
+
+                // 計算路面邊界限制 (保留 0.5m 路緣距離)
+                // Math.max(0, ...) 確保不會出現負數
+                const maxOffset = Math.max(0, (laneWidth / 2) - (this.width / 2) - 0.5);
+
+                // 如果車道太窄 (maxOffset 為 0)，則直接放棄鑽車
+                if (maxOffset <= 0.1) return;
+
+                // 嘗試 3 次，找一個隨機位置
+                for (let i = 0; i < 3; i++) {
+                    const randomOffset = (Math.random() * 2 - 1) * maxOffset;
+
+                    // 檢查這個新位置會不會撞到前車
+                    const leaderRelativeOffset = leader.lateralOffset || 0;
+                    const distToLeader = Math.abs(randomOffset - leaderRelativeOffset);
+                    const safeWidth = (this.width + leader.width) / 2 + 0.3;
+
+                    if (distToLeader > safeWidth) {
+                        this.targetLateralOffset = randomOffset;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // ==================================================================================
         // 導航與路徑邏輯 (Navigation & Routing)
         // ==================================================================================
 
@@ -4546,36 +4876,68 @@ document.addEventListener('DOMContentLoaded', () => {
         // 換車道邏輯 (Lane Changing)
         // ==================================================================================
 
+        // [修正 V7] 換道邏輯 (針對機車實現「不回正」的大面積行駛感)
         manageLaneChangeProcess(dt, network, allVehicles) {
-            // 1. 執行中
+            // 1. 執行中：更新進度
             if (this.laneChangeState) {
                 this.laneChangeState.progress += dt / this.laneChangeState.duration;
+
                 if (this.laneChangeState.progress >= 1) {
                     this.currentLaneIndex = this.laneChangeState.toLaneIndex;
+                    this.lateralOffset = this.laneChangeState.endOffset;
+
+                    // [關鍵修改] 機車換道後行為
+                    if (this.isMotorcycle) {
+                        // 機車：不強制回正！
+                        // 將目標設為當前的偏移量 (Stay where you are)，
+                        // 讓 updateMotorcycleDynamics 稍後再慢慢決定要不要飄走。
+                        // 這樣能模擬「切入大車道邊緣後，就沿著邊緣騎」的行為。
+                        this.targetLateralOffset = this.lateralOffset;
+                    } else {
+                        // 汽車：維持原樣，慢慢回正
+                        this.targetLateralOffset = 0;
+                    }
+
                     this.laneChangeState = null;
-                    this.laneChangeCooldown = 5.0; // 冷卻時間
+                    this.laneChangeCooldown = 5.0;
                 }
             }
 
-            // 2. 決策：強制換車道 (為了轉彎導航)
+            // (以下決策邏輯保持不變...)
             if (!this.laneChangeGoal) { this.handleMandatoryLaneChangeDecision(network, allVehicles); }
-            // 3. 決策：自由換車道 (為了超車)
             if (!this.laneChangeGoal && this.laneChangeCooldown <= 0) { this.handleDiscretionaryLaneChangeDecision(network, allVehicles); }
 
-            // 4. 啟動換道
             if (this.laneChangeGoal !== null && !this.laneChangeState) {
                 if (this.currentLaneIndex === this.laneChangeGoal) {
-                    this.laneChangeGoal = null; // 已到達目標
+                    this.laneChangeGoal = null;
                 } else {
                     const direction = Math.sign(this.laneChangeGoal - this.currentLaneIndex);
                     const nextLaneIndex = this.currentLaneIndex + direction;
                     const safeToChange = this.isSafeToChange(nextLaneIndex, allVehicles);
+
                     if (safeToChange) {
+                        const link = network.links[this.currentLinkId];
+                        const targetLane = link.lanes[nextLaneIndex];
+                        let calculatedEndOffset = 0;
+
+                        if (targetLane) {
+                            const maxSafeOffset = Math.max(0, (targetLane.width / 2) - (this.width / 2) - 0.3);
+
+                            // 方向判斷邏輯 (同 V6)
+                            if (direction > 0) { // 往左換 (Index變大)，落在新車道右側
+                                calculatedEndOffset = -maxSafeOffset * 0.8;
+                            } else { // 往右換 (Index變小)，落在新車道左側
+                                calculatedEndOffset = maxSafeOffset * 0.8;
+                            }
+                        }
+
                         this.laneChangeState = {
                             progress: 0,
                             fromLaneIndex: this.currentLaneIndex,
                             toLaneIndex: nextLaneIndex,
-                            duration: 1.5 // 換道過程秒數
+                            duration: 2.0,
+                            startOffset: this.lateralOffset,
+                            endOffset: calculatedEndOffset
                         };
                     }
                 }
@@ -4697,92 +5059,178 @@ document.addEventListener('DOMContentLoaded', () => {
         // 跟車與路權邏輯 (Car Following & Right of Way)
         // ==================================================================================
 
+        // [修正] 尋找前車 (支援跨車道與動態路寬的幾何重疊判定)
+        // [修正 V5] 尋找前車 (加入跨路段回堵偵測，解決無號誌路口重疊問題)
+        // [修正 V6] 尋找前車 (區分號誌/無號誌路口的回堵邏輯)
         findLeader(allVehicles, network) {
             let leader = null;
             let gap = Infinity;
             const distanceToEndOfCurrentPath = this.currentPathLength - this.distanceOnPath;
 
-            // 1. 檢查同一路徑上的前車
+            // 取得「我」的絕對橫向位置
+            const myAbsPos = this.getAbsoluteLateralPos(network);
+            const isLaterallyOverlapping = (otherVehicle) => {
+                const otherAbsPos = otherVehicle.getAbsoluteLateralPos(network);
+                const latDist = Math.abs(myAbsPos - otherAbsPos);
+                const minSafeDist = (this.width + otherVehicle.width) / 2 + 0.2;
+                return latDist < minSafeDist;
+            };
+
+            // 1. 基本檢查：同一路段上的前車
             for (const other of allVehicles) {
                 if (other.id === this.id) continue;
 
-                const isSamePath =
-                    (this.state === 'onLink' && other.state === 'onLink' && this.currentLinkId === other.currentLinkId &&
-                        (this.laneChangeState ? this.laneChangeState.toLaneIndex : this.currentLaneIndex) ===
-                        (other.laneChangeState ? other.laneChangeState.toLaneIndex : other.currentLaneIndex)) ||
-                    (this.state === 'inIntersection' && other.state === 'inIntersection' && this.currentTransition?.id === other.currentTransition?.id);
+                let isSameLink = false;
+                if (this.state === 'onLink' && other.state === 'onLink' && this.currentLinkId === other.currentLinkId) {
+                    isSameLink = true;
+                } else if (this.state === 'inIntersection' && other.state === 'inIntersection' && this.currentTransition?.id === other.currentTransition?.id) {
+                    isSameLink = true;
+                }
 
-                if (isSamePath && other.distanceOnPath > this.distanceOnPath) {
-                    const currentGap = other.distanceOnPath - this.distanceOnPath - this.length;
-                    if (currentGap < gap) {
-                        gap = currentGap;
-                        leader = other;
+                if (isSameLink) {
+                    if (other.distanceOnPath > this.distanceOnPath) {
+                        let isBlocking = false;
+                        if (this.isMotorcycle) {
+                            if (isLaterallyOverlapping(other)) isBlocking = true;
+                        } else {
+                            const otherLaneIndex = other.laneChangeState ? other.laneChangeState.toLaneIndex : other.currentLaneIndex;
+                            const myLaneIndex = this.laneChangeState ? this.laneChangeState.toLaneIndex : this.currentLaneIndex;
+                            if (otherLaneIndex === myLaneIndex || isLaterallyOverlapping(other)) {
+                                isBlocking = true;
+                            }
+                        }
+
+                        if (isBlocking) {
+                            const currentGap = other.distanceOnPath - this.distanceOnPath - this.length;
+                            if (currentGap < gap) {
+                                gap = currentGap;
+                                leader = other;
+                            }
+                        }
                     }
                 }
             }
 
-            // 2. 預判與號誌檢查
+            // 2. 預判：檢查號誌、路口衝突、以及下游路段回堵
             if (this.state === 'onLink') {
-                const checkDistance = Math.max(50, this.speed * 4); // 視距
+                const checkDistance = Math.max(50, this.speed * 4);
 
                 if (distanceToEndOfCurrentPath < checkDistance) {
                     const nextLinkIndex = this.currentLinkIndex + 1;
+
                     if (nextLinkIndex < this.route.length) {
                         const currentLink = network.links[this.currentLinkId];
-                        const destNodeId = currentLink.destination;
-                        const destNode = network.nodes[destNodeId];
-                        const finalLaneForTransition = this.laneChangeGoal !== null ? this.laneChangeGoal : this.currentLaneIndex;
+                        const destNode = network.nodes[currentLink.destination];
+                        const nextLinkId = this.route[nextLinkIndex];
+                        const finalLane = this.laneChangeGoal !== null ? this.laneChangeGoal : this.currentLaneIndex;
 
-                        // 找出路口內的連接路徑
                         const myTransition = destNode.transitions.find(t =>
                             t.sourceLinkId === this.currentLinkId &&
-                            t.sourceLaneIndex === finalLaneForTransition &&
-                            t.destLinkId === this.route[nextLinkIndex]
+                            t.sourceLaneIndex === finalLane &&
+                            t.destLinkId === nextLinkId
                         );
 
-                        let isBlocked = false;
+                        if (myTransition) {
+                            // 判斷路口是否為號誌化 (Signalized)
+                            const isSignalized = network.trafficLights.some(t => t.nodeId === currentLink.destination);
 
-                        if (!myTransition) {
-                            isBlocked = true; // 無路可走，視為牆壁
-                        } else {
-                            // A. 檢查號誌
-                            const tfl = network.trafficLights.find(t => t.nodeId === destNodeId);
-                            if (tfl) {
-                                const signal = tfl.getSignalForTurnGroup(myTransition.turnGroupId);
-                                if (signal === 'Red') isBlocked = true;
-                                else if (signal === 'Yellow') {
-                                    const requiredBrakingDistance = (this.speed * this.speed) / (2 * this.comfortDecel);
-                                    if (distanceToEndOfCurrentPath > requiredBrakingDistance) isBlocked = true;
-                                }
-                            }
-
-                            // B. 檢查路口衝突 (Crossing Conflicts)
-                            if (!isBlocked) {
-                                const conflictIds = myTransition.conflictingTransitionIds || [];
-                                for (const other of allVehicles) {
-                                    if (other.id === this.id) continue;
-                                    if (other.state === 'inIntersection' && other.currentTransition) {
-                                        if (conflictIds.includes(other.currentTransition.id)) {
-                                            isBlocked = true; // 有車正在橫越
-                                            break;
+                            // A. 檢查號誌 (Traffic Light)
+                            if (isSignalized) {
+                                const tfl = network.trafficLights.find(t => t.nodeId === currentLink.destination);
+                                if (tfl) {
+                                    const signal = tfl.getSignalForTurnGroup(myTransition.turnGroupId);
+                                    if (signal === 'Red' || (signal === 'Yellow' && distanceToEndOfCurrentPath > (this.speed ** 2) / (2 * this.comfortDecel))) {
+                                        if (distanceToEndOfCurrentPath < gap) {
+                                            leader = null;
+                                            gap = Math.max(0.1, distanceToEndOfCurrentPath);
                                         }
                                     }
                                 }
                             }
-                        }
 
-                        if (isBlocked) {
-                            // 虛擬前車：設置在路口停止線
-                            const distToStopLine = distanceToEndOfCurrentPath;
-                            if (distToStopLine < gap) {
+                            // B. 檢查路口內衝突 (Intersection Conflict)
+                            const conflictIds = myTransition.conflictingTransitionIds || [];
+                            for (const other of allVehicles) {
+                                if (other.id === this.id) continue;
+                                if (other.state === 'inIntersection' && other.currentTransition) {
+                                    if (conflictIds.includes(other.currentTransition.id)) {
+                                        if (distanceToEndOfCurrentPath < gap) {
+                                            leader = null;
+                                            gap = Math.max(0.1, distanceToEndOfCurrentPath);
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+
+                            // C. [關鍵修正] 檢查下游路段回堵 (Downstream Spillback)
+                            const nextLinkTargetLane = myTransition.destLaneIndex;
+                            const transitionLen = myTransition.bezier ? myTransition.bezier.length : 10.0;
+
+                            for (const other of allVehicles) {
+                                if (other.id === this.id) continue;
+
+                                let isTarget = false;
+                                let distInNext = 0;
+
+                                // 情況 1: 對方已在下一條路上
+                                if (other.state === 'onLink' &&
+                                    other.currentLinkId === nextLinkId &&
+                                    other.currentLaneIndex === nextLinkTargetLane) {
+                                    isTarget = true;
+                                    distInNext = other.distanceOnPath;
+                                }
+                                // 情況 2: 對方正在路口內轉向同一目標
+                                else if (other.state === 'inIntersection' &&
+                                    other.currentTransition &&
+                                    other.currentTransition.destLinkId === nextLinkId &&
+                                    other.currentTransition.destLaneIndex === nextLinkTargetLane) {
+                                    isTarget = true;
+                                    // 視為負的距離 (還沒到下一條路)
+                                    distInNext = -(transitionLen - other.distanceOnPath);
+                                }
+
+                                if (isTarget) {
+                                    // 計算物理上的跟車距離 (包含路口長度)
+                                    // Physical Gap = (我到停止線) + (路口長) + (對方在下一條路距離)
+                                    const physicalGap = (distanceToEndOfCurrentPath + transitionLen + distInNext) - this.length - other.length;
+
+                                    if (isSignalized) {
+                                        // --- 號誌化路口邏輯 (Anti-Gridlock) ---
+                                        // 檢查是否能「淨空路口」?
+                                        // 簡單判定：如果對方在下一條路走的距離還不夠(容納不下我)，就算回堵
+                                        // 需預留我的車長 + 安全緩衝(約2~3米)
+                                        const spaceAvailable = distInNext > (this.length + 2.5);
+
+                                        if (!spaceAvailable) {
+                                            // 對岸沒位子，我必須停在停止線前
+                                            // 所以距離被限制為「我到停止線的距離」
+                                            const stopLineGap = distanceToEndOfCurrentPath;
+                                            // 取最小值：如果物理距離其實更近(例如對方根本還在路口內)，就用物理距離
+                                            gap = Math.min(gap, stopLineGap, physicalGap);
+                                        } else {
+                                            // 對岸有位子，正常跟車
+                                            gap = Math.min(gap, physicalGap);
+                                        }
+                                    } else {
+                                        // --- 無號誌路口邏輯 (Continuous Flow) ---
+                                        // 允許排隊在路口內，直接使用物理距離跟車
+                                        // 這樣車輛就會越過停止線，填滿路口空間
+                                        gap = Math.min(gap, physicalGap);
+                                    }
+                                }
+                            }
+
+                        } else {
+                            if (distanceToEndOfCurrentPath < gap) {
                                 leader = null;
-                                gap = Math.max(0.1, distToStopLine);
+                                gap = Math.max(0.1, distanceToEndOfCurrentPath);
                             }
                         }
                     }
                 }
             }
-            // 3. 在路口內：檢查是否會撞上目標路段的車
+            // 3. 在路口內
             else if (this.state === 'inIntersection' && this.currentTransition) {
                 const targetDestLinkId = this.currentTransition.destLinkId;
                 const targetDestLaneIndex = this.currentTransition.destLaneIndex;
@@ -4790,11 +5238,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 for (const other of allVehicles) {
                     if (other.id === this.id) continue;
                     if (other.state === 'onLink' && other.currentLinkId === targetDestLinkId &&
-                        (other.laneChangeState ? other.laneChangeState.toLaneIndex : other.currentLaneIndex) === targetDestLaneIndex) {
+                        other.currentLaneIndex === targetDestLaneIndex) {
 
                         const lookaheadGap = distanceToEndOfCurrentPath + other.distanceOnPath - this.length;
                         if (lookaheadGap < gap) {
-                            gap = lookaheadGap;
+                            gap = Math.max(0.1, lookaheadGap);
                             leader = other;
                         }
                     }
@@ -4868,40 +5316,95 @@ document.addEventListener('DOMContentLoaded', () => {
             return null;
         }
 
+        // [修正 V4] 更新繪圖座標 (S型平滑換道 + 偏移量插值)
         updateDrawingPosition(network) {
             if (this.state === 'onLink') {
                 const link = network.links[this.currentLinkId];
+                const currentLane = link.lanes[this.currentLaneIndex];
+                if (!currentLane) return;
+
+                // --- 強制限制偏移量 (Clamping) ---
+                const limit = Math.max(0, (currentLane.width / 2) - (this.width / 2) - 0.1);
+                if (this.lateralOffset > limit) this.lateralOffset = limit;
+                if (this.lateralOffset < -limit) this.lateralOffset = -limit;
+
                 // 處理換車道時的插值顯示
                 if (this.laneChangeState) {
                     const fromLane = link.lanes[this.laneChangeState.fromLaneIndex];
                     const toLane = link.lanes[this.laneChangeState.toLaneIndex];
-                    if (!fromLane || !toLane) { this.laneChangeState = null; this.updateDrawingPosition(network); return; }
-                    const posFrom = this.getPositionOnPath(fromLane.path, this.distanceOnPath);
-                    const posTo = this.getPositionOnPath(toLane.path, this.distanceOnPath);
-                    if (posFrom && posTo) {
-                        const p = this.laneChangeState.progress;
-                        this.x = posFrom.x * (1 - p) + posTo.x * p;
-                        this.y = posFrom.y * (1 - p) + posTo.y * p;
-                        const fromDir = { x: Math.cos(posFrom.angle), y: Math.sin(posFrom.angle) };
-                        const toDir = { x: Math.cos(posTo.angle), y: Math.sin(posTo.angle) };
-                        const interpDirX = fromDir.x * (1 - p) + toDir.x * p;
-                        const interpDirY = fromDir.y * (1 - p) + toDir.y * p;
-                        this.angle = Math.atan2(interpDirY, interpDirX);
+
+                    if (fromLane && toLane) {
+                        const posFrom = this.getPositionOnPath(fromLane.path, this.distanceOnPath);
+                        const posTo = this.getPositionOnPath(toLane.path, this.distanceOnPath);
+
+                        if (posFrom && posTo) {
+                            // 1. 取得線性進度 p (0~1)
+                            const p = this.laneChangeState.progress;
+
+                            // 2. [關鍵] 使用 SmoothStep 函數讓移動變成 S 型曲線 (緩入緩出)
+                            // 公式：t = p * p * (3 - 2 * p)
+                            const t = p * p * (3 - 2 * p);
+
+                            // 3. 計算考慮了偏移量的「真實起點」
+                            const angleFrom = posFrom.angle;
+                            const nxFrom = -Math.sin(angleFrom);
+                            const nyFrom = Math.cos(angleFrom);
+                            const realStartX = posFrom.x + nxFrom * this.laneChangeState.startOffset;
+                            const realStartY = posFrom.y + nyFrom * this.laneChangeState.startOffset;
+
+                            // 4. 計算考慮了偏移量的「真實終點」
+                            const angleTo = posTo.angle;
+                            const nxTo = -Math.sin(angleTo);
+                            const nyTo = Math.cos(angleTo);
+                            const realEndX = posTo.x + nxTo * this.laneChangeState.endOffset;
+                            const realEndY = posTo.y + nyTo * this.laneChangeState.endOffset;
+
+                            // 5. 在真實起點與終點之間進行平滑插值
+                            this.x = realStartX * (1 - t) + realEndX * t;
+                            this.y = realStartY * (1 - t) + realEndY * t;
+
+                            // 6. 角度插值 (使用原本的 p 即可，角度不需要太強的 ease)
+                            const fromDir = { x: Math.cos(angleFrom), y: Math.sin(angleFrom) };
+                            const toDir = { x: Math.cos(angleTo), y: Math.sin(angleTo) };
+                            const interpDirX = fromDir.x * (1 - p) + toDir.x * p;
+                            const interpDirY = fromDir.y * (1 - p) + toDir.y * p;
+
+                            // 加入一點換道時的偏航角 (Yaw)，讓車頭稍微轉向目標車道，看起來更自然
+                            // 往左換(index變小)角度增加，往右換(index變大)角度減少
+                            // 假設 lane 0 在最左邊
+                            const laneDiff = this.laneChangeState.toLaneIndex - this.laneChangeState.fromLaneIndex;
+                            // 根據座標系方向調整正負號，這裡假設是一個微小的旋轉補償
+                            const yawBias = laneDiff * 0.15 * Math.sin(p * Math.PI); // 在換道中間達到最大偏轉
+
+                            this.angle = Math.atan2(interpDirY, interpDirX) + yawBias;
+                        }
                     }
                 } else {
-                    const currentLane = link.lanes[this.currentLaneIndex];
-                    if (!currentLane) return;
-                    const pos = this.getPositionOnPath(currentLane.path, this.distanceOnPath);
-                    if (pos) { this.x = pos.x; this.y = pos.y; this.angle = pos.angle; }
+                    // 正常行駛 (應用 lateralOffset)
+                    const posData = this.getPositionOnPath(currentLane.path, this.distanceOnPath);
+
+                    if (posData) {
+                        const angle = posData.angle;
+                        const nx = -Math.sin(angle);
+                        const ny = Math.cos(angle);
+
+                        this.x = posData.x + nx * this.lateralOffset;
+                        this.y = posData.y + ny * this.lateralOffset;
+                        this.angle = angle;
+                    }
                 }
             } else if (this.state === 'inIntersection') {
+                // (路口內代碼保持不變...)
                 const t = this.distanceOnPath / this.currentPathLength;
                 const [p0, p1, p2, p3] = this.currentPath;
                 const pos = Geom.Bezier.getPoint(t, p0, p1, p2, p3);
-                this.x = pos.x;
-                this.y = pos.y;
                 const tangent = Geom.Bezier.getTangent(t, p0, p1, p2, p3);
-                this.angle = Geom.Vec.angle(tangent);
+                const angle = Geom.Vec.angle(tangent);
+                const nx = -Math.sin(angle);
+                const ny = Math.cos(angle);
+                this.x = pos.x + nx * this.lateralOffset;
+                this.y = pos.y + ny * this.lateralOffset;
+                this.angle = angle;
             }
         }
     }
