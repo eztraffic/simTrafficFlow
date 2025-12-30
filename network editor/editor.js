@@ -5529,7 +5529,7 @@ document.addEventListener('DOMContentLoaded', () => {
             throw new Error("Invalid XML format");
         }
 
-        // 輔助：解析 ID 並更新全域計數器，防止 ID 衝突
+        // 輔助：解析 ID 並更新全域計數器
         const syncIdCounter = (idStr) => {
             if (!idStr) return;
             const parts = idStr.split('_');
@@ -5539,10 +5539,37 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         };
 
+        // 輔助：比較兩個 Profile 是否相同 (用於去重)
+        const isProfileEqual = (p1, p2) => {
+            const epsilon = 0.001;
+            return Math.abs(p1.length - p2.length) < epsilon &&
+                Math.abs(p1.width - p2.width) < epsilon &&
+                Math.abs(p1.maxSpeed - p2.maxSpeed) < epsilon &&
+                Math.abs(p1.maxAcceleration - p2.maxAcceleration) < epsilon &&
+                Math.abs(p1.comfortDeceleration - p2.comfortDeceleration) < epsilon &&
+                Math.abs(p1.minDistance - p2.minDistance) < epsilon &&
+                Math.abs(p1.desiredHeadwayTime - p2.desiredHeadwayTime) < epsilon;
+        };
+
+        // 輔助：尋找或建立 Profile
+        let importedProfileCounter = 0;
+        const getOrAddProfile = (newProfileData) => {
+            // 1. 檢查現有列表中是否已有相同參數的 Profile
+            for (const existingId in network.vehicleProfiles) {
+                if (isProfileEqual(network.vehicleProfiles[existingId], newProfileData)) {
+                    return existingId; // 找到重複的，回傳既有 ID
+                }
+            }
+            // 2. 沒找到，建立新的
+            const newId = `imported_profile_${importedProfileCounter++}`;
+            newProfileData.id = newId;
+            network.vehicleProfiles[newId] = newProfileData;
+            return newId;
+        };
+
         const xmlLinkIdMap = new Map();
         const xmlNodeIdMap = new Map();
         const xmlConnIdMap = new Map();
-        // 用於暫存路口資料 (TFL Groups + Turning Ratios)
         const xmlNodeDataMap = new Map();
 
         // --- 1. Links ---
@@ -5562,8 +5589,23 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             }
 
+            // --- FIX: 修正車道讀取邏輯 (深入 Segments 尋找) ---
             const laneWidths = [];
-            const lanesContainer = getChildrenByLocalName(linkEl, "Lanes")[0];
+            let lanesContainer = null;
+
+            // 嘗試從 Segments -> 第一個 Segment 中尋找 Lanes
+            const segmentsContainer = getChildrenByLocalName(linkEl, "Segments")[0];
+            if (segmentsContainer) {
+                const firstSegment = Array.from(segmentsContainer.children).find(c => c.nodeType === 1);
+                if (firstSegment) {
+                    lanesContainer = getChildrenByLocalName(firstSegment, "Lanes")[0];
+                }
+            }
+            // Fallback: 嘗試直接從 Link 下尋找
+            if (!lanesContainer) {
+                lanesContainer = getChildrenByLocalName(linkEl, "Lanes")[0];
+            }
+
             if (lanesContainer) {
                 getChildrenByLocalName(lanesContainer, "Lane").forEach(laneEl => {
                     const w = getChildValue(laneEl, "width");
@@ -5571,6 +5613,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             }
             if (laneWidths.length === 0) laneWidths.push(LANE_WIDTH, LANE_WIDTH);
+            // --- END FIX ---
 
             const newLink = createLink(waypoints, laneWidths);
             xmlLinkIdMap.set(xmlId, newLink.id);
@@ -5596,7 +5639,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
 
-        // --- 2. Nodes (Pre-parsing to store Data) ---
+        // --- 2. Nodes ---
         const nodesContainer = xmlDoc.querySelector("RoadNetwork > Nodes");
         if (nodesContainer) {
             Array.from(nodesContainer.children).forEach(nodeEl => {
@@ -5626,17 +5669,15 @@ document.addEventListener('DOMContentLoaded', () => {
                         xmlNodeIdMap.set(xmlId, dest.id);
                     }
                 } else if (tagName === 'RegularNode') {
-                    xmlNodeIdMap.set(xmlId, null); // 暫存，稍後連接建立時更新
+                    xmlNodeIdMap.set(xmlId, null);
 
-                    // [新增] 解析 TurningRatios (Flow Mode)
+                    // Turning Ratios
                     const trContainer = getChildrenByLocalName(nodeEl, "TurningRatios")[0];
                     const turningRatios = {};
-
                     if (trContainer) {
                         getChildrenByLocalName(trContainer, "IncomingLink").forEach(inEl => {
                             const xmlFromId = inEl.getAttribute("id");
                             const internalFromId = xmlLinkIdMap.get(xmlFromId);
-
                             if (internalFromId) {
                                 turningRatios[internalFromId] = {};
                                 getChildrenByLocalName(inEl, "TurnTo").forEach(turnEl => {
@@ -5651,7 +5692,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         });
                     }
 
-                    // 解析 Traffic Light Groups
+                    // TFL Groups
                     const trGroupsEl = getChildrenByLocalName(nodeEl, "TurnTRGroups")[0];
                     let groupMap = null;
                     if (trGroupsEl) {
@@ -5669,14 +5710,12 @@ document.addEventListener('DOMContentLoaded', () => {
                             groupMap.set(gId, { name: gName, connXmlIds: connIds });
                         });
                     }
-
-                    // 暫存此 Node 的所有額外資料
                     xmlNodeDataMap.set(xmlId, { groups: groupMap, turningRatios: turningRatios });
                 }
             });
         }
 
-        // --- 3. Connections (Creating Regular Nodes implicitly) ---
+        // --- 3. Connections ---
         if (nodesContainer) {
             getChildrenByLocalName(nodesContainer, "RegularNode").forEach(nodeEl => {
                 const rulesContainer = getChildrenByLocalName(nodeEl, "TransitionRules")[0];
@@ -5706,8 +5745,6 @@ document.addEventListener('DOMContentLoaded', () => {
                                 if (xmlNodeIdMap.get(xmlRegNodeId) === null) {
                                     xmlNodeIdMap.set(xmlRegNodeId, newConn.nodeId);
                                     syncIdCounter(newConn.nodeId);
-
-                                    // [新增] Node 建立後，寫入暫存的 Turning Ratios
                                     const nodeData = xmlNodeDataMap.get(xmlRegNodeId);
                                     if (nodeData && nodeData.turningRatios) {
                                         const createdNode = network.nodes[newConn.nodeId];
@@ -5715,7 +5752,6 @@ document.addEventListener('DOMContentLoaded', () => {
                                             createdNode.turningRatios = nodeData.turningRatios;
                                         }
                                     }
-
                                 } else {
                                     newConn.nodeId = xmlNodeIdMap.get(xmlRegNodeId);
                                 }
@@ -5802,27 +5838,116 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         });
 
-        // --- 5. Agents (Load Vehicle Profiles First) ---
-        // 必須先讀取 Profile，因為偵測器可能會引用它們
+        // --- 5. Agents & Origins (Fix: Deduplicate Profiles) ---
         const agentsEl = xmlDoc.querySelector("Agents");
-        let importedProfileCounter = 0;
 
         if (agentsEl) {
-            // 先掃描所有的 VehicleProfiles (通常在 Origin -> TimePeriod -> VehicleProfiles)
-            // 為了簡化，我們遍歷所有 Origins 收集 Profiles
+            // Traffic Lights
+            const tflNetworks = getChildrenByLocalName(getChildrenByLocalName(agentsEl, "TrafficLightNetworks")[0], "RegularTrafficLightNetwork");
+            tflNetworks.forEach(tflEl => {
+                const xmlNodeId = getChildValue(tflEl, "regularNodeId");
+                const internalNodeId = xmlNodeIdMap.get(xmlNodeId);
+                if (!internalNodeId || !network.nodes[internalNodeId]) return;
+
+                const timeShift = parseInt(getChildValue(tflEl, "scheduleTimeShift") || 0, 10);
+                const nodeData = xmlNodeDataMap.get(xmlNodeId);
+                const groupDefinitions = nodeData ? nodeData.groups : null;
+                if (!groupDefinitions) return;
+
+                const tflData = { nodeId: internalNodeId, timeShift, signalGroups: {}, schedule: [] };
+                network.trafficLights[internalNodeId] = tflData;
+
+                groupDefinitions.forEach((groupInfo, numericGroupId) => {
+                    const groupName = groupInfo.name;
+                    const internalConnIds = groupInfo.connXmlIds
+                        .map(xmlConnId => xmlConnIdMap.get(xmlConnId))
+                        .filter(Boolean);
+                    tflData.signalGroups[groupName] = { id: groupName, connIds: internalConnIds };
+                });
+
+                const scheduleEl = getChildrenByLocalName(tflEl, "Schedule")[0];
+                const periodsEl = getChildrenByLocalName(scheduleEl, "TimePeriods")[0];
+                if (periodsEl) {
+                    getChildrenByLocalName(periodsEl, "TimePeriod").forEach(periodEl => {
+                        const phase = {
+                            duration: parseInt(getChildValue(periodEl, "duration"), 10),
+                            signals: {}
+                        };
+                        getChildrenByLocalName(periodEl, "TrafficLightSignal").forEach(signalEl => {
+                            const numericLightId = getChildValue(signalEl, "trafficLightId");
+                            const groupInfo = groupDefinitions.get(numericLightId);
+                            if (groupInfo) {
+                                phase.signals[groupInfo.name] = getChildValue(signalEl, "signal");
+                            }
+                        });
+                        tflData.schedule.push(phase);
+                    });
+                }
+            });
+
+            // Origins & Vehicle Profiles (With Deduplication)
             const originsContainer = getChildrenByLocalName(agentsEl, "Origins")[0];
             if (originsContainer) {
                 getChildrenByLocalName(originsContainer, "Origin").forEach(originEl => {
+                    const xmlOriginNodeId = getChildValue(originEl, "originNodeId");
+                    const internalOriginId = xmlNodeIdMap.get(xmlOriginNodeId);
+                    const origin = network.origins[internalOriginId];
+                    if (!origin) return;
+
+                    origin.periods = [];
                     const periodsContainer = getChildrenByLocalName(originEl, "TimePeriods")[0];
                     if (periodsContainer) {
                         getChildrenByLocalName(periodsContainer, "TimePeriod").forEach(periodEl => {
+                            const period = {
+                                duration: parseInt(getChildValue(periodEl, "duration"), 10),
+                                numVehicles: parseInt(getChildValue(periodEl, "numberOfVehicles"), 10),
+                                destinations: [],
+                                profiles: [],
+                                stops: []
+                            };
+
+                            // Destinations
+                            const destsContainer = getChildrenByLocalName(periodEl, "Destinations")[0];
+                            if (destsContainer) {
+                                getChildrenByLocalName(destsContainer, "Destination").forEach(destEl => {
+                                    const xmlDestNodeId = getChildValue(destEl, "destinationNodeId");
+                                    const internalDestId = xmlNodeIdMap.get(xmlDestNodeId);
+                                    if (internalDestId) {
+                                        period.destinations.push({
+                                            nodeId: internalDestId,
+                                            weight: parseFloat(getChildValue(destEl, "weight"))
+                                        });
+                                    }
+                                });
+                            }
+
+                            // Stops
+                            const stopsContainer = getChildrenByLocalName(periodEl, "IntermediateStops")[0];
+                            if (stopsContainer) {
+                                getChildrenByLocalName(stopsContainer, "Stop").forEach(stopEl => {
+                                    const plId = getChildValue(stopEl, "parkingLotId");
+                                    const prob = getChildValue(stopEl, "probability");
+                                    const dur = getChildValue(stopEl, "duration");
+                                    if (plId) {
+                                        period.stops.push({
+                                            parkingLotId: plId,
+                                            probability: parseFloat(prob) || 0,
+                                            duration: parseFloat(dur) || 0
+                                        });
+                                    }
+                                });
+                            }
+
+                            // Profiles with Deduplication
                             const profilesContainer = getChildrenByLocalName(periodEl, "VehicleProfiles")[0];
                             if (profilesContainer) {
                                 getChildrenByLocalName(profilesContainer, "VehicleProfile").forEach(profEl => {
+                                    const weight = parseFloat(getChildValue(profEl, "weight"));
+
                                     const vehicleEl = getChildrenByLocalName(profEl, "RegularVehicle")[0];
                                     const driverEl = getChildrenByLocalName(getChildrenByLocalName(vehicleEl, "CompositeDriver")[0], "Parameters")[0];
 
-                                    const newProfileData = {
+                                    const parsedProfileData = {
                                         length: parseFloat(getChildValue(vehicleEl, "length")),
                                         width: parseFloat(getChildValue(vehicleEl, "width")),
                                         maxSpeed: parseFloat(getChildValue(driverEl, "maxSpeed")),
@@ -5832,24 +5957,25 @@ document.addEventListener('DOMContentLoaded', () => {
                                         desiredHeadwayTime: parseFloat(getChildValue(driverEl, "desiredHeadwayTime")),
                                     };
 
-                                    // 嘗試找 ID 或生成新 ID
-                                    const profileId = `imported_profile_${importedProfileCounter++}`;
-                                    newProfileData.id = profileId;
-                                    network.vehicleProfiles[profileId] = newProfileData;
+                                    // 使用去重邏輯取得 ID
+                                    const profileId = getOrAddProfile(parsedProfileData);
+
+                                    period.profiles.push({ profileId: profileId, weight: weight });
                                 });
                             }
+                            origin.periods.push(period);
                         });
                     }
                 });
             }
-
-            // 如果沒有任何 Profile，給一個預設值，避免 UI 壞掉
-            if (Object.keys(network.vehicleProfiles).length === 0) {
-                network.vehicleProfiles['default'] = { id: 'default', length: 4.5, width: 1.8, maxSpeed: 16.67, maxAcceleration: 1.5, comfortDeceleration: 3.0, minDistance: 2.0, desiredHeadwayTime: 1.5 };
-            }
         }
 
-        // --- 6. Parking Lots & Gates ---
+        // 若完全沒有設定 Profile，給一個預設值
+        if (Object.keys(network.vehicleProfiles).length === 0) {
+            network.vehicleProfiles['default'] = { id: 'default', length: 4.5, width: 1.8, maxSpeed: 16.67, maxAcceleration: 1.5, comfortDeceleration: 3.0, minDistance: 2.0, desiredHeadwayTime: 1.5 };
+        }
+
+        // --- 6. Parking Lots ---
         const plContainer = xmlDoc.getElementsByTagName("ParkingLots")[0] || xmlDoc.getElementsByTagName("tm:ParkingLots")[0];
         if (plContainer) {
             getChildrenByLocalName(plContainer, "ParkingLot").forEach(plEl => {
@@ -5857,9 +5983,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const name = getChildValue(plEl, "name");
                 const carCap = parseInt(getChildValue(plEl, "carCapacity") || 0, 10);
                 const motoCap = parseInt(getChildValue(plEl, "motoCapacity") || 0, 10);
-                // [新增] 讀取 XML 數值
                 const attrProb = parseFloat(getChildValue(plEl, "attractionProb") || 0);
-                // [新增] 讀取 XML 數值
                 const stayDur = parseFloat(getChildValue(plEl, "stayDuration") || 0);
                 const points = [];
                 const boundEl = getChildrenByLocalName(plEl, "Boundary")[0];
@@ -5875,9 +5999,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     newPl.name = name;
                     newPl.carCapacity = carCap;
                     newPl.motoCapacity = motoCap;
-                    // [新增] 設定屬性
                     newPl.attractionProb = attrProb;
-                    // [新增] 設定屬性
                     newPl.stayDuration = stayDur;
                     syncIdCounter(newPl.id);
 
@@ -5931,7 +6053,7 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
 
-        // --- 8. Meters (with new properties) ---
+        // --- 8. Meters ---
         const metersContainer = xmlDoc.querySelector("Meters");
         if (metersContainer) {
             Array.from(metersContainer.children).forEach(meterEl => {
@@ -5942,8 +6064,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 const pos = parseFloat(getChildValue(meterEl, "position"));
                 const name = getChildValue(meterEl, "name");
-
-                // [新增] 讀取新屬性
                 const flowVal = parseFloat(getChildValue(meterEl, "observedFlow"));
                 const isSrcVal = getChildValue(meterEl, "isSource") === 'true';
                 const profileIdVal = getChildValue(meterEl, "spawnProfileId");
@@ -6068,152 +6188,12 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
 
-        // --- 12. Agents Details (Traffic Light Schedule & Origins) ---
-        // Vehicle Profiles 已經在步驟 5 讀取，這裡只需處理 Traffic Lights 和 Origin Demands
-        if (agentsEl) {
-            // Traffic Light Schedule
-            const tflNetworks = getChildrenByLocalName(getChildrenByLocalName(agentsEl, "TrafficLightNetworks")[0], "RegularTrafficLightNetwork");
-            tflNetworks.forEach(tflEl => {
-                const xmlNodeId = getChildValue(tflEl, "regularNodeId");
-                const internalNodeId = xmlNodeIdMap.get(xmlNodeId);
-                if (!internalNodeId || !network.nodes[internalNodeId]) return;
-
-                const timeShift = parseInt(getChildValue(tflEl, "scheduleTimeShift") || 0, 10);
-                const nodeData = xmlNodeDataMap.get(xmlNodeId);
-                const groupDefinitions = nodeData ? nodeData.groups : null;
-                if (!groupDefinitions) return;
-
-                const tflData = { nodeId: internalNodeId, timeShift, signalGroups: {}, schedule: [] };
-                network.trafficLights[internalNodeId] = tflData;
-
-                groupDefinitions.forEach((groupInfo, numericGroupId) => {
-                    const groupName = groupInfo.name;
-                    const internalConnIds = groupInfo.connXmlIds
-                        .map(xmlConnId => xmlConnIdMap.get(xmlConnId))
-                        .filter(Boolean);
-                    tflData.signalGroups[groupName] = { id: groupName, connIds: internalConnIds };
-                });
-
-                const scheduleEl = getChildrenByLocalName(tflEl, "Schedule")[0];
-                const periodsEl = getChildrenByLocalName(scheduleEl, "TimePeriods")[0];
-                if (periodsEl) {
-                    getChildrenByLocalName(periodsEl, "TimePeriod").forEach(periodEl => {
-                        const phase = {
-                            duration: parseInt(getChildValue(periodEl, "duration"), 10),
-                            signals: {}
-                        };
-                        getChildrenByLocalName(periodEl, "TrafficLightSignal").forEach(signalEl => {
-                            const numericLightId = getChildValue(signalEl, "trafficLightId");
-                            const groupInfo = groupDefinitions.get(numericLightId);
-                            if (groupInfo) {
-                                phase.signals[groupInfo.name] = getChildValue(signalEl, "signal");
-                            }
-                        });
-                        tflData.schedule.push(phase);
-                    });
-                }
-            });
-
-            // Origins / Demands
-            const originsContainer = getChildrenByLocalName(agentsEl, "Origins")[0];
-            if (originsContainer) {
-                getChildrenByLocalName(originsContainer, "Origin").forEach(originEl => {
-                    const xmlOriginNodeId = getChildValue(originEl, "originNodeId");
-                    const internalOriginId = xmlNodeIdMap.get(xmlOriginNodeId);
-                    const origin = network.origins[internalOriginId];
-                    if (!origin) return;
-
-                    origin.periods = [];
-                    const periodsContainer = getChildrenByLocalName(originEl, "TimePeriods")[0];
-                    if (periodsContainer) {
-                        getChildrenByLocalName(periodsContainer, "TimePeriod").forEach(periodEl => {
-                            const period = {
-                                duration: parseInt(getChildValue(periodEl, "duration"), 10),
-                                numVehicles: parseInt(getChildValue(periodEl, "numberOfVehicles"), 10),
-                                destinations: [],
-                                profiles: [],
-                                stops: []
-                            };
-
-                            const destsContainer = getChildrenByLocalName(periodEl, "Destinations")[0];
-                            if (destsContainer) {
-                                getChildrenByLocalName(destsContainer, "Destination").forEach(destEl => {
-                                    const xmlDestNodeId = getChildValue(destEl, "destinationNodeId");
-                                    const internalDestId = xmlNodeIdMap.get(xmlDestNodeId);
-                                    if (internalDestId) {
-                                        period.destinations.push({
-                                            nodeId: internalDestId,
-                                            weight: parseFloat(getChildValue(destEl, "weight"))
-                                        });
-                                    }
-                                });
-                            }
-
-                            const stopsContainer = getChildrenByLocalName(periodEl, "IntermediateStops")[0];
-                            if (stopsContainer) {
-                                getChildrenByLocalName(stopsContainer, "Stop").forEach(stopEl => {
-                                    const plId = getChildValue(stopEl, "parkingLotId");
-                                    const prob = getChildValue(stopEl, "probability");
-                                    const dur = getChildValue(stopEl, "duration");
-                                    if (plId) {
-                                        period.stops.push({
-                                            parkingLotId: plId,
-                                            probability: parseFloat(prob) || 0,
-                                            duration: parseFloat(dur) || 0
-                                        });
-                                    }
-                                });
-                            }
-
-                            const profilesContainer = getChildrenByLocalName(periodEl, "VehicleProfiles")[0];
-                            if (profilesContainer) {
-                                getChildrenByLocalName(profilesContainer, "VehicleProfile").forEach(profEl => {
-                                    const weight = parseFloat(getChildValue(profEl, "weight"));
-
-                                    // 我們在第 5 步已經讀取了所有 Profile 並建立了 ID，這裡只需重新匹配
-                                    // 為了簡單起見，這裡可以重新建立關聯。但在 OD Mode 編輯器邏輯中，
-                                    // Profile 往往是內嵌在 Period 裡的。
-                                    // 如果要嚴謹，我們應該比對內容找到對應的 Profile ID。
-                                    // 這裡簡化：假設前面已經讀取，我們用 default 或建立新關聯
-
-                                    // 為了相容現有的編輯器邏輯 (Profile 綁定在 Period)，我們還是需要把 weight 存起來
-                                    // 這裡我們假設匯入時，所有 Profile 都已經被轉成 Global Profile
-                                    // 所以我們取出第一個符合的 Profile ID (或全部)
-
-                                    // 由於前面步驟 5 已經把所有 XML 中的 Profile 讀進 network.vehicleProfiles
-                                    // 這裡我們需要一個機制來知道 "這個 XML 裡的 VehicleProfile 對應到哪個 internal ID"
-                                    // 但因為 XML 沒有 Profile ID，這比較困難。
-                                    // 暫時解法：使用 default 或讓使用者重新設定。
-                                    // 進階解法 (已實作)：在步驟 5 用順序產生了 ID (imported_profile_0, 1...)
-                                    // 這裡也依順序取用。
-
-                                    // 重新遍歷一次以取得對應的 internal ID (依賴順序)
-                                    // 實務上建議修改 XML 結構加入 ProfileID，但在不改動 Schema 的情況下：
-                                    // 我們直接使用前面生成的 ID
-                                    const pIds = Object.keys(network.vehicleProfiles).filter(pid => pid.startsWith('imported_profile_'));
-                                    // 這是一個簡單的對應，假設順序一致。若不一致則需更複雜的特徵比對。
-                                    if (pIds.length > 0) {
-                                        // 這裡僅示範結構，實際應用建議重構 XML
-                                        period.profiles.push({ profileId: pIds[0], weight: weight });
-                                    } else {
-                                        period.profiles.push({ profileId: 'default', weight: weight });
-                                    }
-                                });
-                            }
-                            origin.periods.push(period);
-                        });
-                    }
-                });
-            }
-        }
-
-        // --- 13. [新增] ModelParameters: Global Navigation Mode ---
+        // --- 12. ModelParameters ---
         const paramsEl = xmlDoc.getElementsByTagName("ModelParameters")[0] || xmlDoc.getElementsByTagName("tm:ModelParameters")[0];
         if (paramsEl) {
             const mode = getChildValue(paramsEl, "NavigationMode");
             if (mode) {
                 network.navigationMode = mode;
-                // 更新 UI 下拉選單
                 const modeSelect = document.getElementById('simulationModeSelect');
                 if (modeSelect) {
                     modeSelect.value = (mode === 'FLOW_BASED') ? 'flow_turning' : 'od_path';
