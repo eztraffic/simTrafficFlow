@@ -1,14 +1,17 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<meta name="description" content="微觀車流模擬的路網編輯器，能創造無限多樣的路網形狀。The microscopic traffic flow simulation network editor can create infinitely diverse road network configurations." />	
+    <meta name="description"
+        content="微觀車流模擬的路網編輯器，能創造無限多樣的路網形狀。The microscopic traffic flow simulation network editor can create infinitely diverse road network configurations." />
     <title>simTrafficFlow Network Editor</title>
     <link rel="stylesheet" href="style.css">
     <!-- Konva.js Library -->
     <script src="konva.min.js"></script>
 </head>
+
 <body>
     <header>
         <h1>simTrafficFlow Network Editor</h1>
@@ -27,27 +30,34 @@
 
     <div id="main-container">
         <!-- Toolbar for Tools -->
-		<div id="toolbar">
+        <div id="toolbar">
             <button class="tool-btn active" data-tool="select" title="Select and Modify Elements (V)">✔️ Select</button>
             <button class="tool-btn" data-tool="add-link" title="Add a new Link (L)">✏️ Add Link</button>
-            <button class="tool-btn" data-tool="connect-lanes" title="Connect lanes at an intersection (C)">🔗 Connect Lanes</button>
+            <button class="tool-btn" data-tool="connect-lanes" title="Connect lanes at an intersection (C)">🔗 Connect
+                Lanes</button>
             <button class="tool-btn" data-tool="edit-tfl" title="Edit Traffic Light (T)">🚦 Edit Traffic Light</button>
-            <button class="tool-btn" data-tool="add-flow" title="Add Traffic Flow Origin/Destination (F)">🚗 Add Flow</button>
+            <button class="tool-btn" data-tool="add-flow" title="Add Traffic Flow Origin/Destination (F)">🚗 Add
+                Flow</button>
             <button class="tool-btn" data-tool="add-background" title="Add Background Image (B)">🖼️ Background</button>
-            <button class="tool-btn" data-tool="measure" title="Measure Distance (M)">📏 Measure</button>			
+            <button class="tool-btn" data-tool="measure" title="Measure Distance (M)">📏 Measure</button>
             <button class="tool-btn" data-tool="add-road-sign" title="Add Speed Limit Sign (R)">🛑 Speed Sign</button>
-            <button class="tool-btn" data-tool="add-point-detector" title="Add Point Speed Detector (P)">📍 Point Detector</button>
-            <button class="tool-btn" data-tool="add-section-detector" title="Add Section Speed Detector (S)">📡 Section Detector</button>
+            <button class="tool-btn" data-tool="add-point-detector" title="Add Point Speed Detector (P)">📍 Point
+                Detector</button>
+            <button class="tool-btn" data-tool="add-section-detector" title="Add Section Speed Detector (S)">📡 Section
+                Detector</button>
             <button class="tool-btn" data-tool="add-pushpin" title="Add Geo Reference Pin (G)">📌 Geo Pin</button>
             <button class="tool-btn" data-tool="add-parking-lot" title="Add Parking Lot (P)">🅿️ Parking Lot</button>
-            <button class="tool-btn" data-tool="add-parking-gate" title="Add Parking Gate (Shift+P)">🚪 Parking Gate</button>
+            <button class="tool-btn" data-tool="add-parking-gate" title="Add Parking Gate (Shift+P)">🚪 Parking
+                Gate</button>
+            <!-- 在 toolbar 中加入此按鈕 -->
+            <button class="tool-btn" data-tool="add-marking" title="Add Road Marking (K)">➖ Add Marking</button>
         </div>
 
         <!-- START: 新增的包裝容器 -->
         <div id="content-area">
             <!-- Main Canvas Area -->
             <div id="canvas-container">
-                 <div id="status-bar"></div>
+                <div id="status-bar"></div>
             </div>
             <!-- 背景鎖定浮動按鈕 -->
             <div id="bg-lock-float" style="display: none;">
@@ -55,14 +65,14 @@
                     <input type="checkbox" id="bg-lock-checkbox">
                     <span>🔒 lock(鎖定背景)</span>
                 </label>
-            </div>		
+            </div>
 
             <!-- Properties Panel -->
             <div id="properties-panel">
                 <h3>Properties</h3>
                 <div id="properties-content">
                     <p>Select an element on the canvas to see its properties.</p>
-					<p>Alt + Left Click: Add a turning point to the road segment</p>
+                    <p>Alt + Left Click: Add a turning point to the road segment</p>
                 </div>
                 <!-- The old flow-origin-properties div is no longer needed -->
             </div>
@@ -110,11 +120,11 @@
             </div>
         </div>
     </div>
-    
+
     <!-- Modal for Vehicle Spawner Editor -->
     <div id="spawner-modal" class="modal">
         <div class="modal-content large">
-             <span class="close-button">×</span>
+            <span class="close-button">×</span>
             <h2 id="spawner-modal-title">Vehicle Spawner Editor</h2>
             <div class="modal-body">
                 <div class="tabs">
@@ -129,21 +139,21 @@
                 </div>
                 <!-- Vehicle Profiles Tab -->
                 <div id="spawner-profiles" class="tab-content">
-                     <h4>Reusable Vehicle Profiles</h4>
+                    <h4>Reusable Vehicle Profiles</h4>
                     <div id="spawner-profiles-list"></div>
                     <button id="spawner-add-profile-btn">Add New Profile</button>
                 </div>
             </div>
-             <div class="modal-footer">
+            <div class="modal-footer">
                 <button id="spawner-save-btn">Save Changes</button>
-            </div>			
+            </div>
         </div>
     </div>
-<!-- Modal for Lane Range Selection -->
+    <!-- Modal for Lane Range Selection -->
     <div id="lane-range-modal" class="modal">
         <div id="lane-range-modal-content" class="modal-content small">
-             <h4 id="lr-modal-title">Specify Lane Connection Range</h4>
-             <div class="modal-body">
+            <h4 id="lr-modal-title">Specify Lane Connection Range</h4>
+            <div class="modal-body">
                 <div class="prop-group">
                     <label for="lr-source-start">Source Start Lane Index</label>
                     <input type="number" id="lr-source-start" value="0" min="0">
@@ -152,7 +162,7 @@
                     <label for="lr-source-count">Number of Source Lanes</label>
                     <input type="number" id="lr-source-count" value="1" min="1">
                 </div>
-                 <hr>
+                <hr>
                 <div class="prop-group">
                     <label for="lr-dest-start">Destination Start Lane Index</label>
                     <input type="number" id="lr-dest-start" value="0" min="0">
@@ -161,15 +171,16 @@
                     <label for="lr-dest-count">Number of Destination Lanes</label>
                     <input type="number" id="lr-dest-count" value="1" min="1">
                 </div>
-             </div>
-             <div class="modal-footer">
+            </div>
+            <div class="modal-footer">
                 <button id="lr-cancel-btn">Cancel</button>
-                <button id="lr-confirm-btn" style="background-color: var(--primary-color); color: white;">Connect</button>
+                <button id="lr-confirm-btn"
+                    style="background-color: var(--primary-color); color: white;">Connect</button>
             </div>
         </div>
-    </div>	
+    </div>
 
     <script src="editor.js"></script>
 </body>
-</html>
 
+</html>
