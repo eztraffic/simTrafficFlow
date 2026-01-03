@@ -3652,7 +3652,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     content += `<div class="prop-group"><label for="prop-det-len">Length (m)</label><input type="number" step="0.1" id="prop-det-len" value="${(obj.length || 0).toFixed(2)}"></div>`;
                 }
 
-                // --- [修正] 流量與車輛設定區塊 ---
+                // --- 流量與車輛設定區塊 ---
                 content += `<hr><h5>Flow Configuration</h5>`;
                 content += `<div class="prop-group">
                                 <label for="prop-det-flow" style="color:#0056b3; font-weight:bold;">Observed Flow (veh/hr)</label>
@@ -3668,29 +3668,59 @@ document.addEventListener('DOMContentLoaded', () => {
                                 <small style="color:#666; display:block; margin-left:24px;">Mark this detector as a boundary input.</small>
                             </div>`;
 
-                // [新增] 這裡就是漏掉的邏輯：只有勾選為 Source 時，才渲染車輛選單
+                // [修改重點] 改為權重列表模式
                 if (obj.isSource) {
                     // 確保 vehicleProfiles 存在
                     if (!network.vehicleProfiles) network.vehicleProfiles = {};
-
-                    const profiles = Object.keys(network.vehicleProfiles);
-                    // 如果還沒定義過任何 Profile，預設加入一個 default
-                    if (profiles.length === 0) {
+                    const profileOptions = Object.keys(network.vehicleProfiles);
+                    if (profileOptions.length === 0) {
                         network.vehicleProfiles['default'] = { id: 'default', length: 4.5, width: 1.8, maxSpeed: 16.67, maxAcceleration: 1.5, comfortDeceleration: 3.0, minDistance: 2.0, desiredHeadwayTime: 1.5 };
-                        profiles.push('default');
+                        profileOptions.push('default');
                     }
 
-                    const currentProfile = obj.spawnProfileId || 'default';
+                    if (!obj.spawnProfiles) obj.spawnProfiles = [];
+                    // 兼容舊資料
+                    if (obj.spawnProfileId) {
+                        obj.spawnProfiles.push({ profileId: obj.spawnProfileId, weight: 1.0 });
+                        delete obj.spawnProfileId;
+                    }
+                    if (obj.spawnProfiles.length === 0) {
+                        obj.spawnProfiles.push({ profileId: 'default', weight: 1.0 });
+                    }
 
-                    content += `<div class="prop-group" style="background-color:#f0f8ff; padding:10px; border:1px solid #cce5ff; border-radius:4px; margin-top:5px;">
-                                    <label for="prop-det-profile" style="color:#004085;">Vehicle Type to Spawn:</label>
-                                    <select id="prop-det-profile" style="width:100%; margin-bottom:5px;">
-                                        ${profiles.map(pid => `<option value="${pid}" ${pid === currentProfile ? 'selected' : ''}>${pid}</option>`).join('')}
-                                    </select>
-                                    <button id="btn-manage-profiles" class="tool-btn" style="width:100%; font-size:0.85em; background-color:#6c757d; color:white;">⚙️ Manage Vehicle Types</button>
+                    content += `<div class="prop-group" style="background-color:#f8f9fa; padding:8px; border:1px solid #dee2e6; border-radius:4px; margin-top:5px;">
+                                    <label style="color:#004085; font-weight:bold; margin-bottom:5px; display:block;">Vehicle Mix (Weighted):</label>
+                                    
+                                    <div id="det-profiles-list" style="margin-bottom:8px;">`;
+
+                    // 使用 Flexbox 生成每個項目的區塊
+                    obj.spawnProfiles.forEach((entry, idx) => {
+                        // 產生下拉選單 HTML
+                        const dropdownHtml = generateDropdown(`det-prof-sel-${idx}`, profileOptions, entry.profileId);
+                        // 強制讓下拉選單寬度 100%
+                        const styledDropdown = dropdownHtml.replace('<select', '<select style="width:100%; box-sizing:border-box; padding:2px;"');
+
+                        content += `
+                        <div class="profile-entry" style="background:white; border:1px solid #e0e0e0; padding:6px; margin-bottom:5px; border-radius:3px;">
+                            <div style="margin-bottom:4px;">
+                                <label style="font-size:0.85em; color:#666; display:block; margin-bottom:1px;">Type:</label>
+                                ${styledDropdown}
+                            </div>
+                            <div style="display:flex; justify-content: space-between; align-items: center;">
+                                <div style="display:flex; align-items:center; gap:5px;">
+                                    <label style="font-size:0.85em; color:#666; margin:0;">Wt:</label>
+                                    <input type="number" step="0.1" class="det-prof-weight" data-index="${idx}" value="${entry.weight}" style="width:50px; padding:2px; text-align:right;">
+                                </div>
+                                <button class="det-prof-del-btn tool-btn" data-index="${idx}" style="background-color:#dc3545; color:white; padding:2px 8px; font-size:0.8em; margin:0; height:24px; line-height:1;">Delete</button>
+                            </div>
+                        </div>`;
+                    });
+
+                    content += `    </div>
+                                    <button id="btn-add-det-profile" class="tool-btn" style="width:100%; margin-bottom:5px; background-color:#28a745; color:white; padding:6px;">+ Add Type</button>
+                                    <button id="btn-manage-profiles" class="tool-btn" style="width:100%; font-size:0.85em; background-color:#6c757d; color:white; padding:6px;">⚙️ Manage Definitions</button>
                                 </div>`;
                 }
-                // ---------------------------
                 break;
 
             case 'RoadSign':
@@ -4156,7 +4186,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // --- DETECTOR (Point & Section) ---
         if (obj.type.includes('Detector')) {
-            // [新增] 流量設定
             const flowInput = document.getElementById('prop-det-flow');
             if (flowInput) {
                 flowInput.addEventListener('change', (e) => {
@@ -4164,13 +4193,53 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             }
 
-            // [新增] 是否為發生源 (勾選後重繪面板以顯示/隱藏 Profile 設定)
             const sourceCheck = document.getElementById('prop-det-is-source');
             if (sourceCheck) {
                 sourceCheck.addEventListener('change', (e) => {
                     obj.isSource = e.target.checked;
                     updatePropertiesPanel(obj);
                 });
+            }
+
+            // [新增] 處理權重列表的事件監聽
+            if (obj.isSource) {
+                // 1. 下拉選單變更 (利用事件委派或直接綁定，這裡用 id 查找)
+                obj.spawnProfiles.forEach((_, idx) => {
+                    const sel = document.getElementById(`det-prof-sel-${idx}`);
+                    if (sel) {
+                        sel.addEventListener('change', (e) => {
+                            obj.spawnProfiles[idx].profileId = e.target.value;
+                        });
+                    }
+                });
+
+                // 2. 權重變更
+                document.querySelectorAll('.det-prof-weight').forEach(input => {
+                    input.addEventListener('change', (e) => {
+                        const idx = parseInt(e.target.dataset.index);
+                        obj.spawnProfiles[idx].weight = parseFloat(e.target.value) || 1.0;
+                    });
+                });
+
+                // 3. 刪除按鈕
+                document.querySelectorAll('.det-prof-del-btn').forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        const idx = parseInt(e.target.dataset.index);
+                        obj.spawnProfiles.splice(idx, 1);
+                        updatePropertiesPanel(obj);
+                    });
+                });
+
+                // 4. 新增按鈕
+                const addBtn = document.getElementById('btn-add-det-profile');
+                if (addBtn) {
+                    addBtn.addEventListener('click', () => {
+                        // 預設加入第一個可用的 profile
+                        const firstKey = Object.keys(network.vehicleProfiles)[0] || 'default';
+                        obj.spawnProfiles.push({ profileId: firstKey, weight: 1.0 });
+                        updatePropertiesPanel(obj);
+                    });
+                }
             }
 
             // [新增] 車輛種類選擇 (如果顯示的話)
@@ -6020,6 +6089,29 @@ document.addEventListener('DOMContentLoaded', () => {
         const xmlConnIdMap = new Map();
         const xmlNodeDataMap = new Map();
 
+        // [新增] 優先解析全域車種定義
+        const globalProfilesContainer = xmlDoc.getElementsByTagName("GlobalVehicleProfiles")[0] || xmlDoc.getElementsByTagName("tm:GlobalVehicleProfiles")[0];
+        if (globalProfilesContainer) {
+            getChildrenByLocalName(globalProfilesContainer, "VehicleProfile").forEach(profEl => {
+                const pId = profEl.getAttribute("id");
+                const vehicleEl = getChildrenByLocalName(profEl, "RegularVehicle")[0];
+                const driverEl = getChildrenByLocalName(getChildrenByLocalName(vehicleEl, "CompositeDriver")[0], "Parameters")[0];
+
+                if (pId && vehicleEl && driverEl) {
+                    network.vehicleProfiles[pId] = {
+                        id: pId,
+                        length: parseFloat(getChildValue(vehicleEl, "length")),
+                        width: parseFloat(getChildValue(vehicleEl, "width")),
+                        maxSpeed: parseFloat(getChildValue(driverEl, "maxSpeed")),
+                        maxAcceleration: parseFloat(getChildValue(driverEl, "maxAcceleration")),
+                        comfortDeceleration: parseFloat(getChildValue(driverEl, "comfortDeceleration")),
+                        minDistance: parseFloat(getChildValue(driverEl, "minDistance")),
+                        desiredHeadwayTime: parseFloat(getChildValue(driverEl, "desiredHeadwayTime"))
+                    };
+                }
+            });
+        }
+
         // --- 1. Links ---
         const linkElements = xmlDoc.querySelectorAll("RoadNetwork > Links > Link");
         linkElements.forEach(linkEl => {
@@ -6512,16 +6604,39 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 const pos = parseFloat(getChildValue(meterEl, "position"));
                 const name = getChildValue(meterEl, "name");
+
+                // [讀取 Flow Mode 屬性]
                 const flowVal = parseFloat(getChildValue(meterEl, "observedFlow"));
                 const isSrcVal = getChildValue(meterEl, "isSource") === 'true';
-                const profileIdVal = getChildValue(meterEl, "spawnProfileId");
 
+                // [新增] 解析 SpawnProfiles (支援多車種權重)
+                const spawnProfiles = [];
+
+                // 1. 嘗試讀取新的列表結構
+                let spListEl = getChildrenByLocalName(meterEl, "SpawnProfiles")[0];
+                if (spListEl) {
+                    getChildrenByLocalName(spListEl, "ProfileEntry").forEach(entry => {
+                        const pId = getChildValue(entry, "profileId");
+                        const w = parseFloat(getChildValue(entry, "weight"));
+                        if (pId) {
+                            spawnProfiles.push({ profileId: pId, weight: w || 1.0 });
+                        }
+                    });
+                }
+
+                // 2. 兼容舊版 XML (如果沒有列表，但有舊的單一 ID)
+                const oldPid = getChildValue(meterEl, "spawnProfileId");
+                if (spawnProfiles.length === 0 && oldPid) {
+                    spawnProfiles.push({ profileId: oldPid, weight: 1.0 });
+                }
+
+                // [建立物件並賦值]
                 if (tagName === 'LinkAverageTravelSpeedMeter') {
                     const det = createDetector('PointDetector', link, pos);
                     det.name = name;
                     det.observedFlow = !isNaN(flowVal) ? flowVal : 0;
                     det.isSource = isSrcVal;
-                    if (profileIdVal) det.spawnProfileId = profileIdVal;
+                    det.spawnProfiles = spawnProfiles; // <--- 將解析出的列表存入物件
                     syncIdCounter(det.id);
                 } else if (tagName === 'SectionAverageTravelSpeedMeter') {
                     const len = parseFloat(getChildValue(meterEl, "sectionLength"));
@@ -6530,7 +6645,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     det.length = len;
                     det.observedFlow = !isNaN(flowVal) ? flowVal : 0;
                     det.isSource = isSrcVal;
-                    if (profileIdVal) det.spawnProfileId = profileIdVal;
+                    det.spawnProfiles = spawnProfiles; // <--- 將解析出的列表存入物件
                     syncIdCounter(det.id);
                     drawDetector(det);
                 }
@@ -6778,6 +6893,26 @@ document.addEventListener('DOMContentLoaded', () => {
         // [新增] 寫入導航模式
         xml += `    <tm:NavigationMode>${network.navigationMode || 'OD_BASED'}</tm:NavigationMode>\n`;
         xml += `  </tm:ModelParameters>\n`;
+
+        // [新增] 匯出全域車種定義 (確保 Flow Mode 參照的車種存在)
+        if (network.vehicleProfiles && Object.keys(network.vehicleProfiles).length > 0) {
+            xml += '  <tm:GlobalVehicleProfiles>\n';
+            Object.values(network.vehicleProfiles).forEach(prof => {
+                xml += `    <tm:VehicleProfile id="${prof.id}">\n`;
+                xml += `      <tm:RegularVehicle>\n`;
+                xml += `        <tm:length>${prof.length}</tm:length><tm:width>${prof.width}</tm:width>\n`;
+                xml += `        <tm:CompositeDriver><tm:Parameters>\n`;
+                xml += `          <tm:maxSpeed>${prof.params?.maxSpeed || prof.maxSpeed}</tm:maxSpeed>\n`;
+                xml += `          <tm:maxAcceleration>${prof.params?.maxAcceleration || prof.maxAcceleration}</tm:maxAcceleration>\n`;
+                xml += `          <tm:comfortDeceleration>${prof.params?.comfortDeceleration || prof.comfortDeceleration}</tm:comfortDeceleration>\n`;
+                xml += `          <tm:minDistance>${prof.params?.minDistance || prof.minDistance}</tm:minDistance>\n`;
+                xml += `          <tm:desiredHeadwayTime>${prof.params?.desiredHeadwayTime || prof.desiredHeadwayTime}</tm:desiredHeadwayTime>\n`;
+                xml += `        </tm:Parameters></tm:CompositeDriver>\n`;
+                xml += `      </tm:RegularVehicle>\n`;
+                xml += `    </tm:VehicleProfile>\n`;
+            });
+            xml += '  </tm:GlobalVehicleProfiles>\n';
+        }
 
         xml += '  <tm:RoadNetwork>\n';
 
@@ -7151,6 +7286,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // --- 6. Meters (With Flow/Source/Profile data) ---
         xml += '  <tm:Meters>\n';
+
+        // [新增] 內部輔助函數：用來產生 SpawnProfiles 的 XML 字串
+        // 將此函數放在 Meters 迴圈之前
+        const exportSpawnProfiles = (profiles) => {
+            let str = '';
+            if (profiles && profiles.length > 0) {
+                str += `      <tm:SpawnProfiles>\n`;
+                profiles.forEach(p => {
+                    str += `        <tm:ProfileEntry><tm:profileId>${p.profileId}</tm:profileId><tm:weight>${p.weight}</tm:weight></tm:ProfileEntry>\n`;
+                });
+                str += `      </tm:SpawnProfiles>\n`;
+            }
+            return str;
+        };
+
         Object.values(network.detectors).forEach(detector => {
             const numericDetId = detectorIdMap.get(detector.id);
             const numericLinkId = linkIdMap.get(detector.linkId);
@@ -7165,12 +7315,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 xml += `      <tm:segmentId>0</tm:segmentId>\n`;
                 xml += `      <tm:position>${detector.position.toFixed(4)}</tm:position>\n`;
 
-                // [新增] 匯出 observedFlow, isSource, spawnProfileId
+                // [修改] 匯出 Flow Mode 屬性
                 xml += `      <tm:observedFlow>${detector.observedFlow || 0}</tm:observedFlow>\n`;
                 xml += `      <tm:isSource>${detector.isSource || false}</tm:isSource>\n`;
-                if (detector.isSource && detector.spawnProfileId) {
-                    xml += `      <tm:spawnProfileId>${detector.spawnProfileId}</tm:spawnProfileId>\n`;
-                }
+
+                // [關鍵修改] 改為呼叫輔助函數輸出列表，取代原本單一的 spawnProfileId
+                xml += exportSpawnProfiles(detector.spawnProfiles);
 
                 xml += `    </tm:LinkAverageTravelSpeedMeter>\n`;
             } else if (detector.type === 'SectionDetector') {
@@ -7183,12 +7333,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 xml += `      <tm:position>${(detector.position - (detector.length || 0)).toFixed(4)}</tm:position>\n`;
                 xml += `      <tm:sectionLength>${(detector.length || 0).toFixed(4)}</tm:sectionLength>\n`;
 
-                // [新增] 匯出 observedFlow, isSource, spawnProfileId
+                // [修改] 匯出 Flow Mode 屬性
                 xml += `      <tm:observedFlow>${detector.observedFlow || 0}</tm:observedFlow>\n`;
                 xml += `      <tm:isSource>${detector.isSource || false}</tm:isSource>\n`;
-                if (detector.isSource && detector.spawnProfileId) {
-                    xml += `      <tm:spawnProfileId>${detector.spawnProfileId}</tm:spawnProfileId>\n`;
-                }
+
+                // [關鍵修改] 改為呼叫輔助函數輸出列表
+                xml += exportSpawnProfiles(detector.spawnProfiles);
 
                 xml += `    </tm:SectionAverageTravelSpeedMeter>\n`;
             }
