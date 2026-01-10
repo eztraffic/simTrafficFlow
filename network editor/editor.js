@@ -38,6 +38,8 @@ document.addEventListener('DOMContentLoaded', () => {
     let selectedObject = null;
     let currentModalOrigin = null;
     let lastSelectedNodeForProperties = null; // <--- 新增此行
+    let trafficLightIcons = []; // <--- 【請新增此行】用於儲存號誌圖示
+    let nodeSettingsIcons = []; // <--- 【請新增此行】用於儲存路口設定圖示
 
     // --- DOM ELEMENTS ---
     const canvasContainer = document.getElementById('canvas-container');
@@ -1166,7 +1168,7 @@ document.addEventListener('DOMContentLoaded', () => {
             btn.classList.toggle('active', btn.dataset.tool === toolName);
         });
 
-        // 1. 重置所有物件為不可互動狀態
+        // 1. 重置互動狀態
         Object.values(network.links).forEach(l => l.konvaGroup.listening(false));
         Object.values(network.connections).forEach(c => c.konvaBezier.listening(false));
         Object.values(network.nodes).forEach(n => n.konvaShape.listening(false));
@@ -1178,7 +1180,6 @@ document.addEventListener('DOMContentLoaded', () => {
         Object.values(network.overpasses).forEach(o => o.konvaRect.listening(false));
         Object.values(network.parkingLots).forEach(p => p.konvaGroup.listening(false));
         Object.values(network.parkingGates).forEach(g => g.konvaGroup.listening(false));
-        // 確保標線在非選取模式下不可互動
         if (network.roadMarkings) {
             Object.values(network.roadMarkings).forEach(r => r.konvaGroup.listening(false));
         }
@@ -1187,14 +1188,21 @@ document.addEventListener('DOMContentLoaded', () => {
             network.background.konvaGroup.listening(false);
         }
 
-        // 2. 清理臨時繪圖元素
+        // 2. 清理
         layer.find('.lane-port').forEach(port => port.destroy());
         if (tempShape) { tempShape.destroy(); tempShape = null; }
         if (tempMeasureText) { tempMeasureText.destroy(); tempMeasureText = null; }
 
-        // 3. 根據選擇的工具啟用特定物件的互動
+        // 清除所有輔助圖示 (號誌編輯圖示 & 選取模式圖示)
+        clearTrafficLightIcons();
+        clearNodeSettingsIcons(); // <--- 【新增】
+
+        // 3. 根據工具啟用互動
         switch (toolName) {
             case 'select':
+                // 【新增】顯示路口設定圖示
+                showNodeSettingsIcons();
+
                 // 為所有可選物件啟用監聽
                 Object.values(network.links).forEach(l => l.konvaGroup.listening(true));
                 Object.values(network.connections).forEach(c => c.konvaBezier.listening(true));
@@ -1207,22 +1215,22 @@ document.addEventListener('DOMContentLoaded', () => {
                 Object.values(network.overpasses).forEach(o => o.konvaRect.listening(true));
                 Object.values(network.parkingLots).forEach(p => p.konvaGroup.listening(true));
                 Object.values(network.parkingGates).forEach(g => g.konvaGroup.listening(true));
-                // 讓標線可被選取
                 if (network.roadMarkings) {
                     Object.values(network.roadMarkings).forEach(r => r.konvaGroup.listening(true));
                 }
-
                 if (network.background && !network.background.locked) {
                     network.background.konvaGroup.listening(true);
                 }
-
                 stage.container().style.cursor = 'default';
                 Object.values(network.pushpins).forEach(p => p.konvaGroup.listening(true));
                 break;
 
             case 'edit-tfl':
+                // 顯示號誌編輯圖示
+                showTrafficLightIcons();
+                // 仍然讓 Node 可監聽，但圖示會在最上層
                 Object.values(network.nodes).forEach(node => node.konvaShape.listening(true));
-                stage.container().style.cursor = 'pointer';
+                stage.container().style.cursor = 'default';
                 break;
 
             case 'connect-lanes':
@@ -1257,14 +1265,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 Object.values(network.pushpins).forEach(p => p.konvaGroup.listening(true));
                 break;
 
-            // --- 新增的標線工具 ---
             case 'add-marking':
-                // 開啟 Link 和 Node 的監聽，以便點擊新增
                 Object.values(network.links).forEach(l => l.konvaGroup.listening(true));
                 Object.values(network.nodes).forEach(n => n.konvaShape.listening(true));
                 stage.container().style.cursor = 'pointer';
                 break;
-            // ------------------
 
             default:
                 stage.container().style.cursor = 'default';
@@ -1272,6 +1277,164 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         updateStatusBar();
+    }
+
+    // --- 新增：顯示交通號誌編輯圖示 ---
+    function showTrafficLightIcons() {
+        clearTrafficLightIcons(); // 先清除舊的，避免重複
+        const scale = 1 / stage.scaleX(); // 計算反向縮放比例，確保圖示大小恆定
+
+        Object.values(network.nodes).forEach(node => {
+            // 建立一個群組包裹圖示
+            const group = new Konva.Group({
+                x: node.x,
+                y: node.y,
+                name: 'tfl-icon-wrapper', // 設定名稱以便縮放時選取
+                listening: true, // 確保可被點擊
+                scaleX: scale,
+                scaleY: scale
+            });
+
+            // 1. 白色圓形背景 (確保容易點擊且與背景有對比)
+            const bg = new Konva.Circle({
+                radius: 12,
+                fill: '#f8f9fa',
+                stroke: '#333',
+                strokeWidth: 1,
+                shadowColor: 'black',
+                shadowBlur: 3,
+                shadowOpacity: 0.3
+            });
+
+            // 2. 號誌 Emoji 圖示
+            const icon = new Konva.Text({
+                text: '🚦',
+                fontSize: 18,
+                align: 'center',
+                verticalAlign: 'middle',
+                listening: false // 讓點擊事件穿透到群組
+            });
+            // 將 Emoji 居中
+            icon.offsetX(icon.width() / 2);
+            icon.offsetY(icon.height() / 2 - 1); // 微調垂直位置
+
+            group.add(bg, icon);
+
+            // --- 事件處理 ---
+
+            // 滑鼠移入效果
+            group.on('mouseenter', () => {
+                stage.container().style.cursor = 'pointer';
+                bg.fill('#e2e6ea'); // 變深色
+                bg.stroke('blue');
+                layer.batchDraw();
+            });
+
+            // 滑鼠移出效果
+            group.on('mouseleave', () => {
+                stage.container().style.cursor = 'default';
+                bg.fill('#f8f9fa'); // 恢復原色
+                bg.stroke('#333');
+                layer.batchDraw();
+            });
+
+            // 點擊開啟編輯器
+            group.on('click tap', (e) => {
+                e.cancelBubble = true; // 阻止事件冒泡，避免觸發底下的 Node 點擊
+                showTrafficLightEditor(node);
+
+                // 選項：點擊後自動切回選取模式，或者保持在編輯模式
+                setTool('select');
+            });
+
+            layer.add(group);
+            trafficLightIcons.push(group);
+        });
+
+        layer.batchDraw();
+    }
+
+    // --- 新增：清除交通號誌編輯圖示 ---
+    function clearTrafficLightIcons() {
+        trafficLightIcons.forEach(icon => icon.destroy());
+        trafficLightIcons = [];
+        layer.batchDraw();
+    }
+
+    // --- 新增：顯示路口(Node)設定圖示 ---
+    function showNodeSettingsIcons() {
+        clearNodeSettingsIcons(); // 清除舊的
+        const scale = 1 / stage.scaleX(); // 反向縮放
+
+        Object.values(network.nodes).forEach(node => {
+            // 建立群組
+            const group = new Konva.Group({
+                x: node.x,
+                y: node.y,
+                name: 'node-setting-icon-wrapper', // 用於縮放識別
+                listening: true,
+                scaleX: scale,
+                scaleY: scale
+            });
+
+            // 1. 圓形背景 (淺藍色以示區別，帶陰影)
+            const bg = new Konva.Circle({
+                radius: 10,
+                fill: '#e3f2fd', // 淺藍色
+                stroke: '#1565c0', // 深藍邊框
+                strokeWidth: 1,
+                shadowColor: 'black',
+                shadowBlur: 3,
+                shadowOpacity: 0.3
+            });
+
+            // 2. 設定(齒輪)圖示
+            const icon = new Konva.Text({
+                text: '⚙️',
+                fontSize: 14,
+                align: 'center',
+                verticalAlign: 'middle',
+                listening: false
+            });
+            icon.offsetX(icon.width() / 2);
+            icon.offsetY(icon.height() / 2 - 1);
+
+            group.add(bg, icon);
+
+            // --- 事件處理 ---
+
+            group.on('mouseenter', () => {
+                stage.container().style.cursor = 'pointer';
+                bg.fill('#bbdefb'); // 移入變色
+                bg.strokeWidth(2);
+                layer.batchDraw();
+            });
+
+            group.on('mouseleave', () => {
+                stage.container().style.cursor = 'default';
+                bg.fill('#e3f2fd'); // 恢復
+                bg.strokeWidth(1);
+                layer.batchDraw();
+            });
+
+            // 點擊選取該 Node
+            group.on('click tap', (e) => {
+                e.cancelBubble = true; // 阻止冒泡
+                selectObject(node);    // 激活 Node 設定
+            });
+
+            layer.add(group);
+            nodeSettingsIcons.push(group);
+        });
+
+        layer.batchDraw();
+    }
+
+    // --- 新增：清除路口設定圖示 ---
+    function clearNodeSettingsIcons() {
+        nodeSettingsIcons.forEach(icon => icon.destroy());
+        nodeSettingsIcons = [];
+        layer.batchDraw();
     }
     function showLanePorts() {
         // 清除所有舊的連接埠
@@ -1434,7 +1597,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const newPortScale = 1 / newScale;
 
-            layer.find('.lane-port, .group-connect-port, .control-point, .waypoint-handle, .measurement-handle').forEach(p => {
+            // 【修改】加入 .node-setting-icon-wrapper
+            layer.find('.lane-port, .group-connect-port, .control-point, .waypoint-handle, .measurement-handle, .tfl-icon-wrapper, .node-setting-icon-wrapper').forEach(p => {
                 p.scale({ x: newPortScale, y: newPortScale });
             });
             layer.find('.lane-port').forEach(p => p.strokeWidth(2 / newScale));
