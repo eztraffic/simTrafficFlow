@@ -1,32 +1,40 @@
 <!DOCTYPE html>
 <html lang="zh-Hant">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title data-i18n="appTitle">路網微觀交通模擬 (2D/3D)</title>
     <link rel="stylesheet" href="style01.css">
-    
+
     <!-- 1. 引入 Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    
+
     <!-- 2. 引入 Three.js (r147) -->
     <script src="https://unpkg.com/three@0.147.0/build/three.min.js"></script>
+    <!-- [新增] 引入 GLTFLoader 以讀取 GLB 模型 -->
+    <script src="https://unpkg.com/three@0.147.0/examples/js/loaders/GLTFLoader.js"></script>
     <!-- 3. 引入 OrbitControls -->
     <script src="https://unpkg.com/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
 </head>
+
 <body>
     <header>
         <div class="title-bar">
             <h1 data-i18n="appTitle">路網微觀交通模擬 (2D/3D)</h1>
             <div class="controls">
                 <label for="xmlFileInput" data-i18n="selectFileLabel">選擇路網檔案：</label>
-                <input type="file" id="xmlFileInput" accept=".sim">
-				<div class="seed-container" style="display:flex; align-items:center; gap:5px; margin-left:10px;">
-   				 <label for="citySeedInput" style="font-size:0.9em; font-weight:bold;">City Seed:</label>
-   				 <input type="number" id="citySeedInput" value="12345" style="width:70px; padding:3px;">
-   				 <button id="regenCityBtn" style="padding:3px 8px; font-size:0.8em; cursor:pointer;">生成</button>
-				</div>                
-                
+                <input type="file" id="xmlFileInput" accept=".sim,.xml">
+
+                <!-- [新增] 選擇場景 XML 按鈕 -->
+                <label for="sceneFileInput" style="margin-left:15px; font-weight:bold; color:#2980b9;">匯入場景 XML：</label>
+                <input type="file" id="sceneFileInput" accept=".xml">
+                <div class="seed-container" style="display:flex; align-items:center; gap:5px; margin-left:10px;">
+                    <label for="citySeedInput" style="font-size:0.9em; font-weight:bold;">City Seed:</label>
+                    <input type="number" id="citySeedInput" value="12345" style="width:70px; padding:3px;">
+                    <button id="regenCityBtn" style="padding:3px 8px; font-size:0.8em; cursor:pointer;">生成</button>
+                </div>
+
                 <div class="lang-switcher">
                     <label for="langSelector">language:</label>
                     <select id="langSelector">
@@ -39,9 +47,12 @@
         <div class="simulation-controls">
             <button id="startStopButton">請先載入檔案</button>
             <div id="displayModeToggle" class="multi-toggle" role="group" aria-label="Display">
-                <button type="button" id="displayStatsBtn" class="multi-toggle-btn is-active" aria-pressed="true" data-mode="stats" data-i18n="displayStats">統計</button>
-                <button type="button" id="display2DBtn" class="multi-toggle-btn is-active" aria-pressed="true" data-mode="2d" data-i18n="display2D">2D</button>
-                <button type="button" id="display3DBtn" class="multi-toggle-btn" aria-pressed="false" data-mode="3d" data-i18n="display3D">3D</button>
+                <button type="button" id="displayStatsBtn" class="multi-toggle-btn is-active" aria-pressed="true"
+                    data-mode="stats" data-i18n="displayStats">統計</button>
+                <button type="button" id="display2DBtn" class="multi-toggle-btn is-active" aria-pressed="true"
+                    data-mode="2d" data-i18n="display2D">2D</button>
+                <button type="button" id="display3DBtn" class="multi-toggle-btn" aria-pressed="false" data-mode="3d"
+                    data-i18n="display3D">3D</button>
             </div>
 
             <div id="syncRotationContainer" class="toggle-container" style="display:none;">
@@ -51,7 +62,7 @@
                     <span class="slider round"></span>
                 </label>
             </div>
-            
+
             <div class="slider-container">
                 <label for="speedSlider" data-i18n="simSpeedLabel">模擬速度:</label>
                 <input type="range" id="speedSlider" min="1" max="50" value="3">
@@ -61,7 +72,7 @@
             <div class="time-display">
                 <span data-i18n="simTimeLabel">模擬時間:</span> <span id="simulationTime">0.00</span>s
             </div>
-            
+
             <!-- 路口燈號 -->
             <div class="toggle-container">
                 <label class="switch-label" for="showPathsToggle" data-i18n="trafficLightToggle">路口燈號:</label>
@@ -117,7 +128,7 @@
         <!-- 左側統計面板 -->
         <div id="stats-panel">
             <h2 data-i18n="statsTitle">統計數據</h2>
-            
+
             <div class="chart-container">
                 <h3 data-i18n="vehicleCountChartTitle">車輛數 (輛)</h3>
                 <canvas id="vehicleCountChart"></canvas>
@@ -132,7 +143,7 @@
             <div id="section-meter-charts-container"></div>
 
             <div id="stats-table-container">
-                 <h3 data-i18n="realtimeStatsTitle">即時數據 (全域)</h3>
+                <h3 data-i18n="realtimeStatsTitle">即時數據 (全域)</h3>
                 <table>
                     <thead>
                         <tr>
@@ -152,12 +163,13 @@
             <!-- 3D Container -->
             <div id="threejs-container"></div>
             <!-- 載入提示文字 -->
-            <div id="placeholder-text" style="position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); color:#888;">
+            <div id="placeholder-text"
+                style="position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); color:#888;">
                 請從上方選擇一個 XML 檔案以載入路網
             </div>
         </div>
     </main>
-    
+
     <script src="script02.js"></script>
     <script>
         window.ENABLE_LEFT_TURN_YIELD = true;
@@ -170,4 +182,5 @@
         window.MANDATORY_LC_SHORT_LINK_THRESHOLD = 150;
     </script>
 </body>
+
 </html>
