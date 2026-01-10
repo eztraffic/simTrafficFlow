@@ -408,6 +408,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- City Generation Variables ---
     let cityGroup = new THREE.Group(); // 裝載所有城市物件
+    let customModelsGroup = new THREE.Group(); // [新增]
     const citySeedInput = document.getElementById('citySeedInput');
     const regenCityBtn = document.getElementById('regenCityBtn');
     // --- Event Listeners (新增) ---
@@ -469,6 +470,13 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     fileInput.addEventListener('change', handleFileSelect);
+
+    const sceneFileInput = document.getElementById('sceneFileInput');
+    if (sceneFileInput) {
+        // 移除舊的監聽器以免重複綁定 (如果有的話)
+        sceneFileInput.removeEventListener('change', handleSceneFileSelect);
+        sceneFileInput.addEventListener('change', handleSceneFileSelect);
+    }
     startStopButton.addEventListener('click', toggleSimulation);
     speedSlider.addEventListener('input', (e) => {
         simulationSpeed = parseInt(e.target.value, 10);
@@ -1851,7 +1859,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function init3D() {
         scene = new THREE.Scene();
-        // 1. Sky Blue Background
+
+        // 1. 背景色 (天空藍)
         const skyColor = 0x87CEEB;
         scene.background = new THREE.Color(skyColor);
         scene.fog = new THREE.Fog(skyColor, 200, 5000);
@@ -1860,17 +1869,19 @@ document.addEventListener('DOMContentLoaded', () => {
         camera.position.set(0, 500, 500);
         camera.up.set(0, 1, 0);
 
-        // 2. Renderer with Logarithmic Depth Buffer (Crucial for flickering)
+        // 2. Renderer 設定
         renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true });
         renderer.setSize(canvasContainer.clientWidth, canvasContainer.clientHeight);
         renderer.shadowMap.enabled = true;
+
+        // ★★★ [關鍵] 保持 sRGB，這是 GLB 模型顯示正確的關鍵 ★★★
+        renderer.outputEncoding = THREE.sRGBEncoding;
+
         container3D.appendChild(renderer.domElement);
 
         renderer.domElement.addEventListener('click', handle3DVehiclePick);
 
         controls = new THREE.OrbitControls(camera, renderer.domElement);
-
-        // 啟用鍵盤監聽，方便筆電使用者平移
         controls.listenToKeyEvents(window);
         controls.enableDamping = true;
         controls.dampingFactor = 0.05;
@@ -1885,13 +1896,21 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!isRunning) redraw2D();
         });
 
-        // 3. Limit rotation (cannot go below ground)
-        controls.maxPolarAngle = Math.PI / 2 - 0.05; // Slightly above horizon
+        controls.maxPolarAngle = Math.PI / 2 - 0.05;
 
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+        // --- [關鍵修改] 光照設定 (平衡 GLB 亮度與環境過曝) ---
+
+        // 1. 環境光：稍微調低 (0.6 -> 0.4)，避免畫面整體泛白
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
         scene.add(ambientLight);
 
-        const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
+        // 2. 半球光：保留 (這讓 GLB 看起來立體，不會有死黑陰影)
+        const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.8);
+        hemiLight.position.set(0, 200, 0);
+        scene.add(hemiLight);
+
+        // 3. 方向光：強度設為 1.0，配合 sRGB 渲染
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
         dirLight.position.set(100, 500, 100);
         dirLight.castShadow = true;
         dirLight.shadow.mapSize.width = 4096;
@@ -1901,29 +1920,33 @@ document.addEventListener('DOMContentLoaded', () => {
         const d = 2000;
         dirLight.shadow.camera.left = -d; dirLight.shadow.camera.right = d;
         dirLight.shadow.camera.top = d; dirLight.shadow.camera.bottom = -d;
-        // 4. Shadow Bias to prevent shadow acne flickering
         dirLight.shadow.bias = -0.0005;
         scene.add(dirLight);
 
-        // 5. Ground Plane (Separate distinct layer)
+        // --- [關鍵修改] 地面顏色 ---
+
         const groundGeo = new THREE.PlaneGeometry(100000, 100000);
-        const groundMat = new THREE.MeshLambertMaterial({ color: 0xf0f0f0 });
+
+        // 將地面顏色由原本的淺灰 (0xf0f0f0) 改為深灰 (0x666666)
+        // 因為在 sRGB 模式下，深色會被顯示得比較亮，這樣看起來才會像原本的地面
+        const groundMat = new THREE.MeshLambertMaterial({ color: 0x666666 });
+
         const ground = new THREE.Mesh(groundGeo, groundMat);
         ground.rotation.x = -Math.PI / 2;
-        ground.position.y = -5.0; // [修正] 大幅降低地面高度，避免遮擋底圖
+        ground.position.y = -5.0; // 保持原本高度設定
         ground.receiveShadow = true;
         scene.add(ground);
 
+        // 加入各個物件群組
         scene.add(networkGroup);
         scene.add(debugGroup);
         scene.add(signalPathsGroup);
-        scene.add(trafficLightsGroup); // Add traffic light poles group
-
-        // [新增] 加入城市群組
+        scene.add(trafficLightsGroup);
         scene.add(cityGroup);
-
-        // [新增] 加入底圖群組
         scene.add(basemapGroup);
+
+        // 確保加入場景編輯器匯入的模型群組
+        scene.add(customModelsGroup);
     }
 
     function onWindowResize() {
@@ -2104,9 +2127,8 @@ document.addEventListener('DOMContentLoaded', () => {
         trafficLightMeshes = [];
 
         // --- Materials ---
-        const roadMat = new THREE.MeshLambertMaterial({ color: 0x555555, side: THREE.DoubleSide });
-        const junctionMat = new THREE.MeshLambertMaterial({ color: 0x666666, side: THREE.DoubleSide });
-        const lineMat = new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 2 });
+        const roadMat = new THREE.MeshLambertMaterial({ color: 0x222222, side: THREE.DoubleSide });
+        const junctionMat = new THREE.MeshLambertMaterial({ color: 0x333333, side: THREE.DoubleSide }); const lineMat = new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 2 });
         const meterMat = new THREE.MeshBasicMaterial({ color: 0xffaa00, transparent: true, opacity: 0.5 });
         const sectionMat = new THREE.MeshBasicMaterial({ color: 0x32b4ef, transparent: true, opacity: 0.5 });
         // 停車場材質
@@ -3918,6 +3940,9 @@ document.addEventListener('DOMContentLoaded', () => {
         cityGroup.clear();
 
         basemapGroup.clear();
+
+        // [新增] 清空自定義模型
+        customModelsGroup.clear();
 
         renderer.render(scene, camera);
 
@@ -7266,6 +7291,148 @@ document.addEventListener('DOMContentLoaded', () => {
                     vehicleProfiles
                 });
             }).catch(() => reject(new Error(translations[currentLang].imageLoadError)));
+        });
+    }
+
+    // ===================================================================
+    // [新增] 場景編輯器 XML 載入邏輯
+    // ===================================================================
+
+    function handleSceneFileSelect(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const parser = new DOMParser();
+            const xmlDoc = parser.parseFromString(e.target.result, "application/xml");
+
+            if (xmlDoc.getElementsByTagName("parsererror").length) {
+                alert("場景 XML 解析錯誤：格式不正確");
+                return;
+            }
+
+            // 呼叫載入主函式
+            loadCustomSceneObjects(xmlDoc);
+
+            // UX 優化：載入後自動切換到 3D 模式，讓使用者立刻看到結果
+            const display3DBtn = document.getElementById('display3DBtn');
+            if (display3DBtn && !isDisplay3D) {
+                display3DBtn.click();
+            }
+        };
+        reader.readAsText(file);
+    }
+
+    function loadCustomSceneObjects(xmlDoc) {
+        // 確保 customModelsGroup 已定義 (它應該在 init3D 中被建立)
+        if (typeof customModelsGroup === 'undefined') {
+            console.error("錯誤：customModelsGroup 未定義，請確認 init3D() 中已加入 scene.add(customModelsGroup);");
+            return;
+        }
+
+        // 清空舊模型
+        customModelsGroup.clear();
+
+        const loader = new THREE.GLTFLoader();
+        const objects = xmlDoc.querySelectorAll('StaticModel');
+
+        console.log(`正在處理 ${objects.length} 個自定義場景物件...`);
+
+        // 輔助函式：忽略 XML 命名空間尋找子節點
+        const findChild = (parent, tagName) => {
+            for (let i = 0; i < parent.children.length; i++) {
+                const node = parent.children[i];
+                const name = node.localName || node.nodeName.split(':').pop();
+                if (name === tagName) return node;
+            }
+            return null;
+        };
+
+        objects.forEach((modelEl, index) => {
+            // --- 讀取資料來源 ---
+            // 優先嘗試讀取內嵌的 Base64 資料
+            const binaryDataEl = findChild(modelEl, 'BinaryData');
+            // 如果沒有內嵌資料，嘗試讀取路徑 (向下相容)
+            const pathEl = findChild(modelEl, 'Path');
+
+            // --- 讀取變換參數 (Transform) ---
+            const posEl = findChild(modelEl, 'Position');
+            const rotEl = findChild(modelEl, 'Rotation');
+            const sclEl = findChild(modelEl, 'Scale');
+
+            if (!posEl || !rotEl || !sclEl) {
+                console.warn(`跳過第 ${index} 個模型：變換參數缺失`);
+                return;
+            }
+
+            // --- 座標系統轉換 ---
+            // XML (編輯器匯出) -> Three.js (模擬器)
+            // 編輯器匯出規則: xmlX = x, xmlY = -z, xmlZ = y
+            // 模擬器還原規則: x = xmlX, z = -xmlY, y = xmlZ
+
+            const xmlX = parseFloat(posEl.getAttribute('x'));
+            const xmlY = parseFloat(posEl.getAttribute('y'));
+            const xmlZ = parseFloat(posEl.getAttribute('z'));
+
+            const targetPos = new THREE.Vector3(
+                xmlX,
+                xmlZ, // XML Z 對應高度 (Y)
+                -xmlY // XML Y 對應深度 (Z)，需反轉符號
+            );
+
+            const targetRot = new THREE.Euler(
+                parseFloat(rotEl.getAttribute('x')),
+                parseFloat(rotEl.getAttribute('y')),
+                parseFloat(rotEl.getAttribute('z'))
+            );
+
+            const targetScale = new THREE.Vector3(
+                parseFloat(sclEl.getAttribute('x')),
+                parseFloat(sclEl.getAttribute('y')),
+                parseFloat(sclEl.getAttribute('z'))
+            );
+
+            // --- 定義載入完成的回調 ---
+            const onLoad = (gltf) => {
+                const mesh = gltf.scene;
+
+                // 應用變換
+                mesh.position.copy(targetPos);
+                mesh.rotation.copy(targetRot);
+                mesh.scale.copy(targetScale);
+
+                // 啟用陰影
+                mesh.traverse(child => {
+                    if (child.isMesh) {
+                        child.castShadow = true;
+                        child.receiveShadow = true;
+                    }
+                });
+
+                // 加入群組
+                customModelsGroup.add(mesh);
+            };
+
+            const onError = (err) => {
+                console.warn("模型載入失敗:", err);
+            };
+
+            // --- 執行載入 ---
+            if (binaryDataEl && binaryDataEl.textContent.trim().length > 20) {
+                // Case A: 載入 Base64 內嵌模型
+                const base64Data = binaryDataEl.textContent;
+                try {
+                    loader.load(base64Data, onLoad, undefined, onError);
+                } catch (e) {
+                    console.error("Base64 解析失敗", e);
+                }
+            } else if (pathEl && pathEl.textContent.trim() !== "") {
+                // Case B: 載入外部路徑模型
+                loader.load(pathEl.textContent, onLoad, undefined, onError);
+            } else {
+                console.warn(`跳過第 ${index} 個模型：無 BinaryData 亦無 Path`);
+            }
         });
     }
 });
