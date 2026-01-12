@@ -410,6 +410,8 @@ document.addEventListener('DOMContentLoaded', () => {
     let cityGroup = new THREE.Group(); // 裝載所有城市物件
     let customModelsGroup = new THREE.Group();
     let cloudGroup = new THREE.Group(); // ★ [新增] 雲朵群組
+    // --- 新增：城市動畫物件列表 ---
+    let animatedCityObjects = [];
     const citySeedInput = document.getElementById('citySeedInput');
     const regenCityBtn = document.getElementById('regenCityBtn');
     // --- Event Listeners (新增) ---
@@ -1938,7 +1940,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const ground = new THREE.Mesh(groundGeo, groundMat);
         ground.rotation.x = -Math.PI / 2;
-        ground.position.y = -5.0;
+        ground.position.y = -0.5;
         ground.receiveShadow = true;
         scene.add(ground);
 
@@ -2130,20 +2132,20 @@ document.addEventListener('DOMContentLoaded', () => {
         trafficLightsGroup.clear();
         trafficLightMeshes = [];
 
-        // --- Materials (改用 MeshStandardMaterial 增加質感) ---
-        // 道路：深灰色，粗糙度高
-        const roadMat = new THREE.MeshStandardMaterial({
-            color: 0x222222,
+        // =================================================================
+        // [修正] 統一柏油路面材質 (Asphalt)
+        // =================================================================
+        // 顏色：0x252525 (深灰色，模擬瀝青)
+        // 粗糙度：0.9 (不反光，模擬路面質感)
+        // =================================================================
+        const asphaltMat = new THREE.MeshStandardMaterial({
+            color: 0x111111,
             side: THREE.DoubleSide,
             roughness: 0.9,
-            metalness: 0.1
-        });
-
-        // 路口：稍微淺一點的灰色
-        const junctionMat = new THREE.MeshStandardMaterial({
-            color: 0x333333,
-            side: THREE.DoubleSide,
-            roughness: 0.9
+            metalness: 0.1,
+            polygonOffset: true,
+            polygonOffsetFactor: 1, // 推遠一點點，讓標線(Markings)更容易顯示在上面
+            polygonOffsetUnits: 1
         });
 
         const lineMat = new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 2 });
@@ -2305,7 +2307,9 @@ document.addEventListener('DOMContentLoaded', () => {
             return best;
         };
 
-        // --- 1. Draw Links (Roads) ---
+        // =================================================================
+        // 1. Draw Links (Roads) - 使用 asphaltMat 且高度設為 0.1
+        // =================================================================
         Object.values(netData.links).forEach(link => {
             if (link.geometry) {
                 link.geometry.forEach(geo => {
@@ -2315,16 +2319,23 @@ document.addEventListener('DOMContentLoaded', () => {
                     for (let i = 1; i < geo.points.length; i++) shape.lineTo(geo.points[i].x, -geo.points[i].y);
                     const geom = new THREE.ShapeGeometry(shape);
                     geom.rotateX(-Math.PI / 2);
-                    const mesh = new THREE.Mesh(geom, roadMat);
+
+                    // [修正] 使用統一材質
+                    const mesh = new THREE.Mesh(geom, asphaltMat);
                     mesh.receiveShadow = true;
+
+                    // [修正] 高度設為 0.1 (與路口一致)
                     mesh.position.y = 0.1;
+
                     networkGroup.add(mesh);
                 });
             }
+            // (分隔線繪製邏輯保持不變)
             if (link.dividingLines) {
                 link.dividingLines.forEach(line => {
                     if (line.path.length < 2) return;
-                    const points = line.path.map(p => to3D(p.x, p.y, 0.25));
+                    // 分隔線高度需略高於路面 (0.1 + 0.02)
+                    const points = line.path.map(p => to3D(p.x, p.y, 0.12));
                     const geometry = new THREE.BufferGeometry().setFromPoints(points);
                     const lineMesh = new THREE.Line(geometry, lineMat);
                     networkGroup.add(lineMesh);
@@ -2332,7 +2343,9 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
 
-        // --- 2. Draw Nodes (Junctions) ---
+        // =================================================================
+        // 2. Draw Nodes (Junctions) - 使用 asphaltMat 且高度設為 0.1
+        // =================================================================
         Object.values(netData.nodes).forEach(node => {
             if (node.polygon && node.polygon.length >= 3) {
                 const shape = new THREE.Shape();
@@ -2340,16 +2353,22 @@ document.addEventListener('DOMContentLoaded', () => {
                 for (let i = 1; i < node.polygon.length; i++) shape.lineTo(node.polygon[i].x, -node.polygon[i].y);
                 const geom = new THREE.ShapeGeometry(shape);
                 geom.rotateX(-Math.PI / 2);
-                const mesh = new THREE.Mesh(geom, junctionMat);
+
+                // [修正] 使用與道路完全相同的材質
+                const mesh = new THREE.Mesh(geom, asphaltMat);
                 mesh.receiveShadow = true;
-                mesh.position.y = 0.2;
+
+                // [修正] 高度由原本的 0.2 降為 0.1，與道路平齊
+                mesh.position.y = 0.1;
+
                 networkGroup.add(mesh);
             }
-            // Signal paths visualization
+            // (Signal paths visualization 保持不變)
             if (node.transitions) {
                 node.transitions.forEach(transition => {
                     if (transition.bezier && transition.turnGroupId) {
                         const [p0, p1, p2, p3] = transition.bezier.points;
+                        // 轉彎路徑線高度稍微提高到 0.5 避免被路面遮擋
                         const curve = new THREE.CubicBezierCurve3(to3D(p0.x, p0.y, 0.5), to3D(p1.x, p1.y, 0.5), to3D(p2.x, p2.y, 0.5), to3D(p3.x, p3.y, 0.5));
                         const points = curve.getPoints(20);
                         const geometry = new THREE.BufferGeometry().setFromPoints(points);
@@ -3552,12 +3571,342 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
     }
+    // --- 招牌文字與紋理生成工具 ---
 
-    // 2. 城市生成主函式 (修復牆面顏色 + 自動避開自定義 3D 物件)
+    const SIGN_TEXTS = {
+        // 台灣風格豎招牌 (直排)
+        vertical: [
+            "永和豆漿", "快樂牙科", "寶島眼鏡", "光華商場", "錢櫃KTV",
+            "補習班", "整形外科", "牛肉麵", "大飯店", "商務旅館",
+            "網咖", "按摩養生", "五金行", "機車行", "當鋪",
+            "魯肉飯", "便利商店", "彩券行", "熱炒100", "足體養生"
+        ],
+        // 英文橫式招牌
+        horizontal: [
+            "HOTEL", "BANK", "CAFE", "FASHION", "TECH",
+            "CINEMA", "PUB", "GYM", "MARKET", "OFFICE",
+            "AGENCY", "STORE", "MALL", "CLUB", "24H OPEN"
+        ]
+    };
+
+    // 建立招牌紋理 (CanvasTexture)
+    function createSignTexture(text, type, colorHex) {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+
+        // 設定畫布尺寸與字型
+        if (type === 'vertical') {
+            canvas.width = 64;
+            canvas.height = 256;
+            ctx.fillStyle = colorHex || '#AA0000'; // 底色
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // 邊框 (霓虹燈感)
+            ctx.strokeStyle = '#FFFFFF';
+            ctx.lineWidth = 4;
+            ctx.strokeRect(0, 0, canvas.width, canvas.height);
+
+            ctx.font = 'bold 40px "Microsoft JhengHei", sans-serif';
+            ctx.fillStyle = '#FFFFFF'; // 文字色
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'top';
+
+            // 直排文字邏輯
+            const startY = 20;
+            const lineHeight = 50;
+            for (let i = 0; i < text.length; i++) {
+                ctx.fillText(text[i], canvas.width / 2, startY + i * lineHeight);
+            }
+        } else {
+            // Horizontal
+            canvas.width = 256;
+            canvas.height = 64;
+            ctx.fillStyle = colorHex || '#003366';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            ctx.strokeStyle = '#FFFFFF';
+            ctx.lineWidth = 4;
+            ctx.strokeRect(0, 0, canvas.width, canvas.height);
+
+            ctx.font = 'bold 40px Arial, sans-serif';
+            ctx.fillStyle = '#FFFFFF';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+        }
+
+        const texture = new THREE.CanvasTexture(canvas);
+        // 優化紋理設定
+        texture.minFilter = THREE.LinearFilter;
+        texture.wrapS = THREE.ClampToEdgeWrapping;
+        texture.wrapT = THREE.ClampToEdgeWrapping;
+        return texture;
+    }
+
+    // 預先生成材質池 (避免重複建立 Canvas)
+    function generateSignMaterials() {
+        const materials = { v: [], h: [] };
+        const bgColors = ['#CC0000', '#0066CC', '#009944', '#FF6600', '#333333', '#663399'];
+
+        // 生成豎式材質
+        SIGN_TEXTS.vertical.forEach((txt, idx) => {
+            const color = bgColors[idx % bgColors.length];
+            const tex = createSignTexture(txt, 'vertical', color);
+            // 使用 Standard 材質並開啟自發光 (Emissive) 以模擬燈箱/霓虹燈
+            const mat = new THREE.MeshStandardMaterial({
+                map: tex,
+                emissive: new THREE.Color(color),
+                emissiveMap: tex,
+                emissiveIntensity: 0.8,
+                roughness: 0.2,
+                metalness: 0.5
+            });
+            materials.v.push(mat);
+        });
+
+        // 生成橫式材質
+        SIGN_TEXTS.horizontal.forEach((txt, idx) => {
+            const color = bgColors[idx % bgColors.length];
+            const tex = createSignTexture(txt, 'horizontal', color);
+            const mat = new THREE.MeshStandardMaterial({
+                map: tex,
+                emissive: new THREE.Color(color),
+                emissiveMap: tex,
+                emissiveIntensity: 0.6,
+                roughness: 0.2
+            });
+            materials.h.push(mat);
+        });
+
+        return materials;
+    }
+    // =================================================================
+    // 遊樂園生成器 (Amusement Park Generator)
+    // =================================================================
+    const ParkThemes = {
+        colors: [0xFF0000, 0xFFFF00, 0x0000FF, 0x00FF00, 0xFF00FF, 0x00FFFF],
+        emissive: 0.4
+    };
+
+    function createAmusementPark(x, z, radius) {
+        const parkGroup = new THREE.Group();
+        parkGroup.position.set(x, 0, z);
+
+        // 1. 地面 (Ground)
+        const groundGeo = new THREE.CircleGeometry(radius, 64);
+        const groundMat = new THREE.MeshStandardMaterial({
+            color: 0x228B22, // 草地綠
+            roughness: 0.8
+        });
+        const ground = new THREE.Mesh(groundGeo, groundMat);
+        ground.rotation.x = -Math.PI / 2;
+        ground.position.y = 0.15; // 略高於馬路
+        ground.receiveShadow = true;
+        parkGroup.add(ground);
+
+        // 2. 圍牆 (Fence)
+        const fenceGeo = new THREE.TorusGeometry(radius, 0.5, 16, 100);
+        const fenceMat = new THREE.MeshStandardMaterial({ color: 0xFFFFFF });
+        const fence = new THREE.Mesh(fenceGeo, fenceMat);
+        fence.rotation.x = -Math.PI / 2;
+        fence.position.y = 1.0;
+        parkGroup.add(fence);
+
+        // 動畫更新回調清單
+        const updatables = [];
+
+        // --- A. 摩天輪 (Ferris Wheel) ---
+        // 位置：公園後方
+        const fwGroup = new THREE.Group();
+        fwGroup.position.set(0, 0, radius * 0.5);
+        parkGroup.add(fwGroup);
+
+        // 支架
+        const baseGeo = new THREE.ConeGeometry(4, 25, 4, 1, true);
+        const baseMat = new THREE.MeshStandardMaterial({ color: 0xAAAAAA, side: THREE.DoubleSide });
+        const base = new THREE.Mesh(baseGeo, baseMat);
+        base.position.y = 12.5;
+        base.rotation.y = Math.PI / 4;
+        base.scale.z = 0.5; // 壓扁一點
+        fwGroup.add(base);
+
+        // 轉輪主體
+        const wheelNode = new THREE.Group();
+        wheelNode.position.y = 24;
+        fwGroup.add(wheelNode);
+
+        const rimGeo = new THREE.TorusGeometry(18, 0.8, 16, 50);
+        const rimMat = new THREE.MeshStandardMaterial({
+            color: 0xFF0055, emissive: 0xFF0055, emissiveIntensity: 0.5
+        });
+        const rim = new THREE.Mesh(rimGeo, rimMat);
+        wheelNode.add(rim);
+
+        // 輻條
+        const spokeGeo = new THREE.CylinderGeometry(0.2, 0.2, 36);
+        const spokeMat = new THREE.MeshStandardMaterial({ color: 0xFFFFFF });
+        for (let i = 0; i < 6; i++) {
+            const spoke = new THREE.Mesh(spokeGeo, spokeMat);
+            spoke.rotation.z = (i / 6) * Math.PI;
+            wheelNode.add(spoke);
+        }
+
+        // 車廂 (Cabins)
+        const numCabins = 12;
+        const cabinGeo = new THREE.CylinderGeometry(1.5, 1.2, 2.5, 8);
+        const cabinMat = new THREE.MeshStandardMaterial({ color: 0x00FFFF, emissive: 0x00FFFF, emissiveIntensity: 0.3 });
+        const cabins = [];
+
+        for (let i = 0; i < numCabins; i++) {
+            const angle = (i / numCabins) * Math.PI * 2;
+            const cx = Math.cos(angle) * 18;
+            const cy = Math.sin(angle) * 18;
+
+            const cabinGrp = new THREE.Group();
+            cabinGrp.position.set(cx, cy, 0);
+
+            const cabinMesh = new THREE.Mesh(cabinGeo, cabinMat);
+            cabinMesh.rotation.x = Math.PI / 2; // 讓圓柱躺著當車廂
+            cabinGrp.add(cabinMesh);
+
+            wheelNode.add(cabinGrp);
+            cabins.push(cabinGrp);
+        }
+
+        // 摩天輪動畫邏輯
+        updatables.push((dt) => {
+            const speed = 0.2; // rad/s
+            wheelNode.rotation.z -= speed * dt;
+            // 車廂保持水平 (逆向旋轉)
+            cabins.forEach(c => {
+                c.rotation.z = -wheelNode.rotation.z;
+            });
+        });
+
+        // --- B. 雲霄飛車 (Roller Coaster) ---
+        // 位置：環繞公園
+        // 建立軌道曲線
+        const curvePoints = [];
+        for (let i = 0; i <= 20; i++) {
+            const t = i / 20;
+            const angle = t * Math.PI * 2;
+            const r = radius * 0.7 + Math.sin(t * Math.PI * 6) * 5; // 半徑變化
+
+            // [修正處] 將基礎高度從 10 提升到 20
+            // 原本: const h = 10 + Math.sin(t * Math.PI * 4) * 8 + Math.cos(t * Math.PI * 2) * 5;
+            // 修正後: 確保最低點也在地面以上 (20 - 8 - 5 = 7 > 0)
+            const h = 20 + Math.sin(t * Math.PI * 4) * 8 + Math.cos(t * Math.PI * 2) * 5;
+
+            curvePoints.push(new THREE.Vector3(Math.cos(angle) * r, h, Math.sin(angle) * r));
+        }
+        const trackCurve = new THREE.CatmullRomCurve3(curvePoints, true); // 閉合曲線
+
+        // 軌道模型
+        const tubeGeo = new THREE.TubeGeometry(trackCurve, 100, 0.8, 8, true);
+        const tubeMat = new THREE.MeshStandardMaterial({ color: 0xFFFF00 });
+        const trackMesh = new THREE.Mesh(tubeGeo, tubeMat);
+        parkGroup.add(trackMesh);
+
+        // 支柱 (每隔一段距離產生)
+        const supportMat = new THREE.MeshStandardMaterial({ color: 0x888888 });
+        const supportGeo = new THREE.BoxGeometry(1, 1, 1);
+        for (let i = 0; i < 30; i++) {
+            const t = i / 30;
+            const pt = trackCurve.getPoint(t);
+            const h = pt.y;
+            if (h > 2) {
+                const pillar = new THREE.Mesh(supportGeo, supportMat);
+                pillar.position.set(pt.x, h / 2, pt.z);
+                pillar.scale.set(0.8, h, 0.8);
+                parkGroup.add(pillar);
+            }
+        }
+
+        // 雲霄飛車車輛
+        const cartGeo = new THREE.BoxGeometry(2, 1.5, 3);
+        const cartMat = new THREE.MeshStandardMaterial({ color: 0x0000FF });
+        const cart = new THREE.Mesh(cartGeo, cartMat);
+        parkGroup.add(cart);
+
+        let coasterProgress = 0;
+        updatables.push((dt) => {
+            coasterProgress += dt * 0.15; // 速度
+            if (coasterProgress > 1) coasterProgress -= 1;
+
+            const pos = trackCurve.getPointAt(coasterProgress);
+            //const tangent = trackCurve.getTangentAt(coasterProgress);
+
+            cart.position.copy(pos);
+            // 簡單的朝向控制 (LookAt target)
+            const lookTarget = trackCurve.getPointAt((coasterProgress + 0.01) % 1);
+            cart.lookAt(lookTarget);
+        });
+
+        // --- C. 纜車 (Cable Car) ---
+        // 位置：橫跨公園左右
+        const towerGeo = new THREE.CylinderGeometry(1, 2, 25, 4);
+        const towerMat = new THREE.MeshStandardMaterial({ color: 0x666666 });
+
+        // 左塔
+        const towerL = new THREE.Mesh(towerGeo, towerMat);
+        towerL.position.set(-radius * 0.8, 12.5, 0);
+        parkGroup.add(towerL);
+
+        // 右塔
+        const towerR = new THREE.Mesh(towerGeo, towerMat);
+        towerR.position.set(radius * 0.8, 12.5, 0);
+        parkGroup.add(towerR);
+
+        // 纜繩
+        const cableGeo = new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(-radius * 0.8, 24, 0),
+            new THREE.Vector3(radius * 0.8, 24, 0)
+        ]);
+        const cableMat = new THREE.LineBasicMaterial({ color: 0x000000, linewidth: 3 });
+        const cable = new THREE.Line(cableGeo, cableMat);
+        parkGroup.add(cable);
+
+        // 纜車車廂
+        const cableCarGeo = new THREE.BoxGeometry(3, 3, 2);
+        const cableCarMat = new THREE.MeshStandardMaterial({ color: 0xFFA500 }); // 橘色
+        const cableCar = new THREE.Mesh(cableCarGeo, cableCarMat);
+        parkGroup.add(cableCar);
+
+        // 掛勾
+        const hookGeo = new THREE.CylinderGeometry(0.1, 0.1, 3);
+        const hook = new THREE.Mesh(hookGeo, new THREE.MeshBasicMaterial({ color: 0x333333 }));
+        hook.position.y = 1.5;
+        cableCar.add(hook);
+
+        let cableCarDir = 1;
+        let cableCarPos = 0; // -1 to 1
+
+        updatables.push((dt) => {
+            const speed = 0.3;
+            cableCarPos += speed * dt * cableCarDir;
+
+            if (cableCarPos > 1) { cableCarPos = 1; cableCarDir = -1; }
+            if (cableCarPos < -1) { cableCarPos = -1; cableCarDir = 1; }
+
+            // 插值位置
+            const limit = radius * 0.8;
+            cableCar.position.set(cableCarPos * limit, 24 - 3, 0); // 纜繩高度減去掛勾長
+        });
+
+        return {
+            mesh: parkGroup,
+            update: (dt) => updatables.forEach(fn => fn(dt))
+        };
+    }
+
+    // 2. 城市生成主函式 (修正版：包含遊樂園與招牌)
     function generateCity(netData, seed) {
         // 清除舊城市與雲朵
         cityGroup.clear();
         cloudGroup.clear();
+
+        // ★★★ 新增：清除舊的動畫物件 ★★★
+        animatedCityObjects = [];
 
         const rng = new PseudoRandom(seed);
 
@@ -3736,10 +4085,9 @@ document.addEventListener('DOMContentLoaded', () => {
         function isPositionSafe(x, z, radius) {
             for (const poly of parkingPolygons) { if (Geom.Utils.isPointInPolygon({ x: x, y: z }, poly)) return false; }
             const cx = Math.floor(x / gridSize); const cz = Math.floor(z / gridSize);
-
-            // 檢查周圍網格
-            for (let i = -1; i <= 1; i++) {
-                for (let j = -1; j <= 1; j++) {
+            // 檢查範圍擴大一點，確保不會離路太近
+            for (let i = -2; i <= 2; i++) {
+                for (let j = -2; j <= 2; j++) {
                     const items = roadSpatialHash[`${cx + i},${cz + j}`];
                     if (!items) continue;
                     for (const item of items) {
@@ -3747,9 +4095,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             if (Math.hypot(x - item.x, z - item.z) < (item.r + radius)) return false;
                         } else if (item.type === 'segment') {
                             if (distToSegmentSquared(x, z, item.x1, item.z1, item.x2, item.z2) < (item.width + radius) ** 2) return false;
-                        } else if (item.type === 'custom_obstacle') {
-                            // ★ 新增：檢查自定義物件
-                            // 如果 (兩圓心距離 < 自定義物件半徑 + 建築半徑)，則判定為重疊
+                        } else if (item.type === 'custom_obstacle' || item.type === 'restricted_zone') {
                             if (Math.hypot(x - item.x, z - item.z) < (item.r + radius)) return false;
                         }
                     }
@@ -3758,7 +4104,59 @@ document.addEventListener('DOMContentLoaded', () => {
             return true;
         }
 
-        // --- 步驟 B: 生成資料 ---
+        // =================================================================
+        // ★★★ 新增：生成遊樂園 (Amusement Park) ★★★
+        // =================================================================
+        const PARK_RADIUS = 80; // 遊樂園佔地半徑
+        const TRY_COUNT = 50;   // 嘗試次數
+
+        let parkCreated = false;
+
+        // 取得地圖邊界 (避免生成在虛空)
+        const mapMinX = netData.bounds.minX !== Infinity ? netData.bounds.minX : -500;
+        const mapMaxX = netData.bounds.maxX !== -Infinity ? netData.bounds.maxX : 500;
+        const mapMinZ = netData.bounds.minY !== Infinity ? netData.bounds.minY : -500;
+        const mapMaxZ = netData.bounds.maxY !== -Infinity ? netData.bounds.maxY : 500;
+
+        for (let i = 0; i < TRY_COUNT; i++) {
+            // 隨機選點
+            const px = rng.range(mapMinX + PARK_RADIUS, mapMaxX - PARK_RADIUS);
+            const pz = rng.range(mapMinZ + PARK_RADIUS, mapMaxZ - PARK_RADIUS);
+
+            // 檢查是否安全 (需要更大的緩衝區，例如 PARK_RADIUS + 10)
+            if (isPositionSafe(px, pz, PARK_RADIUS + 10)) {
+                // 生成遊樂園物件
+                const parkObj = createAmusementPark(px, pz, PARK_RADIUS);
+
+                // 加入場景
+                cityGroup.add(parkObj.mesh);
+
+                // 加入動畫迴圈
+                animatedCityObjects.push(parkObj);
+
+                // 標記區域為禁區 (寫入 Hash)，防止後續建築生成在遊樂園裡
+                const gridSpan = Math.ceil(PARK_RADIUS / gridSize);
+                for (let gx = -gridSpan; gx <= gridSpan; gx++) {
+                    for (let gz = -gridSpan; gz <= gridSpan; gz++) {
+                        addToHash(px + gx * gridSize, pz + gz * gridSize, {
+                            type: 'restricted_zone',
+                            x: px,
+                            z: pz,
+                            r: PARK_RADIUS
+                        });
+                    }
+                }
+
+                console.log("Amusement Park generated at:", px, pz);
+                parkCreated = true;
+                break; // 只要一座
+            }
+        }
+
+        if (!parkCreated) console.log("Could not find space for Amusement Park.");
+
+
+        // --- 步驟 B: 生成建築資料 (維持原樣) ---
         Object.values(netData.links).forEach(link => {
             let roadWidth = 0; Object.values(link.lanes).forEach(l => roadWidth += l.width);
             const baseOffset = (roadWidth / 2) + 3.0;
@@ -3803,8 +4201,8 @@ document.addEventListener('DOMContentLoaded', () => {
                             const winRatio = rng.range(0.3, 0.7);
 
                             buildingsData.push({
-                                x: placeX, z: placeZ, y: finalH / 2,
-                                sx: w, sy: finalH, sz: d,
+                                x: placeX, z: placeZ, y: (finalH / 2) - 0.5,
+                                sx: w, sy: finalH + 1.0, sz: d,
                                 ry: -angle,
                                 color: rng.pick(urbanColors),
                                 winParams: { x: winDensity, y: winRatio }
@@ -3933,6 +4331,76 @@ document.addEventListener('DOMContentLoaded', () => {
         cloudGroup.add(cloudMesh);
 
         if (renderer) renderer.render(scene, camera);
+
+        // =================================================================
+        // [修正版] 步驟 D: 生成 3D 招牌 (Signs) (合併您的招牌邏輯)
+        // =================================================================
+        if (buildingsData.length > 0) {
+            const signGroup = new THREE.Group();
+            // 注意：這裡假設 generateSignMaterials() 已在外部定義 (請參照先前的對話)
+            const signMaterials = (typeof generateSignMaterials === 'function') ? generateSignMaterials() : { v: [], h: [] };
+
+            const geoVertical = new THREE.BoxGeometry(0.3, 4.0, 1.2);
+            const geoHorizontal = new THREE.BoxGeometry(4.0, 1.2, 0.2);
+            const dummyBuilding = new THREE.Object3D();
+            const dummySign = new THREE.Object3D();
+            dummyBuilding.add(dummySign);
+
+            buildingsData.forEach(bData => {
+                if (bData.sy < 8) return;
+                // 設定虛擬建築
+                dummyBuilding.position.set(bData.x, bData.y, bData.z);
+                dummyBuilding.rotation.y = bData.ry;
+                dummyBuilding.scale.set(1, 1, 1);
+                dummyBuilding.updateMatrixWorld();
+
+                const halfW = bData.sx / 2;
+                const halfH = bData.sy / 2;
+                const halfD = bData.sz / 2;
+                const choice = rng.next();
+
+                if (choice < 0.35 && signMaterials.h && signMaterials.h.length > 0) {
+                    // 英文橫式
+                    const mat = rng.pick(signMaterials.h);
+                    let targetY = -halfH + 12;
+                    const maxY = halfH - 0.6 - 0.2;
+                    targetY = Math.min(targetY, maxY);
+                    dummySign.position.set(0, targetY, -halfD - 0.15);
+                    dummySign.rotation.set(0, Math.PI, 0);
+                    dummySign.updateMatrixWorld();
+                    const mesh = new THREE.Mesh(geoHorizontal, mat);
+                    const scaleFactor = Math.min(1.0, (bData.sx * 0.8) / 4.0);
+                    mesh.scale.set(scaleFactor, scaleFactor, 1);
+                    const worldPos = new THREE.Vector3(); const worldQuat = new THREE.Quaternion(); const worldScale = new THREE.Vector3();
+                    dummySign.matrixWorld.decompose(worldPos, worldQuat, worldScale);
+                    mesh.position.copy(worldPos); mesh.quaternion.copy(worldQuat);
+                    mesh.castShadow = true;
+                    signGroup.add(mesh);
+                } else if (choice < 0.65 && bData.sy > 12 && signMaterials.v && signMaterials.v.length > 0) {
+                    // 中文豎式
+                    const mat = rng.pick(signMaterials.v);
+                    const isRight = rng.bool(0.5);
+                    const sideDir = isRight ? 1 : -1;
+                    let targetY = -halfH + 15;
+                    if ((targetY + 2.0) > halfH) targetY = halfH - 2.0 - 0.5;
+                    dummySign.position.set((halfW + 0.1) * sideDir, targetY, -halfD - 0.2);
+                    dummySign.rotation.set(0, -Math.PI / 2 * sideDir, 0);
+                    dummySign.updateMatrixWorld();
+                    const mesh = new THREE.Mesh(geoVertical, mat);
+                    const worldPos = new THREE.Vector3(); const worldQuat = new THREE.Quaternion(); const worldScale = new THREE.Vector3();
+                    dummySign.matrixWorld.decompose(worldPos, worldQuat, worldScale);
+                    mesh.position.copy(worldPos); mesh.quaternion.copy(worldQuat);
+                    mesh.castShadow = true;
+                    const bracketGeo = new THREE.CylinderGeometry(0.05, 0.05, 0.6);
+                    const bracketMat = new THREE.MeshStandardMaterial({ color: 0x333333 });
+                    const bracket = new THREE.Mesh(bracketGeo, bracketMat);
+                    bracket.rotation.z = Math.PI / 2; bracket.position.set(0, 0, -0.5);
+                    mesh.add(bracket);
+                    signGroup.add(mesh);
+                }
+            });
+            cityGroup.add(signGroup);
+        }
     }
 
     // ===================================================================
@@ -4073,14 +4541,20 @@ document.addEventListener('DOMContentLoaded', () => {
         const frameDt = Math.min((timestamp - lastTimestamp) / 1000.0, 0.05);
 
         if (isDisplay3D) {
-            // [新增] 如果開啟巡航，執行飛行邏輯
             if (isFlyoverActive) {
                 updateFlyoverCamera();
             } else if (isDroneActive) {
                 updateDroneCamera(frameDt);
             } else {
-                // 只有在非巡航模式下才更新控制器 (允許手動操作)
                 controls.update();
+            }
+
+            // ★★★ [新增] 更新城市動畫物件 (摩天輪、雲霄飛車等) ★★★
+            // 只有在 3D 模式下才計算動畫，節省效能
+            if (animatedCityObjects.length > 0) {
+                animatedCityObjects.forEach(obj => {
+                    if (obj.update) obj.update(frameDt);
+                });
             }
         }
 
