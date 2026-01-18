@@ -4,8 +4,12 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- I18N Setup ---
     const translations = {
         'zh-Hant': {
-            appTitle: '路網微觀交通模擬 (2D/3D)',
-            selectFileLabel: '選擇路網檔案：',
+            appTitle: 'TwinTraffic Pro',
+            selectFileLabel: '路網檔案',
+            // --- 新增/更新以下兩行 ---
+            loadSceneLabel: '場景',
+            canvasPlaceholder: '請從上方載入路網檔案開始模擬',
+            // -----------------------
             viewModeLabel: '3D 模式:',
             displayStats: '統計',
             display2D: '2D',
@@ -50,11 +54,18 @@ document.addEventListener('DOMContentLoaded', () => {
             layerBoth: '建築 + 底圖',
             layerBuildings: '僅建築',
             layerBasemap: '僅底圖',
-            layerNone: '均無'
+            layerNone: '均無',
+            lblPoint: '定點',    // 或 'Point'
+            lblSection: '區間',  // 或 'Section'
+            lblDetector: '偵測器' // 或 'Detectors'
         },
         'en': {
             appTitle: 'simTrafficFlow (2D/3D)',
             selectFileLabel: 'Select Network File:',
+            // --- 新增/更新以下兩行 ---
+            loadSceneLabel: 'Scene',
+            canvasPlaceholder: 'Please load a network file from above to start.',
+            // -----------------------
             viewModeLabel: '3D Mode:',
             displayStats: 'Stats',
             display2D: '2D',
@@ -100,6 +111,12 @@ document.addEventListener('DOMContentLoaded', () => {
             layerBuildings: 'Buildings Only',
             layerBasemap: 'Basemap Only',
             layerNone: 'None',
+            lblLights: 'Lights',
+            lblFlyover: 'Flyover',
+            lblDrone: 'Drone',
+            lblPoint: 'Point',
+            lblSection: 'Section',
+            lblDetector: 'Detector'
         }
     };
 
@@ -135,7 +152,6 @@ document.addEventListener('DOMContentLoaded', () => {
             setupSectionMeterCharts(networkData.sectionMeters);
             statsData.forEach(data => updateStatsUI(data, true));
         }
-        document.getElementById('placeholder-text').textContent = dict.canvasPlaceholder;
 
         const pegman = document.getElementById('pegman-icon');
         if (pegman) pegman.title = dict.dragPegmanHint;
@@ -230,7 +246,6 @@ document.addEventListener('DOMContentLoaded', () => {
         if (syncRotationContainer && syncRotationToggle) {
             syncRotationContainer.style.display = isSplit ? 'flex' : 'none';
 
-            // Only apply defaults when entering split mode.
             if (isSplit && !wasSplitActive) {
                 syncRotationToggle.checked = true;
                 isRotationSyncEnabled = true;
@@ -238,7 +253,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 has3DHeadingChangedSinceSplit = false;
             }
 
-            // Leaving split mode: disable sync, and reset internal tracking.
             if (!isSplit && wasSplitActive) {
                 isRotationSyncEnabled = false;
                 has3DHeadingChangedSinceSplit = false;
@@ -271,8 +285,6 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!isRotationSyncEnabled) {
                 viewRotation2D = initialViewRotation2D;
             } else {
-                // Keep 2D aligned with load-time orientation until 3D heading changes.
-                // (Sync becomes effective after the 3D camera has actually rotated.)
                 sync2DRotationFrom3D();
             }
         }
@@ -280,13 +292,24 @@ document.addEventListener('DOMContentLoaded', () => {
         wasSplitActive = isSplit;
 
         updateDisplayButtons();
-        onWindowResize();
+
+        // --- 關鍵修改：強制觸發 Resize 以更新畫布大小 ---
+        requestAnimationFrame(() => {
+            onWindowResize();
+        });
 
         if (isDisplay2D && !isRunning) redraw2D();
+
+        // --- 關鍵修改：若進入 3D 模式且迴圈未啟動，立即啟動迴圈 ---
         if (isDisplay3D) {
             update3DVisibility();
             updateLayerVisibility();
-            if (renderer && scene && camera) renderer.render(scene, camera);
+
+            // 確保 OrbitControls 等待更新，即使模擬暫停
+            if (!animationFrameId) {
+                lastTimestamp = performance.now();
+                animationFrameId = requestAnimationFrame(simulationLoop);
+            }
         }
     }
 
@@ -829,7 +852,25 @@ document.addEventListener('DOMContentLoaded', () => {
     init3D();
     resizeCanvas2D();
     createPegmanUI();
+
+    // ★★★ [新增] 自動偵測系統語言邏輯 ★★★
+    const browserLang = navigator.language || navigator.userLanguage;
+    // 判斷邏輯：只要開頭是 'zh' (包含 zh-TW, zh-CN, zh-HK, zh-SG) 都設為中文，否則英文
+    if (browserLang && browserLang.toLowerCase().startsWith('zh')) {
+        currentLang = 'zh-Hant';
+    } else {
+        currentLang = 'en';
+    }
+
+    // 同步更新下拉選單的顯示狀態
+    if (langSelector) {
+        langSelector.value = currentLang;
+    }
+
+    // 套用語言
     setLanguage(currentLang);
+    // ★★★ 結束 ★★★
+
     applyDisplayState();
     startStopButton.disabled = true;
 
@@ -1958,12 +1999,19 @@ document.addEventListener('DOMContentLoaded', () => {
     function onWindowResize() {
         resizeCanvas2D();
 
-        if (camera && renderer) {
+        if (camera && renderer && container3D) {
+            // 確保取得正確的容器寬高
             const w = Math.max(1, container3D.clientWidth);
             const h = Math.max(1, container3D.clientHeight);
+
             camera.aspect = w / h;
             camera.updateProjectionMatrix();
             renderer.setSize(w, h);
+
+            // --- 關鍵修改：Resize 後立即重繪一幀，避免閃爍或黑屏 ---
+            if (isDisplay3D && !isRunning) {
+                renderer.render(scene, camera);
+            }
         }
     }
 
@@ -2919,9 +2967,18 @@ document.addEventListener('DOMContentLoaded', () => {
     function updateLayerVisibility() {
         const mode = layerSelector.value;
 
+        // 判斷是否應該顯示建築
+        const showBuildings = (mode === 'both' || mode === 'buildings');
+
         // 控制建築 (City)
         if (cityGroup) {
-            cityGroup.visible = (mode === 'both' || mode === 'buildings');
+            cityGroup.visible = showBuildings;
+        }
+
+        // ★★★ [新增] 控制雲朵 (Cloud) ★★★
+        // 邏輯：雲朵的可見性與建築同步 (有建築才有雲)
+        if (cloudGroup) {
+            cloudGroup.visible = showBuildings;
         }
 
         // 控制底圖 (Basemap)
@@ -4484,6 +4541,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 updateStatistics(0);
                 lastLoggedIntegerTime = 0;
 
+                // --- 關鍵修改：載入完成後，若有 3D 則啟動迴圈 ---
+                if (isDisplay3D) {
+                    update3DScene();
+                    if (!animationFrameId) {
+                        lastTimestamp = performance.now();
+                        animationFrameId = requestAnimationFrame(simulationLoop);
+                    }
+                }
+
             }).catch(error => {
                 console.error("Error parsing model:", error);
                 alert(translations[currentLang].alertLoadError);
@@ -4612,6 +4678,9 @@ document.addEventListener('DOMContentLoaded', () => {
             update3DScene();
         }
 
+        // --- 關鍵確認：停止條件 ---
+        // 只有當「沒在跑模擬」且「沒顯示3D」時，才真正停止迴圈
+        // 這樣可以保證暫停時，3D 視角(OrbitControls)依然可以操作
         if (!isRunning && !isDisplay3D) {
             if (animationFrameId) {
                 cancelAnimationFrame(animationFrameId);
