@@ -1,399 +1,760 @@
-/* style01.css (更新部分) */
+/* =========================================
+   Style01.css (完整版)
+   ========================================= */
 
-/* ... (保留原有的 body, header, title-bar, h1 樣式) ... */
+/* --- 1. 全域變數定義 (Theme Variables) --- */
+:root {
+    /* 色彩系統 (Slate & Blue Theme) */
+    --bg-dark: #1e293b;
+    /* 導航列深色背景 */
+    --bg-light: #ffffff;
+    /* 工具列與面板背景 */
+    --bg-canvas: #e2e8f0;
+    /* 畫布背景區 (淺灰) */
+
+    --primary: #3b82f6;
+    /* 主題藍色 */
+    --primary-hover: #2563eb;
+    --accent: #06b6d4;
+    /* 強調色 (Cyan) */
+    --success: #10b981;
+    /* 綠色 (播放) */
+    --danger: #ef4444;
+    /* 紅色 (Live 標籤) */
+
+    --text-main: #334155;
+    /* 主要文字 */
+    --text-muted: #64748b;
+    /* 次要文字 */
+    --text-inv: #f8fafc;
+    /* 反白文字 */
+
+    --border: #cbd5e1;
+    /* 一般邊框 */
+    --border-light: #e2e8f0;
+    /* 淺色邊框 */
+
+    /* 尺寸定義 */
+    --h-nav: 50px;
+    /* 頂部導航高度 */
+    --h-toolbar: 52px;
+    /* 工具列高度 */
+    --w-sidebar: 340px;
+    /* 側邊欄寬度 */
+}
+
+/* --- 2. 基礎重置 (Reset & Base) --- */
+* {
+    box-sizing: border-box;
+}
 
 body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     margin: 0;
     padding: 0;
-    background-color: #f0f2f5;
-    color: #333;
+    background-color: var(--bg-canvas);
+    color: var(--text-main);
+    height: 100vh;
+    /* 佔滿視窗高度 */
     display: flex;
     flex-direction: column;
-    height: 100vh;
+    overflow: hidden;
+    /* 防止 Body 捲動 */
+}
+
+/* --- 3. 頂部導航列 (Navbar - Dark) --- */
+.app-navbar {
+    height: var(--h-nav);
+    background-color: var(--bg-dark);
+    color: var(--text-inv);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 16px;
+    z-index: 20;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    flex-shrink: 0;
+}
+
+.brand-section {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.logo-icon {
+    font-size: 1.2rem;
+    color: var(--accent);
+}
+
+.brand-text h1 {
+    margin: 0;
+    font-size: 1.1rem;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    display: inline;
+}
+
+.version-tag {
+    background: #475569;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    margin-left: 6px;
+    font-weight: 700;
+}
+
+.global-controls {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+
+.separator {
+    width: 1px;
+    height: 24px;
+    background: rgba(255, 255, 255, 0.2);
+    margin: 0 5px;
+}
+
+/* 檔案按鈕樣式 (隱藏原始 input) */
+input[type="file"] {
+    display: none;
+}
+
+.control-group.file-inputs {
+    display: flex;
+    gap: 8px;
+}
+
+.btn-input {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 12px;
+    border-radius: 4px;
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: all 0.2s;
+    user-select: none;
+}
+
+.btn-input.primary {
+    background: var(--primary);
+    color: white;
+}
+
+.btn-input.primary:hover {
+    background: var(--primary-hover);
+}
+
+.btn-input.secondary {
+    background: rgba(255, 255, 255, 0.1);
+    color: #ddd;
+}
+
+.btn-input.secondary:hover {
+    background: rgba(255, 255, 255, 0.2);
+    color: white;
+}
+
+.seed-settings {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.85rem;
+}
+
+.input-with-action {
+    display: flex;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: 4px;
     overflow: hidden;
 }
 
-header {
-    background-color: #ffffff;
-    padding: 15px 30px;
-    border-bottom: 1px solid #ddd;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+.input-with-action input {
+    background: transparent;
+    border: none;
+    color: white;
+    width: 60px;
+    padding: 4px;
+    text-align: center;
+    font-family: 'Roboto Mono', monospace;
+}
+
+.input-with-action button {
+    background: rgba(255, 255, 255, 0.1);
+    border: none;
+    border-left: 1px solid rgba(255, 255, 255, 0.3);
+    color: #ccc;
+    cursor: pointer;
+    padding: 0 8px;
+    display: flex;
+    align-items: center;
+}
+
+.input-with-action button:hover {
+    background: rgba(255, 255, 255, 0.2);
+    color: white;
+}
+
+.dropdown-dark {
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    color: white;
+    padding: 4px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+/* --- 4. 工具列 (Toolbar - Light) --- */
+.app-toolbar {
+    height: var(--h-toolbar);
+    background-color: var(--bg-light);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 16px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
     z-index: 10;
     flex-shrink: 0;
 }
 
-.title-bar {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 10px;
-}
-
-h1 {
-    margin: 0;
-    font-size: 1.5em;
-    color: #0056b3;
-}
-
-.simulation-controls {
+.toolbar-section {
     display: flex;
     align-items: center;
-    gap: 20px;
-    margin-top: 10px;
-    padding-top: 10px;
-    border-top: 1px solid #eee;
-    flex-wrap: wrap;
-    row-gap: 10px;
+    gap: 16px;
+    /* 群組間的間隙 */
 }
 
-.multi-toggle {
-    display: inline-flex;
-    border: 1px solid #cfd7e3;
-    border-radius: 12px;
-    overflow: hidden;
-    background: #ffffff;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+/* 垂直分隔線 */
+.divider-v {
+    width: 1px;
+    height: 24px;
+    background-color: var(--border);
+    margin: 0 6px;
 }
 
-.multi-toggle-btn {
-    position: relative;
-    display: inline-flex;
+/* 播放控制 */
+.play-btn {
+    display: flex;
     align-items: center;
-    padding: 8px 12px 8px 36px;
+    justify-content: center;
+    gap: 8px;
+    background: var(--success);
+    color: white;
+    border: none;
+    padding: 6px 16px;
+    border-radius: 20px;
+    /* 藥丸形狀 */
+    font-weight: 500;
+    cursor: pointer;
+    min-width: 100px;
+    transition: 0.2s;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+.play-btn:hover:not(:disabled) {
+    transform: translateY(-1px);
+    filter: brightness(1.05);
+}
+
+.play-btn:disabled {
+    background: #94a3b8;
+    cursor: not-allowed;
+    opacity: 0.8;
+}
+
+.slider-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* 縮短滑桿 */
+#speedSlider {
+    width: 80px;
+    cursor: pointer;
+    accent-color: var(--primary);
+}
+
+.icon-muted {
+    color: #94a3b8;
+    font-size: 0.9rem;
+}
+
+.value-badge {
+    font-size: 0.8rem;
+    background: #f1f5f9;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: 600;
+    color: var(--text-main);
+    min-width: 30px;
+    text-align: center;
+}
+
+/* 時間顯示 */
+.time-display {
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+    background: #eff6ff;
+    padding: 4px 10px;
+    border-radius: 6px;
+    border: 1px solid #dbeafe;
+    color: var(--primary);
+}
+
+.time-display .label {
+    font-size: 0.7rem;
+    font-weight: 700;
+    opacity: 0.8;
+}
+
+.time-display .time-value {
+    font-family: 'Roboto Mono', monospace;
+    font-weight: 700;
+    font-size: 1rem;
+}
+
+.time-display .unit {
+    font-size: 0.8rem;
+}
+
+/* 視圖切換按鈕 (Segmented Control) */
+.segment-control {
+    display: flex;
+    background: #f1f5f9;
+    padding: 3px;
+    border-radius: 6px;
+    border: 1px solid #e2e8f0;
+}
+
+.segment-btn {
     border: none;
     background: transparent;
-    color: #2c3e50;
-    cursor: pointer;
-    font-size: 0.95em;
-    line-height: 1;
-    transition: background-color 0.15s ease, color 0.15s ease;
-    white-space: nowrap;
-}
-
-.multi-toggle-btn::before {
-    content: "";
-    position: absolute;
-    left: 12px;
-    top: 50%;
-    width: 14px;
-    height: 14px;
-    transform: translateY(-50%);
-    border: 2px solid #9aa8b6;
+    padding: 5px 12px;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    font-weight: 500;
     border-radius: 4px;
-    background: #ffffff;
-    box-sizing: border-box;
-}
-
-.multi-toggle-btn::after {
-    content: "";
-    position: absolute;
-    left: 16px;
-    top: 50%;
-    width: 8px;
-    height: 4px;
-    transform: translateY(-60%) rotate(-45deg);
-    border-left: 2px solid transparent;
-    border-bottom: 2px solid transparent;
-    opacity: 0;
-}
-
-.multi-toggle-btn + .multi-toggle-btn {
-    border-left: 1px solid #cfd7e3;
-}
-
-.multi-toggle-btn.is-active {
-    background: #e7f1ff;
-    color: #0b5ed7;
-}
-
-.multi-toggle-btn.is-active::before {
-    border-color: #0d6efd;
-    background: #0d6efd;
-}
-
-.multi-toggle-btn.is-active::after {
-    border-left-color: #ffffff;
-    border-bottom-color: #ffffff;
-    opacity: 1;
-}
-
-.multi-toggle-btn:disabled {
-    cursor: not-allowed;
-    opacity: 0.6;
-}
-
-.simulation-controls > button {
-    padding: 8px 15px;
-    font-size: 1em;
-    border: none;
-    border-radius: 5px;
-    background-color: #007bff;
-    color: white;
     cursor: pointer;
-    transition: background-color 0.2s;
-    white-space: nowrap;
+    transition: 0.2s;
 }
 
-.simulation-controls > button:disabled {
-    background-color: #aaa;
-    cursor: not-allowed;
+.segment-btn.is-active {
+    background: white;
+    color: var(--primary);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+    font-weight: 600;
 }
 
-.simulation-controls > button:hover:not(:disabled) {
-    background-color: #0056b3;
+/* 同步旋轉開關 */
+.icon-toggle input {
+    display: none;
 }
 
-.slider-container {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex-wrap: wrap;
-}
-
-#speedSlider {
-    width: 150px;
-}
-
-.slider-container label, .toggle-container .switch-label {
-    font-weight: bold;
-    font-size: 0.9em;
-    white-space: nowrap;
-}
-
-.time-display {
-    font-weight: bold;
-    font-size: 0.9em;
-    min-width: 160px; 
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
+.icon-toggle label {
+    cursor: pointer;
+    color: #cbd5e1;
+    font-size: 1.1rem;
+    padding: 5px;
+    transition: color 0.2s;
     display: flex;
     align-items: center;
 }
 
-#simulationTime {
-    font-family: "Consolas", "Monaco", "Courier New", monospace;
-    display: inline-block;
-    min-width: 60px; 
-    text-align: right;
-    margin-right: 3px;
+.icon-toggle label:hover {
+    color: var(--text-muted);
 }
 
+.icon-toggle input:checked+label {
+    color: var(--primary);
+}
+
+/* 圖層控制 */
+.dropdown-light {
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px;
+    color: var(--text-main);
+    font-size: 0.85rem;
+    background-color: white;
+}
+
+.toggles-row {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+}
+
+.mini-switch {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    color: var(--text-muted);
+    user-select: none;
+    white-space: nowrap;
+    /* 強制不換行 */
+    align-items: center;
+}
+
+.mini-switch:hover {
+    color: var(--text-main);
+}
+
+.mini-switch input {
+    accent-color: var(--primary);
+    margin: 0;
+}
+
+/* --- 5. 主內容佈局 (Main Layout) --- */
 main#main-content {
-    flex-grow: 1;
+    flex: 1;
+    /* 佔滿剩餘高度 */
     display: flex;
+    flex-direction: row;
     overflow: hidden;
+    position: relative;
 }
 
+/* 左側統計面板 */
 #stats-panel {
-    width: 350px;
-    flex-shrink: 0;
-    background-color: #f8f9fa;
-    border-right: 1px solid #ddd;
-    padding: 20px;
-    overflow-y: auto;
+    width: var(--w-sidebar);
+    background: #f8fafc;
+    border-right: 1px solid var(--border);
     display: flex;
     flex-direction: column;
-    gap: 15px;
+    flex-shrink: 0;
+    transition: transform 0.3s ease;
+    z-index: 5;
 }
 
+/* JS 控制隱藏時使用 */
 #stats-panel.is-hidden {
     display: none;
 }
 
-#stats-panel h2 {
-    margin-top: 0;
-    color: #0056b3;
-    text-align: center;
-    border-bottom: 2px solid #eee;
-    padding-bottom: 10px;
+.panel-header {
+    padding: 10px 15px;
+    border-bottom: 1px solid var(--border-light);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: white;
 }
 
-#stats-panel h3 {
-    margin-top: 10px;
-    margin-bottom: 10px;
-    font-size: 1em;
-    color: #333;
+.panel-header h2 {
+    margin: 0;
+    font-size: 0.95rem;
+    color: var(--text-main);
 }
 
-.chart-container {
-    position: relative;
-    height: 250px; 
-    width: 100%;
-    background: #fff;
-    padding: 10px;
-    border-radius: 5px;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+.live-badge {
+    font-size: 0.65rem;
+    background: var(--danger);
+    color: white;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: 700;
+    animation: blink 2s infinite;
 }
 
-#meter-charts-container, #section-meter-charts-container {
+@keyframes blink {
+    50% {
+        opacity: 0.5;
+    }
+}
+
+.panel-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 15px;
     display: flex;
     flex-direction: column;
     gap: 15px;
 }
 
-#stats-table-container {
-    flex-grow: 1;
-    overflow-y: auto;
-    background: #fff;
-    border: 1px solid #eee;
-    border-radius: 5px;
-    padding: 5px;
+/* 統計卡片樣式 */
+.chart-card,
+.table-card {
+    background: white;
+    border: 1px solid var(--border-light);
+    border-radius: 8px;
+    padding: 12px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
 }
 
-#stats-table-container table {
+.chart-card h3,
+.table-card h3 {
+    margin: 0 0 10px 0;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+}
+
+.chart-box {
+    height: 140px;
+    width: 100%;
+    position: relative;
+}
+
+/* 表格樣式 */
+.table-wrapper {
+    max-height: 250px;
+    overflow-y: auto;
+    border-top: 1px solid #f1f5f9;
+}
+
+table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 0.9em;
+    font-size: 0.75rem;
 }
 
-#stats-table-container th, #stats-table-container td {
-    padding: 8px;
+th {
     text-align: right;
-    border-bottom: 1px solid #eee;
-}
-
-#stats-table-container th {
-    background-color: #f0f2f5;
+    padding: 8px;
     position: sticky;
     top: 0;
+    background: #f8fafc;
+    color: var(--text-muted);
+    font-weight: 600;
+    z-index: 2;
 }
 
-#stats-table-container tbody tr:nth-child(even) {
-    background-color: #f9f9f9;
+td {
+    text-align: right;
+    padding: 6px 8px;
+    border-bottom: 1px solid #f1f5f9;
+    font-family: 'Roboto Mono', monospace;
 }
 
-/* 畫布容器與顯示模式 */
+/* --- 6. 右側畫布容器 (關鍵佈局) --- */
 #canvas-container {
-    flex-grow: 1;
+    flex: 1;
+    /* 填滿剩餘空間 */
     display: flex;
-    position: relative;
-    background-color: #ffffff;
+    /* 啟動 Flexbox */
     overflow: hidden;
-}
-
-#canvas-container.is-split {
-    gap: 0;
-}
-
-#canvas-container.is-split #networkCanvas,
-#canvas-container.is-split #threejs-container {
-    flex: 0 0 50%;
-    width: 50%;
-}
-
-#networkCanvas {
-    display: block;
-    cursor: grab;
+    position: relative;
+    background: var(--bg-canvas);
     width: 100%;
-    height: 100%;
-    flex: 1 1 0;
+    /* 確保寬度佔滿 */
 }
 
-#networkCanvas:active {
-    cursor: grabbing;
-}
-
+/* 2D 和 3D 容器的共同樣式 */
+#networkCanvas,
 #threejs-container {
-    display: none; /* 預設隱藏 */
-    width: 100%;
-    height: 100%;
+    /* Flex 屬性詳解：
+       Grow=1, Shrink=1, Basis=0
+       Basis=0 確保當兩者都存在時，忽略內容寬度，嚴格按比例均分 (1:1)
+    */
     flex: 1 1 0;
+
+    /* 強制 Canvas 允許縮小，不會被內部內容撐開 */
+    min-width: 0;
+
+    height: 100% !important;
+    display: block;
+    outline: none;
+    position: relative;
 }
 
-/* Toggle Switch Styles */
-.toggle-container {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-shrink: 0; 
-}
-.switch {
-  position: relative;
-  display: inline-block;
-  width: 50px;
-  height: 28px;
-  flex-shrink: 0;
-}
-.switch input { 
-  opacity: 0;
-  width: 0;
-  height: 0;
-}
-.slider {
-  position: absolute;
-  cursor: pointer;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: #ccc;
-  transition: .4s;
-}
-.slider:before {
-  position: absolute;
-  content: "";
-  height: 20px;
-  width: 20px;
-  left: 4px;
-  bottom: 4px;
-  background-color: white;
-  transition: .4s;
-}
-input:checked + .slider {
-  background-color: #2196F3;
-}
-input:focus + .slider {
-  box-shadow: 0 0 1px #2196F3;
-}
-input:checked + .slider:before {
-  transform: translateX(22px);
-}
-.slider.round {
-  border-radius: 28px;
-}
-.slider.round:before {
-  border-radius: 50%;
+/* 為 2D 畫布添加右邊框，區隔 3D 視窗 */
+#networkCanvas {
+    border-right: 1px solid var(--border);
 }
 
-.controls {
+/* 附註：
+   當 JS 將其中一個設為 display: none 時，
+   另一個元素的 flex: 1 會讓它自動佔滿 100% 空間。
+*/
+
+/* 載入前的空狀態提示 */
+#placeholder-text {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
     display: flex;
     align-items: center;
-    gap: 15px;
-    flex-wrap: wrap;
-    justify-content: flex-end;
+    justify-content: center;
+    background: var(--bg-canvas);
+    z-index: 0;
+    /* 位於 Canvas 後方 */
+    pointer-events: none;
 }
 
-.lang-switcher select, #viewModeSelector {
-    padding: 5px;
-    border-radius: 4px;
-    border: 1px solid #ccc;
-    background-color: #fff;
-    font-size: 0.9em;
+.empty-state-content {
+    text-align: center;
+    color: #94a3b8;
 }
 
-@media (max-width: 900px) {
-    header {
-        padding: 12px 16px;
-    }
+.empty-state-content i {
+    font-size: 3rem;
+    margin-bottom: 15px;
+    opacity: 0.5;
+}
 
-    h1 {
-        font-size: 1.25em;
-    }
+.empty-state-content p {
+    font-size: 1rem;
+    font-weight: 500;
+}
 
-    .simulation-controls {
-        gap: 12px;
+/* --- 7. RWD 響應式調整 --- */
+@media (max-width: 1024px) {
+
+    /* 平板模式：隱藏部分文字標籤 */
+    .view-controls .segment-btn {
+        padding: 5px 8px;
     }
 }
 
-@media (max-width: 600px) {
-    #speedSlider {
-        width: 120px;
+@media (max-width: 768px) {
+
+    /* 手機模式：調整版面 */
+    .app-navbar {
+        padding: 0 10px;
     }
 
-    .time-display {
-        min-width: auto;
-        white-space: normal;
+    .brand-text,
+    .version-tag {
+        display: none;
     }
+
+    /* 隱藏標題文字省空間 */
+
+    .app-toolbar {
+        height: auto;
+        flex-wrap: wrap;
+        padding: 10px;
+        gap: 10px;
+    }
+
+    .toolbar-section {
+        flex: 1 1 auto;
+        /* 自動換行並填滿 */
+        justify-content: center;
+    }
+
+    .divider-v {
+        display: none;
+    }
+
+    /* 手機版不需要分隔線 */
+
+    /* 側邊欄改為覆蓋式 (Overlay) */
+    #stats-panel {
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        z-index: 50;
+        transform: translateX(-100%);
+        box-shadow: 2px 0 10px rgba(0, 0, 0, 0.1);
+    }
+
+    #stats-panel.is-active {
+        transform: translateX(0);
+    }
+}
+
+/* --- 新增：工具列按鈕文字堆疊樣式 --- */
+.label-stack {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    line-height: 1;
+    /* 緊湊行距 */
+    margin-left: 2px;
+}
+
+.label-stack .main-text {
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--text-main);
+}
+
+.label-stack .sub-text {
+    font-size: 0.6rem;
+    /* 小字 */
+    color: var(--text-muted);
+    transform: scale(0.9);
+    /* 稍微再縮小一點 */
+    transform-origin: left center;
+    white-space: nowrap;
+}
+
+/* --- 偵測器群組樣式 (共用標籤) --- */
+.detector-group {
+    position: relative; /* 作為絕對定位子元素的參考點 */
+    display: flex;
+    align-items: center; /* 讓內部的 switch-pair 垂直置中 */
+    /* 
+       重要：不設定高度或讓它自然撐開，
+       這樣它在父層 (.toggles-row) 中就會被視為與一般按鈕一樣高的物件
+    */
+}
+
+.switch-pair {
+    display: flex;
+    gap: 12px; /* 兩個開關之間的間距 */
+    /* 
+       這裡不需要額外的 margin-bottom，
+       確保它的中心點與左側的「無人機」按鈕中心點一致 
+    */
+}
+
+/* 1. 上方的開關文字 (定點、區間) */
+.tiny-switch {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.8rem;
+    font-weight: 400; /* [修改] 從 500 改為 400，去除粗體效果 */
+    cursor: pointer;
+    color: var(--text-muted);
+    user-select: none;
+    transition: color 0.2s;
+}
+
+/* 滑鼠滑過時變色 */
+.tiny-switch:hover {
+    color: var(--text-main);
+}
+
+/* 2. 下方的標籤文字 (偵測器) */
+.group-caption {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 100%;
+    
+    /* [修改] margin-top:
+       原本是 -6px (很貼)，
+       現在改為 -2px (微小下移 4px)，讓它與上方按鈕保持一點距離 
+    */
+    margin-top: -2px; 
+    
+    text-align: center;
+    font-size: 0.6rem;
+    color: var(--text-muted);
+    opacity: 0.8;
+    white-space: nowrap;
+    letter-spacing: 0.5px;
+    pointer-events: none;
+}
+
+.tiny-switch input {
+    margin: 0;
+    accent-color: var(--primary);
+    cursor: pointer;
 }
