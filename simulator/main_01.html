@@ -4,168 +4,232 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title data-i18n="appTitle">路網微觀交通模擬 (2D/3D)</title>
+    <title data-i18n="appTitle">simTrafficFlow | 路網微觀交通模擬</title>
+
+    <!-- 引入字型與圖標 -->
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Roboto+Mono:wght@500&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
     <link rel="stylesheet" href="style01.css">
 
-    <!-- 1. 引入 Chart.js -->
+    <!-- 函式庫 -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-
-    <!-- 2. 引入 Three.js (r147) -->
     <script src="https://unpkg.com/three@0.147.0/build/three.min.js"></script>
-    <!-- [新增] 引入 GLTFLoader 以讀取 GLB 模型 -->
     <script src="https://unpkg.com/three@0.147.0/examples/js/loaders/GLTFLoader.js"></script>
-    <!-- 3. 引入 OrbitControls -->
     <script src="https://unpkg.com/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
 </head>
 
 <body>
-    <header>
-        <div class="title-bar">
-            <h1 data-i18n="appTitle">路網微觀交通模擬 (2D/3D)</h1>
-            <div class="controls">
-                <label for="xmlFileInput" data-i18n="selectFileLabel">選擇路網檔案：</label>
-                <input type="file" id="xmlFileInput" accept=".sim,.xml">
-
-                <!-- [新增] 選擇場景 XML 按鈕 -->
-                <label for="sceneFileInput" style="margin-left:15px; font-weight:bold; color:#2980b9;">匯入場景 XML：</label>
-                <input type="file" id="sceneFileInput" accept=".xml">
-                <div class="seed-container" style="display:flex; align-items:center; gap:5px; margin-left:10px;">
-                    <label for="citySeedInput" style="font-size:0.9em; font-weight:bold;">City Seed:</label>
-                    <input type="number" id="citySeedInput" value="12345" style="width:70px; padding:3px;">
-                    <button id="regenCityBtn" style="padding:3px 8px; font-size:0.8em; cursor:pointer;">生成</button>
-                </div>
-
-                <div class="lang-switcher">
-                    <label for="langSelector">language:</label>
-                    <select id="langSelector">
-                        <option value="zh-Hant">繁體中文</option>
-                        <option value="en">English</option>
-                    </select>
-                </div>
+    <!-- 1. 頂部導航：品牌 + 檔案與全域設定 -->
+    <nav class="app-navbar">
+        <div class="brand-section">
+            <div class="logo-icon"><i class="fa-solid fa-road"></i></div>
+            <div class="brand-text">
+                <h1>simTrafficFlow 路網微觀交通模擬</h1>
+                <span class="version-tag">Simulator</span>
             </div>
         </div>
-        <div class="simulation-controls">
-            <button id="startStopButton">請先載入檔案</button>
-            <div id="displayModeToggle" class="multi-toggle" role="group" aria-label="Display">
-                <button type="button" id="displayStatsBtn" class="multi-toggle-btn is-active" aria-pressed="true"
-                    data-mode="stats" data-i18n="displayStats">統計</button>
-                <button type="button" id="display2DBtn" class="multi-toggle-btn is-active" aria-pressed="true"
-                    data-mode="2d" data-i18n="display2D">2D</button>
-                <button type="button" id="display3DBtn" class="multi-toggle-btn" aria-pressed="false" data-mode="3d"
-                    data-i18n="display3D">3D</button>
-            </div>
 
-            <div id="syncRotationContainer" class="toggle-container" style="display:none;">
-                <label class="switch-label" for="syncRotationToggle" data-i18n="syncRotateLabel">2D 同步3D旋轉:</label>
-                <label class="switch">
-                    <input type="checkbox" id="syncRotationToggle" checked>
-                    <span class="slider round"></span>
+        <div class="global-controls">
+            <!-- 檔案讀取群組 -->
+            <div class="control-group file-inputs">
+                <label class="btn-input primary" title="載入路網 (.xml/.sim)">
+                    <i class="fa-regular fa-folder-open"></i>
+                    <span data-i18n="selectFileLabel">路網</span>
+                    <input type="file" id="xmlFileInput" accept=".sim,.xml">
+                </label>
+
+                <!-- 修正後：只有一層 label -->
+                <label class="btn-input secondary" title="Load Scene (.xml)">
+                    <i class="fa-solid fa-cube"></i>
+                    <span data-i18n="loadSceneLabel">場景</span>
+                    <input type="file" id="sceneFileInput" accept=".xml">
                 </label>
             </div>
 
-            <div class="slider-container">
-                <label for="speedSlider" data-i18n="simSpeedLabel">模擬速度:</label>
+            <div class="separator"></div>
+
+            <!-- Seed 設定 -->
+            <div class="control-group seed-settings">
+                <label for="citySeedInput">Seed:</label>
+                <div class="input-with-action">
+                    <input type="number" id="citySeedInput" value="12345">
+                    <button id="regenCityBtn" title="重新生成"><i class="fa-solid fa-rotate"></i></button>
+                </div>
+            </div>
+
+            <!-- 語言 -->
+            <div class="control-group">
+                <select id="langSelector" class="dropdown-dark">
+                    <option value="zh-Hant">繁體中文</option>
+                    <option value="en">English</option>
+                </select>
+            </div>
+        </div>
+    </nav>
+
+    <!-- 2. 工具列：模擬控制、視角、圖層 -->
+    <div class="app-toolbar">
+        <!-- 左：播放與時間 -->
+        <div class="toolbar-section playback-controls">
+            <button id="startStopButton" class="play-btn" disabled>
+                <i class="fa-solid fa-play"></i>
+                <span class="btn-text">載入中</span>
+            </button>
+
+            <div class="slider-wrapper">
+                <i class="fa-solid fa-gauge-high icon-muted"></i>
                 <input type="range" id="speedSlider" min="1" max="50" value="3">
-                <span id="speedValue">3x</span>
+                <span id="speedValue" class="value-badge">3x</span>
             </div>
 
             <div class="time-display">
-                <span data-i18n="simTimeLabel">模擬時間:</span> <span id="simulationTime">0.00</span>s
+                <span class="label" data-i18n="simTimeLabel">TIME</span>
+                <span id="simulationTime" class="time-value">0.00</span>
+                <span class="unit">s</span>
+            </div>
+        </div>
+
+        <!-- 中：視圖切換 (關鍵功能) -->
+        <div class="toolbar-section view-controls">
+            <div id="displayModeToggle" class="segment-control" role="group">
+                <button type="button" id="displayStatsBtn" class="segment-btn is-active" data-mode="stats">
+                    <i class="fa-solid fa-chart-pie"></i>
+                </button>
+                <button type="button" id="display2DBtn" class="segment-btn is-active" data-mode="2d">
+                    2D
+                </button>
+                <button type="button" id="display3DBtn" class="segment-btn" data-mode="3d">
+                    3D
+                </button>
             </div>
 
-            <!-- 路口燈號 -->
-            <div class="toggle-container">
-                <label class="switch-label" for="showPathsToggle" data-i18n="trafficLightToggle">路口燈號:</label>
-                <label class="switch">
-                    <input type="checkbox" id="showPathsToggle">
-                    <span class="slider round"></span>
+            <!-- 同步旋轉開關 -->
+            <div id="syncRotationContainer" class="icon-toggle" title="2D/3D 同步旋轉">
+                <input type="checkbox" id="syncRotationToggle" checked>
+                <label for="syncRotationToggle">
+                    <i class="fa-solid fa-sync"></i>
                 </label>
             </div>
+        </div>
 
-            <div class="toggle-container">
-                <label class="switch-label" for="flyoverToggle" data-i18n="flyoverLabel">鳥瞰:</label>
-                <label class="switch">
-                    <input type="checkbox" id="flyoverToggle">
-                    <span class="slider round"></span>
-                </label>
-            </div>
-
-            <div class="toggle-container">
-                <label class="switch-label" for="droneToggle" data-i18n="droneLabel">無人機:</label>
-                <label class="switch">
-                    <input type="checkbox" id="droneToggle">
-                    <span class="slider round"></span>
-                </label>
-            </div>
-
-            <div class="toggle-container">
-                <label for="layerSelector" data-i18n="layerLabel" style="font-weight:bold; font-size:0.9em;">顯示:</label>
-                <select id="layerSelector" style="padding:2px; border-radius:4px;">
+        <!-- 右：圖層與顯示 (已修正：包含兩種偵測器) -->
+        <div class="toolbar-section layer-controls">
+            <div class="control-group">
+                <select id="layerSelector" class="dropdown-light">
                     <option value="both" data-i18n="layerBoth">建築 + 底圖</option>
                     <option value="buildings" data-i18n="layerBuildings">僅建築</option>
                     <option value="basemap" data-i18n="layerBasemap">僅底圖</option>
-                    <option value="none" data-i18n="layerNone">均無</option>
+                    <option value="none" data-i18n="layerNone">無背景</option>
                 </select>
             </div>
 
-            <div class="toggle-container">
-                <label class="switch-label" for="showPointMetersToggle" data-i18n="pointMeterToggle">定點偵測器:</label>
-                <label class="switch">
-                    <input type="checkbox" id="showPointMetersToggle" checked>
-                    <span class="slider round"></span>
+            <div class="toggles-row">
+                <!-- 1. 路口燈號 -->
+                <label class="mini-switch" title="Traffic Lights">
+                    <input type="checkbox" id="showPathsToggle">
+                    <span class="switch-label" data-i18n="lblLights">燈號</span>
                 </label>
-            </div>
-            <div class="toggle-container">
-                <label class="switch-label" for="showSectionMetersToggle" data-i18n="sectionMeterToggle">區間偵測器:</label>
-                <label class="switch">
-                    <input type="checkbox" id="showSectionMetersToggle" checked>
-                    <span class="slider round"></span>
+
+                <!-- 分隔線 -->
+                <div class="divider-v"></div>
+
+                <!-- 2. 視覺模式 -->
+                <label class="mini-switch" title="Flyover Mode">
+                    <input type="checkbox" id="flyoverToggle">
+                    <span class="switch-label" data-i18n="lblFlyover">鳥瞰</span>
                 </label>
+                <label class="mini-switch" title="Drone View">
+                    <input type="checkbox" id="droneToggle">
+                    <span class="switch-label" data-i18n="lblDrone">無人機</span>
+                </label>
+
+                <!-- 分隔線 -->
+                <div class="divider-v"></div>
+
+                <!-- 3. 偵測器群組 (定點/區間) -->
+                <!-- detector-group 使用相對定位，讓內部的 group-caption 可以絕對定位懸浮在下方 -->
+                <div class="detector-group">
+                    <div class="switch-pair">
+                        <label class="tiny-switch" title="Point Detectors">
+                            <input type="checkbox" id="showPointMetersToggle" checked>
+                            <span data-i18n="lblPoint">定點</span>
+                        </label>
+                        <label class="tiny-switch" title="Section Detectors">
+                            <input type="checkbox" id="showSectionMetersToggle" checked>
+                            <span data-i18n="lblSection">區間</span>
+                        </label>
+                    </div>
+                    <!-- 此標籤透過 CSS absolute position 懸浮在下方，不影響上方按鈕的對齊高度 -->
+                    <span class="group-caption" data-i18n="lblDetector">偵測器</span>
+                </div>
             </div>
         </div>
-    </header>
+    </div>
+
+    <!-- 3. 主內容區 -->
     <main id="main-content">
-        <!-- 左側統計面板 -->
-        <div id="stats-panel">
-            <h2 data-i18n="statsTitle">統計數據</h2>
-
-            <div class="chart-container">
-                <h3 data-i18n="vehicleCountChartTitle">車輛數 (輛)</h3>
-                <canvas id="vehicleCountChart"></canvas>
+        <!-- 左側：統計面板 -->
+        <aside id="stats-panel">
+            <div class="panel-header">
+                <h2 data-i18n="statsTitle">統計數據</h2>
+                <div class="live-badge">LIVE</div>
             </div>
 
-            <div class="chart-container">
-                <h3 data-i18n="avgSpeedChartTitle">平均速度 (km/h)</h3>
-                <canvas id="avgSpeedChart"></canvas>
-            </div>
+            <div class="panel-content">
+                <div class="chart-card">
+                    <h3 data-i18n="vehicleCountChartTitle">車輛數</h3>
+                    <div class="chart-box">
+                        <canvas id="vehicleCountChart"></canvas>
+                    </div>
+                </div>
 
-            <div id="meter-charts-container"></div>
-            <div id="section-meter-charts-container"></div>
+                <div class="chart-card">
+                    <h3 data-i18n="avgSpeedChartTitle">平均速度</h3>
+                    <div class="chart-box">
+                        <canvas id="avgSpeedChart"></canvas>
+                    </div>
+                </div>
 
-            <div id="stats-table-container">
-                <h3 data-i18n="realtimeStatsTitle">即時數據 (全域)</h3>
-                <table>
-                    <thead>
-                        <tr>
-                            <th data-i18n="tableHeaderTime">時間 (s)</th>
-                            <th data-i18n="tableHeaderVehicles">車輛數</th>
-                            <th data-i18n="tableHeaderAvgSpeed">平均速度 (km/h)</th>
-                        </tr>
-                    </thead>
-                    <tbody id="statsTableBody"></tbody>
-                </table>
+                <!-- 這裡會動態插入 Meter Charts -->
+                <div id="meter-charts-container"></div>
+                <div id="section-meter-charts-container"></div>
+
+                <div class="table-card">
+                    <h3 data-i18n="realtimeStatsTitle">即時紀錄</h3>
+                    <div class="table-wrapper">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th data-i18n="tableHeaderTime">Time</th>
+                                    <th data-i18n="tableHeaderVehicles">Veh.</th>
+                                    <th data-i18n="tableHeaderAvgSpeed">Km/h</th>
+                                </tr>
+                            </thead>
+                            <tbody id="statsTableBody"></tbody>
+                        </table>
+                    </div>
+                </div>
             </div>
-        </div>
-        <!-- 右側畫布容器 -->
+        </aside>
+
+        <!-- 右側：視覺化畫布 (Flex Container) -->
         <div id="canvas-container">
             <!-- 2D Canvas -->
             <canvas id="networkCanvas"></canvas>
+
             <!-- 3D Container -->
             <div id="threejs-container"></div>
-            <!-- 載入提示文字 -->
-            <div id="placeholder-text"
-                style="position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); color:#888;">
-                請從上方選擇一個 XML 檔案以載入路網
+
+            <!-- 空狀態提示 -->
+            <div id="placeholder-text">
+                <div class="empty-state-content">
+                    <i class="fa-solid fa-map-location-dot"></i>
+                    <!-- 加入 data-i18n="canvasPlaceholder" -->
+                    <p data-i18n="canvasPlaceholder">請從上方載入路網檔案開始模擬</p>
+                </div>
             </div>
         </div>
     </main>
@@ -173,12 +237,8 @@
     <script src="script02.js"></script>
     <script>
         window.ENABLE_LEFT_TURN_YIELD = true;
-    </script>
-    <script>
         window.MANDATORY_LC_MAX_START_BASE = 1200;
         window.MANDATORY_LC_MAX_START_PER_SHIFT = 400;
-    </script>
-    <script>
         window.MANDATORY_LC_SHORT_LINK_THRESHOLD = 150;
     </script>
 </body>
