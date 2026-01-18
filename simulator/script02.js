@@ -4340,7 +4340,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // 注意：這裡假設 generateSignMaterials() 已在外部定義 (請參照先前的對話)
             const signMaterials = (typeof generateSignMaterials === 'function') ? generateSignMaterials() : { v: [], h: [] };
 
-            const geoVertical = new THREE.BoxGeometry(0.3, 4.0, 1.2);
+            const geoVertical = new THREE.BoxGeometry(1.2, 4.0, 0.3);
             const geoHorizontal = new THREE.BoxGeometry(4.0, 1.2, 0.2);
             const dummyBuilding = new THREE.Object3D();
             const dummySign = new THREE.Object3D();
@@ -4383,19 +4383,39 @@ document.addEventListener('DOMContentLoaded', () => {
                     const sideDir = isRight ? 1 : -1;
                     let targetY = -halfH + 15;
                     if ((targetY + 2.0) > halfH) targetY = halfH - 2.0 - 0.5;
-                    dummySign.position.set((halfW + 0.1) * sideDir, targetY, -halfD - 0.2);
-                    dummySign.rotation.set(0, -Math.PI / 2 * sideDir, 0);
+
+                    // 1. 位置與旋轉 (維持上一版正確設定)
+                    // 位置: 靠近建築側邊 (0.4), 突出於正面牆 (0.8)
+                    dummySign.position.set((halfW - 0.1) * sideDir, targetY, -halfD - 0.8);
+
+                    // 旋轉: 寬面垂直於道路
+                    dummySign.rotation.set(0, Math.PI / 2, 0);
+
                     dummySign.updateMatrixWorld();
                     const mesh = new THREE.Mesh(geoVertical, mat);
                     const worldPos = new THREE.Vector3(); const worldQuat = new THREE.Quaternion(); const worldScale = new THREE.Vector3();
                     dummySign.matrixWorld.decompose(worldPos, worldQuat, worldScale);
                     mesh.position.copy(worldPos); mesh.quaternion.copy(worldQuat);
                     mesh.castShadow = true;
+
+                    // --- [修正 3] 雙支架系統 ---
                     const bracketGeo = new THREE.CylinderGeometry(0.05, 0.05, 0.6);
                     const bracketMat = new THREE.MeshStandardMaterial({ color: 0x333333 });
-                    const bracket = new THREE.Mesh(bracketGeo, bracketMat);
-                    bracket.rotation.z = Math.PI / 2; bracket.position.set(0, 0, -0.5);
-                    mesh.add(bracket);
+
+                    // 上支架 (Top Bracket)
+                    const bracketTop = new THREE.Mesh(bracketGeo, bracketMat);
+                    bracketTop.rotation.z = Math.PI / 2; // 躺平
+                    // X=-0.6(接牆), Y=1.5(偏上)
+                    bracketTop.position.set(-0.6, 1.5, 0);
+                    mesh.add(bracketTop);
+
+                    // 下支架 (Bottom Bracket)
+                    const bracketBottom = new THREE.Mesh(bracketGeo, bracketMat);
+                    bracketBottom.rotation.z = Math.PI / 2; // 躺平
+                    // X=-0.6(接牆), Y=-1.5(偏下)
+                    bracketBottom.position.set(-0.6, -1.5, 0);
+                    mesh.add(bracketBottom);
+
                     signGroup.add(mesh);
                 }
             });
@@ -5111,6 +5131,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 this.wanderAmplitude = 0.05 + Math.random() * 0.1;
                 this.decisionTimer = 1.0 + Math.random() * 4.0;
 
+                // [修改] 強制機車偏好設為 0 (居中)，不再隨機靠左或靠右
+                this.preferredBias = 0;
+
                 // 決定騎乘偏好 (靠左/居中/靠右)
                 const rand = Math.random();
                 if (rand < 0.6) {
@@ -5130,6 +5153,21 @@ document.addEventListener('DOMContentLoaded', () => {
         // 核心更新循環
         // ==================================================================================
         update(dt, allVehicles, simulation) {
+            if (this.launchDelay > 0) {
+                this.launchDelay -= dt;
+                if (this.launchDelay <= 0) {
+                    // 延遲結束，正式啟動蜂群模式
+                    this.swarmTimer = 4.0;
+                    this.minGap = 0.1;
+                    this.headwayTime = 0.2;
+                    this.maxAccel = this.originalMaxAccel * 1.5;
+                    this.launchDelay = 0;
+                } else {
+                    // 還在反應時間內，保持靜止或維持原狀
+                    // 如果是剛起步，這會讓它多停留在原地一下
+                }
+            }
+
             if (this.finished) return;
             const network = simulation.network;
 
@@ -5196,10 +5234,36 @@ document.addEventListener('DOMContentLoaded', () => {
             // =================================================================
             if (this.isMotorcycle) {
                 // 1. 管理計時器與恢復參數
+                // [修改後]
+                // 需先在 constructor 初始化 this.swarmTransitionDuration = 0;
                 if (this.swarmTimer > 0) {
                     this.swarmTimer -= dt;
+
+                    // 倒數結束，進入過渡期
                     if (this.swarmTimer <= 0) {
-                        // 時間到，恢復正常駕駛參數
+                        this.swarmTimer = 0;
+                        this.swarmTransitionDuration = 2.0; // 設定 2 秒過渡期
+                    }
+                } else if (this.swarmTransitionDuration > 0) {
+                    // 處於過渡期：線性插值恢復參數
+                    this.swarmTransitionDuration -= dt;
+                    const t = 1.0 - (this.swarmTransitionDuration / 2.0); // t 從 0 變到 1
+
+                    // 輔助函式 (也可寫在外面)
+                    const lerp = (start, end, alpha) => start + (end - start) * alpha;
+
+                    // 蜂群參數（調整為合理值）vs 原始參數
+                    const swarmMinGap = 0.2;
+                    const swarmHeadway = 0.3;
+                    const swarmAccel = Math.min(4.5, (this.originalMaxAccel || 3.5) * 1.3);
+
+                    // 漸變恢復
+                    this.minGap = lerp(swarmMinGap, this.originalMinGap, t);
+                    this.headwayTime = lerp(swarmHeadway, this.originalHeadway, t);
+                    this.maxAccel = lerp(swarmAccel, this.originalMaxAccel, t);
+
+                    // 過渡結束，確保數值精確
+                    if (this.swarmTransitionDuration <= 0) {
                         this.minGap = this.originalMinGap;
                         this.headwayTime = this.originalHeadway;
                         this.maxAccel = this.originalMaxAccel;
@@ -5255,14 +5319,22 @@ document.addEventListener('DOMContentLoaded', () => {
                             }
                         }
 
-                        // ★★★★★ [關鍵新增] 初始化起步反應時間 (Reaction Time) ★★★★★
-                        // 設定機率分佈，模擬真實世界的騎士行為：
-                        // - 20% 的人是「衝鋒組」：反應極快 (0.0 ~ 0.15秒)
-                        // - 80% 的人是「一般組」：反應稍慢 (0.2 ~ 1.0秒)
-                        if (Math.random() < 0.2) {
-                            this.startUpDelay = Math.random() * 0.15;
-                        } else {
-                            this.startUpDelay = 0.2 + (Math.random() * 0.8);
+                        // [修改後] 依照「排隊位置」計算延遲
+                        // 我們需要重新計算 row (排數) 來決定延遲時間
+                        // 假設待轉格寬度約 4.0m，機車寬 0.9m，一行約可排 4 台
+                        const capacityPerRow = 4;
+                        // 從 waitingBox 取出目前的排隊數，反推我是第幾排
+                        // 這裡用一個估算值，假設你是第 N 個進入的
+                        const estimatedIdx = this.waitingBox ? this.waitingBox.waitingCount : 0;
+                        const row = Math.floor(estimatedIdx / capacityPerRow);
+
+                        // 基礎反應時間 + (排數 * 0.4秒) + 隨機微調
+                        // 這樣第一排 (row=0) 會立刻走，第二排 (row=1) 會等 0.4秒...
+                        this.startUpDelay = (Math.random() * 0.2) + (row * 0.4);
+
+                        // 如果是第一排，給予「衝鋒組」的極快反應特權
+                        if (row === 0 && Math.random() < 0.3) {
+                            this.startUpDelay = 0.0;
                         }
                     }
                 }
@@ -5270,96 +5342,86 @@ document.addEventListener('DOMContentLoaded', () => {
                 // --- 狀態 2: 在待轉區停等 (Waiting) ---
                 else if (this.twoStageState === 'waiting') {
                     this.speed = 0;
-
                     const canGo = this.checkTwoStageSignal(network);
 
                     if (canGo) {
-                        // 檢查反應時間 (保持不變)
                         if (this.startUpDelay > 0) {
                             this.startUpDelay -= dt;
                             return;
                         }
 
-                        // --- 準備出發 ---
                         this.twoStageState = 'leaving_box';
-
-                        // 釋放待轉格計數 (保持不變)
                         if (this.waitingBox && this.waitingBox.waitingCount > 0) {
                             this.waitingBox.waitingCount--;
                         }
 
-                        // 取得下一條路與車道資訊
                         const nextLinkId = this.route[this.currentLinkIndex + 1];
                         const nextLink = network.links[nextLinkId];
-
-                        // =============================================================
-                        // [新增] 1. 智慧車道選擇 (粗略分流)
-                        // 目的：如果有兩條以上的車道，將機車分流到外側與次外側
-                        // =============================================================
-
-                        // 取得所有車道索引並排序 (0:最內, N:最外)
                         const allLaneIndices = Object.keys(nextLink.lanes).map(Number).sort((a, b) => a - b);
-                        const numLanes = allLaneIndices.length;
 
-                        // 預設目標：最外側車道 (慢車道)
-                        let targetLaneIdx = allLaneIndices[numLanes - 1];
-
-                        // 如果有 2 線道以上，進行隨機或位置分流
-                        if (numLanes >= 2) {
-                            // 簡單策略：50% 機率去次外側，50% 去最外側
-                            // (如果您希望依照待轉格內的左右位置分流，可改用 this.x 與 box.x 的比較)
-                            if (Math.random() < 0.5) {
-                                targetLaneIdx = allLaneIndices[numLanes - 2];
+                        // === 【修改點 1：智能選擇最近車道】 ===
+                        // 不再強制去最右邊，而是找距離目前位置 (this.x, this.y) 最近的車道
+                        let targetLaneIdx = allLaneIndices[0];
+                        let minDistSq = Infinity;
+                        allLaneIndices.forEach(idx => {
+                            const laneStart = nextLink.lanes[idx].path[0];
+                            const d2 = (this.x - laneStart.x) ** 2 + (this.y - laneStart.y) ** 2;
+                            if (d2 < minDistSq) {
+                                minDistSq = d2;
+                                targetLaneIdx = idx;
                             }
-                        }
-
-                        // 暫存目標車道，供 handlePathTransition 使用
-                        this.pendingLaneIndex = targetLaneIdx;
-
-                        // 移除待轉格引用
-                        this.waitingBox = null;
-
-
-                        // =============================================================
-                        // [新增] 2. 計算預計橫向偏移 (精細分流 - 防止左右重疊)
-                        // 目的：在車道內隨機分佈，不要全部騎在車道正中間
-                        // =============================================================
-
-                        // 假設標準車道寬 3.5m，我們希望機車分佈在中間約 2.4m 的區域
-                        const spreadWidth = 2.4;
-
-                        // 生成 -1.2 ~ +1.2 之間的隨機數
-                        const randomOffset = (Math.random() - 0.5) * spreadWidth;
-
-                        // 記錄起來，等到切換路段(handlePathTransition)時應用
-                        this.pendingLateralOffset = randomOffset;
-
-
-                        // [新增] ★★★ 強制覆蓋起步物理參數 (Swarm Launch) ★★★
-                        // 讓機車在離開格子的前幾秒，完全無視安全距離，像真實世界一樣彈射出去
-                        this.swarmTimer = 5.0;      // 延長衝刺時間
-                        this.minGap = 0.05;         // 幾乎允許貼著前車
-                        this.headwayTime = 0.1;     // 極短的跟車時距
-                        this.maxAccel = (this.originalMaxAccel || 5.0) * 2.0; // 兩倍加速度爆發
-
-                        // 給予更高的隨機初速，避免全部擠在 0~2 km/h 慢慢加速
-                        this.speed = 3.0 + Math.random() * 2.5;
-
-                        // =============================================================
-                        // [新增] 4. 建立起步路徑
-                        // =============================================================
+                        });
 
                         const targetLane = nextLink.lanes[targetLaneIdx];
-                        if (targetLane && targetLane.path.length > 0) {
-                            const startPos = { x: this.x, y: this.y };
-                            const endPos = targetLane.path[0]; // 連接到車道起點
+                        this.pendingLaneIndex = targetLaneIdx;
 
-                            this.currentPath = [startPos, endPos];
-                            this.currentPathLength = Math.hypot(endPos.x - startPos.x, endPos.y - startPos.y);
-                            this.distanceOnPath = 0;
-                        }
-                    } else {
-                        return;
+                        // === 【修改點 2：計算保持直線所需的偏移量】 ===
+                        // 算出目前位置相對於目標車道中心的「橫向距離」，並將其設為 pendingLateralOffset
+                        const p1_next = targetLane.path[0];
+                        const p2_next = targetLane.path[1];
+                        const angle_next = Math.atan2(p2_next.y - p1_next.y, p2_next.x - p1_next.x);
+
+                        // 向量：車道前進方向 (fwd) 與 垂直方向 (right)
+                        const cosN = Math.cos(angle_next);
+                        const sinN = Math.sin(angle_next);
+                        const nx = -sinN; // 垂直車道向左
+                        const ny = cosN;
+
+                        // 計算目前點到車道中心線的投影距離 (橫向偏移)
+                        const dx = this.x - p1_next.x;
+                        const dy = this.y - p1_next.y;
+                        // 點積公式：(dx, dy) 點乘 (nx, ny) 得到點在法向量上的投影長度
+                        const currentLateralOffset = dx * nx + dy * ny;
+
+                        // 限制偏移量不要超過車道邊界 (避免騎到路溝)
+                        const maxSafe = (targetLane.width / 2) - (this.width / 2) - 0.1;
+                        this.pendingLateralOffset = Math.max(-maxSafe, Math.min(maxSafe, currentLateralOffset));
+
+                        // === 【修改點 3：修正貝茲曲線終點，使其包含偏移】 ===
+                        const startPos = { x: this.x, y: this.y };
+                        // 終點不再是中心點，而是「中心點 + 偏移量」，這樣路徑才會是直線
+                        const endPos = {
+                            x: p1_next.x + nx * this.pendingLateralOffset,
+                            y: p1_next.y + ny * this.pendingLateralOffset
+                        };
+
+                        // 設定起步物理參數（調整為更合理的數值）
+                        this.swarmTimer = 3.0;  // 縮短起步模式時間
+                        this.minGap = 0.2;      // 機車最小間距 0.2m（較小但安全）
+                        this.headwayTime = 0.3; // 較短的車頭時距
+                        this.maxAccel = Math.min(4.5, (this.originalMaxAccel || 3.5) * 1.3);
+                        this.speed = 2.0 + Math.random() * 2.0;
+
+                        // 建立貝茲曲線控制點 (P1, P2) 讓轉彎圓滑但終點精準
+                        const distDirect = Math.hypot(endPos.x - startPos.x, endPos.y - startPos.y);
+                        const controlLen = distDirect * 0.4;
+                        const p1 = { x: startPos.x + Math.cos(this.angle) * controlLen, y: startPos.y + Math.sin(this.angle) * controlLen };
+                        const p2 = { x: endPos.x - cosN * controlLen, y: endPos.y - sinN * controlLen };
+
+                        this.currentPath = [startPos, p1, p2, endPos];
+                        this.currentPathLength = Geom.Bezier.getLength(startPos, p1, p2, endPos);
+                        this.distanceOnPath = 0;
+                        this.waitingBox = null;
                     }
                 }
             }
@@ -5367,9 +5429,55 @@ document.addEventListener('DOMContentLoaded', () => {
             // 跟車模型 (IDM)
             const { leader, gap } = this.findLeader(allVehicles, network);
 
-            const s_star = this.minGap + Math.max(0, this.speed * this.headwayTime + (this.speed * (this.speed - (leader ? leader.speed : 0))) / (2 * Math.sqrt(this.maxAccel * this.comfortDecel)));
-            this.accel = this.maxAccel * (1 - Math.pow(this.speed / this.maxSpeed, this.delta) - Math.pow(s_star / gap, 2));
+            // 起步加速邏輯（簡化版）
+            // 如果處於起步模式且前方空曠，使用較高但合理的加速度
+            if (this.isMotorcycle && this.swarmTimer > 0 && gap > 5.0) {
+                // 轉彎時加速度打折
+                const corneringFactor = (this.state === 'inIntersection') ? 0.6 : 1.0;
 
+                // 使用 IDM 公式但限制最大加速度
+                const idmAccel = this.maxAccel * (1 - Math.pow(this.speed / this.maxSpeed, this.delta));
+                this.accel = Math.min(4.0 * corneringFactor, Math.max(2.5 * corneringFactor, idmAccel));
+            } else {
+                // 標準 IDM 公式
+                const s_star = this.minGap + Math.max(0, this.speed * this.headwayTime + (this.speed * (this.speed - (leader ? leader.speed : 0))) / (2 * Math.sqrt(this.maxAccel * this.comfortDecel)));
+                this.accel = this.maxAccel * (1 - Math.pow(this.speed / this.maxSpeed, this.delta) - Math.pow(s_star / gap, 2));
+
+                // 機車防過度減速：當接近路口但無實際前車時，維持最小加速度
+                if (this.isMotorcycle && !leader && gap > 2.0 && gap < 15.0) {
+                    // gap 來自下游預判，但沒有實際前車，維持正加速度
+                    this.accel = Math.max(this.accel, 0.5);
+                }
+            }
+
+            // 限制加速度在合理範圍內（機車最大 4.5 m/s²）
+            if (this.isMotorcycle) {
+                this.accel = Math.min(this.accel, 4.5);
+            }
+            // =================================================================
+            // ★★★ [修復] 起步防穿模 (Anti-Clipping at Startup) ★★★
+            // =================================================================
+            if (this.isMotorcycle && leader) {
+                // 如果距離很近 (< 2.5米) 且 前車速度不快 (< 3.0 m/s, 約10km/h)
+                // 這代表處於剛起步或塞車階段
+                if (gap < 2.5 && leader.speed < 3.0) {
+
+                    // 1. 速度耦合 (Velocity Coupling)：
+                    // 如果我比前車快，強制減速，不管 IDM 算出多少
+                    if (this.speed > leader.speed) {
+                        // 強力煞車，係數可調整 (這裡設為 -3.0 模擬急煞)
+                        // 這樣可以保證後車絕不會在視覺上「插進」前車
+                        this.accel = -3.0;
+                    }
+                    // 2. 限制起步爆發力：
+                    // 即使我比前車慢，但如果距離太近 (< 1.5m)，也不能全油門
+                    else if (gap < 1.5) {
+                        // 限制最大加速度為 1.0，讓它慢慢跟上去，而不是彈射
+                        this.accel = Math.min(this.accel, 1.0);
+                    }
+                }
+            }
+            // =================================================================
             // 更新速度與位置
             this.speed += this.accel * dt;
             if (this.speed < 0) this.speed = 0;
@@ -5583,6 +5691,56 @@ document.addEventListener('DOMContentLoaded', () => {
         // ==================================================================================
         // 橫向控制與機車行為
         // ==================================================================================
+
+        /**
+         * 尋找前方最近的車輛（輔助方法）
+         */
+        findNearbyLeader(allVehicles, maxDist = 15.0) {
+            let leader = null;
+            let minGap = maxDist;
+
+            for (const other of allVehicles) {
+                if (other.id === this.id) continue;
+                if (other.currentLinkId !== this.currentLinkId) continue;
+                if (other.currentLaneIndex !== this.currentLaneIndex) continue;
+
+                const dist = other.distanceOnPath - this.distanceOnPath;
+                if (dist > 0 && dist < minGap) {
+                    minGap = dist;
+                    leader = other;
+                }
+            }
+            return { leader, gap: leader ? minGap : Infinity };
+        }
+
+        /**
+         * 計算鑽車空隙位置（輔助方法）
+         */
+        findFilteringGap(leader, halfWidth) {
+            const leaderOffset = leader.lateralOffset || 0;
+            const leaderHalfWidth = leader.width / 2;
+            const myHalfWidth = this.width / 2;
+            const safeMargin = 0.3;
+
+            // 計算左右兩側的可用空間
+            const rightSpace = halfWidth - (leaderOffset + leaderHalfWidth);
+            const leftSpace = halfWidth + (leaderOffset - leaderHalfWidth);
+
+            // 選擇空間較大的一側
+            if (rightSpace > myHalfWidth + safeMargin && rightSpace >= leftSpace) {
+                return Math.min(halfWidth - myHalfWidth, leaderOffset + leaderHalfWidth + myHalfWidth + safeMargin);
+            } else if (leftSpace > myHalfWidth + safeMargin) {
+                return Math.max(-halfWidth + myHalfWidth, leaderOffset - leaderHalfWidth - myHalfWidth - safeMargin);
+            }
+
+            // 沒有足夠空間，維持當前位置
+            return this.lateralOffset;
+        }
+
+        /**
+         * 機車動態更新 - 簡化版
+         * 三階段處理：兩段式左轉 → 決定目標位置 → 執行
+         */
         updateMotorcycleDynamics(dt, network, allVehicles) {
             if (this.state !== 'onLink' || this.laneChangeState) return;
 
@@ -5597,186 +5755,68 @@ document.addEventListener('DOMContentLoaded', () => {
             const lane = link.lanes[this.currentLaneIndex];
             if (!lane) return;
 
-            // =========================================================
-            // [修改] 兩段式左轉：強制貼向極右側 (靠路緣行駛)
-            // =========================================================
+            // === 階段 1：兩段式左轉特殊處理 ===
             if (this.isPreparingForTwoStageTurn(network)) {
-                // ★★★ [關鍵修正] 無論在哪個車道，都強制往車道右側靠 ★★★
-                // 這樣可以：1) 為換車道騰出空間 2) 示意後方車輛 3) 提前到位更自然
-
-                // 1. 取得當前車道寬度 (預設 3.5m 以防資料缺失)
-                const currentLaneWidth = lane.width || 3.5;
-
-                // 2. 計算路緣的極限位置 (車道中心到邊緣的距離)
-                const distanceToEdge = currentLaneWidth / 2;
-
-                // 3. 計算機車寬度的一半
-                const halfBikeWidth = this.width / 2;
-
-                // 4. 設定安全邊距 (離路緣 15 公分，避免模型穿牆)
-                const curbMargin = 0.15;
-
-                // 5. 計算目標偏移量 (向右為正值)
-                // 系統座標系：+Offset = 向右(外側), -Offset = 向左(內側)
-                // 公式： (路緣距離 - 車身半寬 - 邊距)
-                const maxRightOffset = (distanceToEdge - halfBikeWidth - curbMargin);
-
-                // 6. 強制設定目標偏移 (無論在哪個車道都執行)
+                const laneWidth = lane.width || 3.5;
+                const maxRightOffset = (laneWidth / 2) - (this.width / 2) - 0.15;
                 this.targetLateralOffset = maxRightOffset;
-
-                // [優化] 若車速很慢(接近路口)，加快橫向移動的反應速度，讓它看起來像是在「鑽」進去
-                if (this.speed < 5.0) {
-                    // 使用線性插值快速逼近目標，比一般的 updateLateralPosition 更積極
-                    this.lateralOffset = this.lateralOffset * 0.9 + maxRightOffset * 0.1;
-                }
-
-                // 7. 鎖定決策計時器，防止下方隨機擺動邏輯干擾
                 this.decisionTimer = 1.0;
-
-                // ★ 重要：直接返回，跳過後續的鑽車(Filtering)與隨機擺動邏輯
                 return;
             }
-            // =========================================================
 
+            // === 階段 2：決策計時器檢查 ===
             this.decisionTimer -= dt;
+            if (this.decisionTimer > 0) return;
 
-            if (this.decisionTimer <= 0) {
-                const laneIndices = Object.keys(link.lanes).map(Number);
-                const maxLaneIndex = Math.max(...laneIndices);
-                const isRightmostLane = (this.currentLaneIndex === maxLaneIndex);
-                const isFiltering = (this.speed < 3.0);
-                const curbMargin = isFiltering ? 0.1 : 0.3;
-                const halfWidth = (lane.width / 2) - curbMargin;
-                let newTargetBias = 0;
-                let nextDecisionTime = 0;
+            const laneWidth = lane.width || 3.5;
+            const halfWidth = laneWidth / 2 - 0.2;
 
-                if (isFiltering) {
-                    const scanRange = 10.0;
-                    let nearbyVehicles = [];
-                    for (const other of allVehicles) {
-                        if (other.id === this.id) continue;
-                        if (other.currentLinkId !== this.currentLinkId) continue;
-                        if (other.currentLaneIndex !== this.currentLaneIndex) continue;
-                        const dist = other.distanceOnPath - this.distanceOnPath;
-                        if (dist > 0 && dist < scanRange) nearbyVehicles.push(other);
-                    }
+            // 找前方最近的車輛
+            const { leader, gap } = this.findNearbyLeader(allVehicles, 15.0);
 
-                    if (nearbyVehicles.length > 0) {
-                        nearbyVehicles.sort((a, b) => (a.distanceOnPath - this.distanceOnPath) - (b.distanceOnPath - this.distanceOnPath));
-                        const leader = nearbyVehicles[0];
-                        const leaderOffset = leader.lateralOffset || 0;
-
-                        if (leader.width >= 1.5 || !leader.isMotorcycle) {
-                            const biasRight = 0.95;
-                            const biasLeft = -0.95;
-                            const biasCenter = leaderOffset / halfWidth;
-                            let costRight = 0, costLeft = 0, costCenter = 0;
-                            for (const neighbor of nearbyVehicles) {
-                                if (neighbor.id === leader.id) continue;
-                                const nBias = (neighbor.lateralOffset || 0) / halfWidth;
-                                if (nBias > 0.4) costRight++;
-                                else if (nBias < -0.4) costLeft++;
-                                else costCenter++;
-                            }
-                            let scoreRight = (costRight * 3) + Math.random();
-                            let scoreLeft = 1 + (costLeft * 3) + Math.random();
-                            let scoreCenter = 2 + (costCenter * 3) + Math.random();
-
-                            const carRightSpace = (halfWidth) - (leaderOffset + leader.width / 2);
-                            const carLeftSpace = (halfWidth) + (leaderOffset - leader.width / 2);
-                            if (carRightSpace < 0.6) scoreRight += 99;
-                            if (carLeftSpace < 0.6) scoreLeft += 99;
-
-                            let selectedBaseBias = 0;
-                            if (scoreCenter <= scoreRight && scoreCenter <= scoreLeft) selectedBaseBias = biasCenter;
-                            else if (scoreRight <= scoreLeft) selectedBaseBias = biasRight;
-                            else selectedBaseBias = biasLeft;
-
-                            const chaos = (Math.random() * 0.5) - 0.25;
-                            newTargetBias = selectedBaseBias + chaos;
-                        } else {
-                            const offsetStep = (leader.width / 2) + (this.width / 2) + 0.3;
-                            let base = 0;
-                            if (leaderOffset > 0.1) base = (leaderOffset - offsetStep) / halfWidth;
-                            else if (leaderOffset < -0.1) base = (leaderOffset + offsetStep) / halfWidth;
-                            else base = (Math.random() > 0.5 ? 0.8 : -0.8);
-                            newTargetBias = base + ((Math.random() * 0.4) - 0.2);
-                        }
-                        nextDecisionTime = 0.5 + Math.random() * 1.0;
-                    } else {
-                        newTargetBias = 0.3 + (Math.random() * 0.5);
-                        if (Math.random() < 0.2) newTargetBias = -0.3 - (Math.random() * 0.5);
-                        nextDecisionTime = 1.0 + Math.random() * 1.0;
-                    }
+            // === 階段 3：根據情況決定目標位置 ===
+            if (!leader) {
+                // 無前車：維持當前位置或緩慢回歸中心
+                if (this.swarmTimer > 0) {
+                    // 起步衝刺中：鎖定當前位置，直線前進
+                    this.decisionTimer = 1.0;
                 } else {
-                    const lookAheadDist = Math.max(15.0, this.speed * 3.0);
-                    let leader = null;
-                    let minGap = Infinity;
-                    for (const other of allVehicles) {
-                        if (other.id === this.id) continue;
-                        if (other.currentLinkId !== this.currentLinkId) continue;
-                        if (other.currentLaneIndex !== this.currentLaneIndex) continue;
-                        const dist = other.distanceOnPath - this.distanceOnPath;
-                        if (dist > 0 && dist < lookAheadDist) {
-                            if (dist < minGap) { minGap = dist; leader = other; }
-                        }
-                    }
-
-                    if (!leader) {
-                        const speedRatio = Math.min(1.0, this.speed / 14.0);
-                        if (isRightmostLane) {
-                            // [修正] 原本是 0.9 (靠左)，改為負值 (靠右)
-                            // 慢速時 (-0.9) 強制貼右路緣
-                            // 快速時 (-0.3) 稍微往路中間靠，但仍在右側
-                            newTargetBias = -0.9 + (0.6 * speedRatio);
-
-                            // 減少隨機擺動幅度，保持靠邊穩定性
-                            newTargetBias += (Math.random() * 0.2 - 0.1);
-                        } else {
-                            // 非最右車道 (內側車道)
-                            // 嘗試靠右或居中，讓出左側超車空間
-                            let baseBias = 0;
-
-                            // 優先靠右 (例如在快車道靠右行駛)
-                            baseBias = 0.9 - (1.4 * speedRatio);
-
-                            // 偶爾居中
-                            if (Math.random() < 0.2) {
-                                baseBias = (Math.random() - 0.5) * 0.4;
-                            }
-                            newTargetBias = baseBias + ((Math.random() * 0.4) - 0.2);
-                        }
-                        nextDecisionTime = 2.0 + Math.random() * 3.0;
-                    } else {
-                        const leaderOffset = leader.lateralOffset || 0;
-                        const leaderBias = leaderOffset / halfWidth;
-                        if (leader.width >= 1.5 || !leader.isMotorcycle) {
-                            if (leaderBias > 0.3) newTargetBias = -0.9 + (Math.random() * 0.2);
-                            else newTargetBias = 0.9 - (Math.random() * 0.2);
-                        } else {
-                            if (Math.abs(leaderBias) < 0.2) {
-                                const mySpeedRank = Math.min(1.0, this.speed / 14.0);
-                                newTargetBias = (mySpeedRank > 0.6) ? -0.6 : 0.6;
-                            } else {
-                                newTargetBias = (leaderBias > 0) ? -0.6 : 0.6;
-                            }
-                            newTargetBias += (Math.random() * 0.3 - 0.15);
-                        }
-                        nextDecisionTime = 1.0 + Math.random() * 1.0;
-                    }
+                    // 正常行駛：緩慢回歸中心
+                    const centerPull = 0.03;
+                    this.targetLateralOffset *= (1 - centerPull);
+                    this.decisionTimer = 2.0 + Math.random();
                 }
+            } else {
+                const leaderOffset = leader.lateralOffset || 0;
 
-                newTargetBias = Math.max(-1.0, Math.min(1.0, newTargetBias));
-                let finalTarget = newTargetBias * halfWidth;
-                const maxStep = isFiltering ? 4.0 : 1.5;
-                const current = this.targetLateralOffset;
-                if (finalTarget - current > maxStep) finalTarget = current + maxStep;
-                if (finalTarget - current < -maxStep) finalTarget = current - maxStep;
-                this.targetLateralOffset = finalTarget;
-                this.decisionTimer = nextDecisionTime;
+                if (gap > 8.0 || leader.speed > this.speed * 0.9) {
+                    // 前車較遠或不慢：維持當前位置
+                    this.decisionTimer = 1.5 + Math.random();
+                } else if (this.speed < 7.0 && leader.width > 1.5) {
+                    // 低速且前方是汽車：嘗試找空隙鑽過
+                    const newTarget = this.findFilteringGap(leader, halfWidth);
+                    // 平滑過渡到新位置
+                    this.targetLateralOffset = this.targetLateralOffset * 0.7 + newTarget * 0.3;
+                    this.decisionTimer = 0.8 + Math.random() * 0.4;
+                } else if (leader.isMotorcycle) {
+                    // 前方是機車：微調錯開
+                    const offsetStep = (leader.width + this.width) / 2 + 0.3;
+                    if (Math.abs(leaderOffset - this.lateralOffset) < offsetStep * 0.8) {
+                        // 太靠近，需要錯開
+                        const direction = leaderOffset > 0 ? -1 : 1;
+                        const adjustment = direction * 0.4;
+                        this.targetLateralOffset = Math.max(-halfWidth,
+                            Math.min(halfWidth, this.lateralOffset + adjustment));
+                    }
+                    this.decisionTimer = 0.6 + Math.random() * 0.4;
+                } else {
+                    // 其他情況：維持當前位置
+                    this.decisionTimer = 1.0 + Math.random();
+                }
             }
-            //const limit = (lane.width / 2) - 0.2;
-            //this.targetLateralOffset = Math.max(-limit, Math.min(limit, this.targetLateralOffset));
+
+            // 限制目標偏移在車道範圍內
+            this.targetLateralOffset = Math.max(-halfWidth, Math.min(halfWidth, this.targetLateralOffset));
         }
 
         updateLateralPosition(dt) {
@@ -5785,15 +5825,22 @@ document.addEventListener('DOMContentLoaded', () => {
                 this.lateralOffset = this.targetLateralOffset;
                 return;
             }
+
             if (this.isMotorcycle) {
-                const smoothingFactor = 2.0;
-                let move = diff * Math.min(1, dt * smoothingFactor);
-                const maxSpeed = 1.5;
-                let limit = maxSpeed * dt;
-                const steeringLimit = this.speed * dt * 0.8;
-                limit = Math.min(limit, steeringLimit);
-                if (move > limit) move = limit;
-                if (move < -limit) move = -limit;
+                // 速度相關穩定性：高速時橫向移動更慢（模擬重心效應）
+                const speedFactor = Math.max(0.3, 1.0 - this.speed / 20.0);
+
+                // 指數平滑：tau 越大，移動越慢越平滑
+                const tau = 0.5;
+                const alpha = 1 - Math.exp(-dt / tau);
+
+                // 限制最大橫向速度（高速時更穩定）
+                const maxLateralSpeed = 1.2 * speedFactor;
+
+                let move = diff * alpha;
+                const limit = maxLateralSpeed * dt;
+                move = Math.max(-limit, Math.min(limit, move));
+
                 this.lateralOffset += move;
             } else {
                 const dir = Math.sign(diff);
@@ -6011,8 +6058,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
                             // ★★★ [微小間距隨機化] ★★★
                             // 在標準行列位置上，增加 ±0.15m 的隨機抖動，讓車子不要排得像機器人
-                            const jitterX = (Math.random() - 0.5) * 0.3;
-                            const jitterY = (Math.random() - 0.5) * 0.3;
+                            const jitterX = (Math.random() - 0.5) * 0.1;
+                            const jitterY = (Math.random() - 0.5) * 0.1;
 
                             const moveLeft = padding + (col * bikeW) + (bikeW / 2) + jitterX;
                             const moveBack = padding + (row * bikeL) + (bikeL / 2) + jitterY;
@@ -6053,10 +6100,16 @@ document.addEventListener('DOMContentLoaded', () => {
                             const p2Extension = baseControlLen + (row * 2.5);
 
                             // P1 (控制點1)：從起點，沿著「目前行駛方向」延伸
+                            // ★ 修正：加入微小的角度隨機偏轉 (±5度)，讓車流出發時稍微散開
                             const currAngle = this.angle;
+                            //const angleJitter = (Math.random() - 0.5) * 0.2; // 約 ±0.1 rad
+                            //const p1Angle = currAngle + angleJitter;
+                            // 建議修改（改為 0，確保沿著路徑方向出發）
+                            const p1Angle = currAngle;
+
                             const p1 = {
-                                x: startPos.x + Math.cos(currAngle) * p1Extension,
-                                y: startPos.y + Math.sin(currAngle) * p1Extension
+                                x: startPos.x + Math.cos(p1Angle) * p1Extension,
+                                y: startPos.y + Math.sin(p1Angle) * p1Extension
                             };
 
                             // P2 (控制點2)：從終點，沿著「目標朝向的反方向」延伸
@@ -6366,19 +6419,20 @@ document.addEventListener('DOMContentLoaded', () => {
             const signal = tfl.getSignalForTurnGroup(myTransition.turnGroupId);
 
             // 4. 如果是綠燈，且我現在還用著很保守的 minGap，就啟動「蜂群起步」
+            // [修改後]
             if (signal === 'Green') {
-                // 啟動蜂群模式：維持 4 秒的激進狀態
-                this.swarmTimer = 4.0;
+                // 模擬反應延遲：距離停止線越遠，反應越慢 (波動效應)
+                // 假設每 1 公尺延遲 0.05 秒 + 隨機 0.2 秒
+                const distDelay = (distToEnd / 10.0) * 0.1;
+                const randomDelay = Math.random() * 0.3;
 
-                // ★ 核心修正：將最小安全距離縮短到 0.1 米
-                // 這會欺騙 IDM 公式，讓它以為「0.5米的間距」已經非常寬裕，可以全力加速
-                this.minGap = 0.1;
+                // 設定一個倒數計時器來啟動蜂群模式 (需在 update 中處理這個計時器)
+                // 為了簡化，我們直接用 setTimeout 或者增加一個屬性 this.launchDelay
+                // 這裡示範增加屬性法 (需要在 update 裡扣除)
 
-                // 縮短跟車時距，允許緊貼前車
-                this.headwayTime = 0.2;
-
-                // 增加 50% 的加速度上限，模擬騎士起步時的油門全開
-                this.maxAccel = this.originalMaxAccel * 1.5;
+                if (!this.launchDelay) {
+                    this.launchDelay = distDelay + randomDelay;
+                }
             }
         }
 
@@ -6489,7 +6543,8 @@ document.addEventListener('DOMContentLoaded', () => {
             // =================================================================
             // [修正] 兩段式左轉：絕對優先權 (加強版)
             // =================================================================
-            if (this.isPreparingForTwoStageTurn(network)) {
+            const distToEnd = this.currentPathLength - this.distanceOnPath;
+            if (this.isPreparingForTwoStageTurn(network) && distToEnd < 100.0) {
                 const laneIndices = Object.keys(link.lanes).map(Number);
                 const rightmostLaneIndex = Math.max(...laneIndices);
 
@@ -6665,20 +6720,20 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const myAbsPos = getAbsLatPos(this);
 
-            // 輔助函式：判斷是否阻擋 (基於車寬)
             const isBlocking = (other) => {
                 const otherAbsPos = getAbsLatPos(other);
                 const latDist = Math.abs(myAbsPos - otherAbsPos);
                 let safeLatThreshold;
 
+                // [修改後]
                 if (this.isMotorcycle && other.isMotorcycle) {
-                    // [修改] 原本是 0.85，改為 0.45 或更小
-                    // 理由：機車騎士可以容忍極近的側向距離，只要不是正前方，就不視為阻擋
-                    safeLatThreshold = 0.45;
+                    // 正常保持 0.4m
+                    safeLatThreshold = 0.4;
 
-                    // [新增] 進階判定：如果處於起步衝刺狀態 (Swarm Mode)，允許更近的交錯
+                    // 蜂群模式：允許把手交錯，但確保車身不撞
+                    // (車寬平均和的一半) * 0.8，約等於允許 20% 的視覺邊緣重疊(後照鏡)
                     if (this.swarmTimer > 0) {
-                        safeLatThreshold = 0.2;
+                        safeLatThreshold = ((this.width + other.width) / 2) * 0.8;
                     }
                 } else {
                     safeLatThreshold = (this.width / 2) + (other.width / 2) + 0.2;
@@ -6739,25 +6794,22 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (isBlocking(other)) {
                             const currentGap = distDiff - (this.length / 2) - (other.length / 2);
 
-                            // [新增] ★★★ 蜂群起步優化過濾 ★★★
-                            // 如果我正在起步衝刺 (swarmTimer > 0)，且前車也在加速中，
-                            // 則忽略極小的間距，避免因為 "太近" 而煞車
-                            if (this.isMotorcycle && this.swarmTimer > 0 && other.speed > this.speed * 0.8) {
-                                // 只有當前車真的非常近且比我慢很多時，才視為 Leader
-                                // 否則視為群體的一部分，不列入跟車計算
-                                if (currentGap < 0.5 && other.speed < this.speed - 2.0) {
-                                    if (currentGap < gap) {
-                                        gap = currentGap;
-                                        leader = other;
-                                    }
-                                }
-                            } else {
-                                // 一般情況維持原判斷
-                                if (currentGap < gap) {
-                                    gap = currentGap;
+                            // ============================================================
+                            // 機車跟車邏輯（簡化版）
+                            // ============================================================
+                            // 機車之間可以更靠近，但仍需保持最小安全間距
+                            if (this.isMotorcycle && other.isMotorcycle && currentGap > 0.3) {
+                                // 機車可以比汽車更近，有效間距減少 0.3m
+                                const effectiveGap = currentGap - 0.3;
+                                if (effectiveGap > 0 && effectiveGap < gap) {
+                                    gap = effectiveGap;
                                     leader = other;
                                 }
+                            } else if (currentGap < gap) {
+                                gap = currentGap;
+                                leader = other;
                             }
+                            // ============================================================
                         }
                     }
                 }
@@ -6765,6 +6817,25 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // 4. [修正核心] 預判：檢查號誌、路口衝突、下游回堵
             if (this.state === 'onLink') {
+                // =================================================================
+                // ★★★ [新增] 彈射起步豁免邏輯 (Launch Control) ★★★
+                // 如果正處於起步衝刺期 (swarmTimer > 0)，且前方沒有極近的物理障礙，
+                // 強制無視交通號誌與安全距離，全力加速。
+                // =================================================================
+                if (this.isMotorcycle && this.swarmTimer > 0) {
+                    // 起步衝刺期：允許機車更順暢地進入路口
+                    // 僅在完全沒車時回傳 Infinity，有車則誠實回報
+                    if (!leader) {
+                        return { leader: null, gap: Infinity };
+                    }
+                    // 如果有前車但間距較大（> 3m），仍允許積極加速
+                    if (gap > 3.0) {
+                        return { leader, gap: gap * 1.5 }; // 放大間距，減少減速
+                    }
+                    return { leader, gap };
+                }
+                // =================================================================
+
                 const checkDistance = Math.max(50, this.speed * 4);
 
                 if (distanceToEndOfCurrentPath < checkDistance) {
@@ -6861,7 +6932,26 @@ document.addEventListener('DOMContentLoaded', () => {
                                 if (isTarget) {
                                     // 下游預判間距修正
                                     const physicalGap = (distanceToEndOfCurrentPath + transitionLen + distInNext) - (this.length / 2) - (other.length / 2);
+                                    // =================================================================
+                                    // ★★★ [修復增強版] 機車起步與邊界並排豁免邏輯 ★★★
+                                    // =================================================================
+                                    if (this.isMotorcycle && other.isMotorcycle) {
 
+                                        // 判斷是否處於「起步衝刺」或「低速跟隨」狀態
+                                        // 1. 我正在起步模式 (swarmTimer > 0)
+                                        // 2. 或者我速度很慢但前車有在動 (防止死鎖)
+                                        const isSwarmStart = (this.swarmTimer > 0) || (this.speed < 3.0 && other.speed > 0.1);
+
+                                        // 條件 A: 高速並排 (既有邏輯) -> 速度 > 1.5 且距離近
+                                        // 條件 B: 起步並排 (新增邏輯) -> 處於起步狀態 且 前車只要有微小移動 (> 0.1) 就不視為障礙
+                                        if ((other.speed > 1.5 && physicalGap < 8.0) ||
+                                            (isSwarmStart && physicalGap < 5.0 && other.speed > 0.1)) {
+
+                                            // 視為並排或群體起步，忽略此 Gap，避免 IDM 誤判煞車
+                                            continue;
+                                        }
+                                    }
+                                    // =================================================================
                                     if (isSignalized) {
                                         const spaceAvailable = distInNext > (this.length + 1.0);
                                         const isCongested = !spaceAvailable && other.speed < 2.0;
