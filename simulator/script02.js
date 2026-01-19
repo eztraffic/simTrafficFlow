@@ -4,7 +4,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- I18N Setup ---
     const translations = {
         'zh-Hant': {
-            appTitle: 'TwinTraffic Pro',
+            appTitle: 'simTrafficFlow',
             selectFileLabel: '路網檔案',
             // --- 新增/更新以下兩行 ---
             loadSceneLabel: '場景',
@@ -5524,25 +5524,37 @@ document.addEventListener('DOMContentLoaded', () => {
                 this.accel = Math.min(this.accel, 4.5);
             }
             // =================================================================
-            // ★★★ [修復] 起步防穿模 (Anti-Clipping at Startup) ★★★
+            // ★★★ [優化] 強化追撞防護 (強制物理速度耦合) ★★★
             // =================================================================
             if (this.isMotorcycle && leader) {
-                // 如果距離很近 (< 2.5米) 且 前車速度不快 (< 3.0 m/s, 約10km/h)
-                // 這代表處於剛起步或塞車階段
-                if (gap < 2.5 && leader.speed < 3.0) {
-
-                    // 1. 速度耦合 (Velocity Coupling)：
-                    // 如果我比前車快，強制減速，不管 IDM 算出多少
-                    if (this.speed > leader.speed) {
-                        // 強力煞車，係數可調整 (這裡設為 -3.0 模擬急煞)
-                        // 這樣可以保證後車絕不會在視覺上「插進」前車
+                // 1. 計算接近速度 (相對速度)
+                // speedDiff > 0 代表我在接近他，且這數值越大代表來得越快
+                let speedDiff = this.speed - (leader ? leader.speed : 0);
+                // 2. 判定極危險狀況 (不再限制前車速度為 3.0，只看間距與相對速度)
+                // 條件 A: 距離非常近 (< 1.5米)
+                // 條件 B: 對方速度明顯比我慢 (speedDiff > 1.0 m/s)
+                // 條件 C: 已經發生物理重疊 (gap <= 0，這是緊急最後一道防線)
+                if (gap <= 0) {
+                    // 緊急煞停，這是絕對的
+                    this.accel = -10.0;
+                } else if (gap < 1.5 && speedDiff > 1.0) {
+                    // 危險急煞：前車可能在加速，但我追得太快太近
+                    this.accel = -8.5;
+                }
+                // 3. 保留原本的起步防穿模邏輯 (處理低速跟隨)
+                else if (gap < 2.5 && speedDiff > 0) {
+                    // 低速防追尾：這處理塞車或怠速狀態
+                    if (speedDiff > 1.5) {
+                        // 如果我比他快 1.5m/s 以上，不管他多慢，我都急煞
+                        this.accel = -9.0;
+                    } else if (leader.speed < 2.0) {
+                        // 如果他快停了，而我還在動，強制同步速度（耦合）
                         this.accel = -3.0;
-                    }
-                    // 2. 限制起步爆發力：
-                    // 即使我比前車慢，但如果距離太近 (< 1.5m)，也不能全油門
-                    else if (gap < 1.5) {
-                        // 限制最大加速度為 1.0，讓它慢慢跟上去，而不是彈射
-                        this.accel = Math.min(this.accel, 1.0);
+                    } else {
+                        // 輕微限速，防止追尾輕微碰撞
+                        if (speedDiff > 0.2) {
+                            this.accel = -2.0;
+                        }
                     }
                 }
             }
@@ -7263,6 +7275,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (vehicleCountChart) vehicleCountChart.destroy();
         if (avgSpeedChart) avgSpeedChart.destroy();
         const dict = translations[currentLang];
+        // Chart options 保持不變
         const chartOptions = (yAxisTitle) => ({
             responsive: true, maintainAspectRatio: false, animation: { duration: 200 },
             scales: { x: { type: 'linear', title: { display: true, text: dict.chartTimeAxis } }, y: { beginAtZero: true, title: { display: true, text: yAxisTitle }, suggestedMax: 10 } },
@@ -7271,19 +7284,97 @@ document.addEventListener('DOMContentLoaded', () => {
         vehicleCountChart = new Chart(vehicleCountChartCanvas, { type: 'line', data: { labels: [], datasets: [{ label: dict.chartVehicleAxis, data: [], borderColor: 'rgb(54, 162, 235)', backgroundColor: 'rgba(54, 162, 235, 0.5)' }] }, options: chartOptions(dict.chartVehicleAxis) });
         avgSpeedChart = new Chart(avgSpeedChartCanvas, { type: 'line', data: { labels: [], datasets: [{ label: dict.chartSpeedAxis, data: [], borderColor: 'rgb(255, 99, 132)', backgroundColor: 'rgba(255, 99, 132, 0.5)' }] }, options: chartOptions(dict.chartSpeedAxis) });
     }
+    // [修正] 定點偵測器圖表生成：適配新的 CSS (.chart-card > .chart-box)
     function setupMeterCharts(meters) {
-        meterChartsContainer.innerHTML = ''; meterCharts = {}; const dict = translations[currentLang];
-        const chartOptions = { responsive: true, maintainAspectRatio: false, animation: { duration: 0 }, scales: { x: { type: 'linear', title: { display: true, text: dict.chartTimeAxis }, ticks: { autoSkip: true, maxRotation: 45, minRotation: 0, } }, y: { beginAtZero: true, title: { display: true, text: dict.meterChartSpeedAxis }, suggestedMax: 60 } }, plugins: { legend: { display: true, position: 'top', } }, elements: { point: { radius: 3 } } };
-        meters.forEach(meter => { const chartDiv = document.createElement('div'); chartDiv.className = 'chart-container'; const title = document.createElement('h3'); title.textContent = `${dict.meterTitle} ${meter.id} (${meter.name})`; const canvasEl = document.createElement('canvas'); canvasEl.id = `meter-chart-${meter.id}`; chartDiv.appendChild(title); chartDiv.appendChild(canvasEl); meterChartsContainer.appendChild(chartDiv); const datasets = [{ label: dict.allLanesLabel, data: [], backgroundColor: 'rgba(0, 0, 0, 0.7)', }]; for (let i = 0; i < meter.numLanes; i++) { datasets.push({ label: `${dict.laneLabel} ${i}`, data: [], backgroundColor: LANE_COLORS[i % LANE_COLORS.length] }); } meterCharts[meter.id] = new Chart(canvasEl.getContext('2d'), { type: 'scatter', data: { datasets: datasets }, options: chartOptions }); });
-    }
-    function setupSectionMeterCharts(meters) {
-        sectionMeterChartsContainer.innerHTML = ''; sectionMeterCharts = {}; const dict = translations[currentLang];
+        meterChartsContainer.innerHTML = '';
+        meterCharts = {};
+        const dict = translations[currentLang];
+        
         const chartOptions = {
-            responsive: true, maintainAspectRatio: false, animation: { duration: 0 }, scales: { x: { type: 'linear', title: { display: true, text: dict.chartTimeAxis } }, y: { beginAtZero: true, title: { display: true, text: dict.sectionChartSpeedAxis }, suggestedMax: 60 } }, plugins: {
-                legend: { display: true, position: 'top', }
-            }, elements: { point: { radius: 2 }, line: { tension: 0.1, borderWidth: 2 } }
+            responsive: true,
+            maintainAspectRatio: false, // 關鍵：讓它隨父容器 (.chart-box) 縮放
+            animation: { duration: 0 },
+            scales: {
+                x: { type: 'linear', title: { display: true, text: dict.chartTimeAxis }, ticks: { autoSkip: true, maxRotation: 45, minRotation: 0, } },
+                y: { beginAtZero: true, title: { display: true, text: dict.meterChartSpeedAxis }, suggestedMax: 60 }
+            },
+            plugins: { legend: { display: true, position: 'top', } },
+            elements: { point: { radius: 3 } }
         };
-        meters.forEach(meter => { const chartDiv = document.createElement('div'); chartDiv.className = 'chart-container'; const title = document.createElement('h3'); title.textContent = `${dict.sectionMeterTitle} ${meter.id} (${meter.name})`; const canvasEl = document.createElement('canvas'); canvasEl.id = `section-meter-chart-${meter.id}`; chartDiv.appendChild(title); chartDiv.appendChild(canvasEl); sectionMeterChartsContainer.appendChild(chartDiv); const newChart = new Chart(canvasEl.getContext('2d'), { type: 'line', data: { datasets: [{ label: dict.allLanesAvgRateLabel, data: [], borderColor: 'rgb(75, 192, 192)', backgroundColor: 'rgba(75, 192, 192, 0.5)', }] }, options: chartOptions }); sectionMeterCharts[meter.id] = newChart; });
+
+        meters.forEach(meter => {
+            // 1. 建立外層卡片 (Chart Card)
+            const cardDiv = document.createElement('div');
+            cardDiv.className = 'chart-card'; // 改用新版 class
+
+            // 2. 建立標題
+            const title = document.createElement('h3');
+            title.textContent = `${dict.meterTitle} ${meter.id} (${meter.name})`;
+            cardDiv.appendChild(title);
+
+            // 3. 建立圖表容器 (Chart Box) - 用於控制高度
+            const boxDiv = document.createElement('div');
+            boxDiv.className = 'chart-box'; // 改用新版 class
+
+            // 4. 建立 Canvas
+            const canvasEl = document.createElement('canvas');
+            canvasEl.id = `meter-chart-${meter.id}`;
+            
+            boxDiv.appendChild(canvasEl);
+            cardDiv.appendChild(boxDiv);
+            meterChartsContainer.appendChild(cardDiv);
+
+            const datasets = [{ label: dict.allLanesLabel, data: [], backgroundColor: 'rgba(0, 0, 0, 0.7)', }];
+            for (let i = 0; i < meter.numLanes; i++) {
+                datasets.push({ label: `${dict.laneLabel} ${i}`, data: [], backgroundColor: LANE_COLORS[i % LANE_COLORS.length] });
+            }
+            meterCharts[meter.id] = new Chart(canvasEl.getContext('2d'), { type: 'scatter', data: { datasets: datasets }, options: chartOptions });
+        });
+    }
+
+    // [修正] 區間偵測器圖表生成：適配新的 CSS (.chart-card > .chart-box)
+    function setupSectionMeterCharts(meters) {
+        sectionMeterChartsContainer.innerHTML = '';
+        sectionMeterCharts = {};
+        const dict = translations[currentLang];
+        
+        const chartOptions = {
+            responsive: true,
+            maintainAspectRatio: false, // 關鍵
+            animation: { duration: 0 },
+            scales: {
+                x: { type: 'linear', title: { display: true, text: dict.chartTimeAxis } },
+                y: { beginAtZero: true, title: { display: true, text: dict.sectionChartSpeedAxis }, suggestedMax: 60 }
+            },
+            plugins: { legend: { display: true, position: 'top', } },
+            elements: { point: { radius: 2 }, line: { tension: 0.1, borderWidth: 2 } }
+        };
+
+        meters.forEach(meter => {
+            // 1. 建立外層卡片
+            const cardDiv = document.createElement('div');
+            cardDiv.className = 'chart-card';
+
+            // 2. 建立標題
+            const title = document.createElement('h3');
+            title.textContent = `${dict.sectionMeterTitle} ${meter.id} (${meter.name})`;
+            cardDiv.appendChild(title);
+
+            // 3. 建立圖表容器
+            const boxDiv = document.createElement('div');
+            boxDiv.className = 'chart-box';
+
+            // 4. 建立 Canvas
+            const canvasEl = document.createElement('canvas');
+            canvasEl.id = `section-meter-chart-${meter.id}`;
+            
+            boxDiv.appendChild(canvasEl);
+            cardDiv.appendChild(boxDiv);
+            sectionMeterChartsContainer.appendChild(cardDiv);
+
+            const newChart = new Chart(canvasEl.getContext('2d'), { type: 'line', data: { datasets: [{ label: dict.allLanesAvgRateLabel, data: [], borderColor: 'rgb(75, 192, 192)', backgroundColor: 'rgba(75, 192, 192, 0.5)', }] }, options: chartOptions });
+            sectionMeterCharts[meter.id] = newChart;
+        });
     }
     function updateStatistics(time) {
         if (!simulation) return;
