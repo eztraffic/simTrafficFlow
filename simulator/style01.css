@@ -500,7 +500,7 @@ main#main-content {
 }
 
 .chart-box {
-    height: 140px;
+    height: 250px; /* [修改] 從 140px 改回 250px 以符合第一版高度 */
     width: 100%;
     position: relative;
 }
@@ -757,4 +757,12 @@ td {
     margin: 0;
     accent-color: var(--primary);
     cursor: pointer;
+}
+
+/* [新增] 恢復偵測器圖表之間的間距 */
+#meter-charts-container, 
+#section-meter-charts-container {
+    display: flex;
+    flex-direction: column;
+    gap: 15px; /* 圖表之間的間隔 */
 }
