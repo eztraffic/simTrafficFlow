@@ -4989,7 +4989,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (!startLink) continue;
 
                     let route = [startLinkId];
-                    if (network.navigationMode !== 'FLOW_BASED' && destinationNodeId) {
+                    if (destinationNodeId) {
                         const nextNodeId = startLink.destination;
                         const remainingPath = network.pathfinder.findRoute(nextNodeId, destinationNodeId);
                         if (remainingPath) route = [startLinkId, ...remainingPath];
@@ -5005,22 +5005,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // 3. 載入偵測器 Spawners
             this.detectorSpawners = [];
-            if (network.navigationMode === 'FLOW_BASED') {
-                if (network.speedMeters) {
-                    network.speedMeters.forEach(meter => {
-                        if (meter.isSource && meter.observedFlow > 0) {
-                            this.detectorSpawners.push(new DetectorSpawner(meter, network));
-                        }
-                    });
-                }
-                if (network.sectionMeters) {
-                    network.sectionMeters.forEach(meter => {
-                        if (meter.isSource && meter.observedFlow > 0) {
-                            this.detectorSpawners.push(new DetectorSpawner(meter, network));
-                        }
-                    });
-                }
+            //if (network.navigationMode === 'HYBRID') {
+            if (network.speedMeters) {
+                network.speedMeters.forEach(meter => {
+                    if (meter.isSource && meter.observedFlow > 0) {
+                        this.detectorSpawners.push(new DetectorSpawner(meter, network));
+                    }
+                });
             }
+            if (network.sectionMeters) {
+                network.sectionMeters.forEach(meter => {
+                    if (meter.isSource && meter.observedFlow > 0) {
+                        this.detectorSpawners.push(new DetectorSpawner(meter, network));
+                    }
+                });
+            }
+            //}
 
             // 4. 其他初始化
             this.trafficLights = network.trafficLights;
@@ -5351,7 +5351,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // [修改] 提早決策：只要進入路段，且距離終點小於 2500米 (或任意長距離) 就決定
             // 這樣可以讓機車有足夠的時間從內側車道慢慢切到外側，並防止其在未知路徑時錯誤地超車到內側
-            if (network.navigationMode === 'FLOW_BASED' && this.state === 'onLink' && !hasNextRoute && distToEnd < 2500) {
+            if (this.state === 'onLink' && !hasNextRoute && distToEnd < 2500) {
                 this.decideNextLink(network);
             }
 
@@ -5857,14 +5857,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // === 階段 3：根據情況決定目標位置 ===
             if (!leader) {
-                // 無前車：維持當前位置或緩慢回歸中心
+                // 無前車：維持當前位置或緩慢回歸偏好位置
                 if (this.swarmTimer > 0) {
-                    // 起步衝刺中：鎖定當前位置，直線前進
+                    // 起步衝刺中：鎖定當前位置
                     this.decisionTimer = 1.0;
                 } else {
-                    // 正常行駛：緩慢回歸中心
-                    const centerPull = 0.03;
-                    this.targetLateralOffset *= (1 - centerPull);
+                    // 【修正】正常行駛：緩慢回歸「個人偏好位置」(例如靠右)
+                    // 使用線性插值 (Lerp) 慢慢移動過去
+                    const biasPull = 0.05;
+                    this.targetLateralOffset = this.targetLateralOffset * (1 - biasPull) + this.preferredBias * biasPull;
+
                     this.decisionTimer = 2.0 + Math.random();
                 }
             } else {
@@ -6216,7 +6218,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 // 2. 尋找一般的 Transition
                 // 2. 尋找一般的 Transition (或 Fallback 找到的內側路徑)
                 let transition = destNode.transitions.find(t => t.sourceLinkId === this.currentLinkId && t.sourceLaneIndex === this.currentLaneIndex && t.destLinkId === nextLinkId);
-                if (!transition && network.navigationMode === 'FLOW_BASED') {
+                if (!transition) {
                     transition = destNode.transitions.find(t => t.sourceLinkId === this.currentLinkId && t.destLinkId === nextLinkId);
                 }
 
@@ -6484,7 +6486,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 t.destLinkId === nextLinkId
             );
 
-            if (!myTransition && network.navigationMode === 'FLOW_BASED') {
+            if (!myTransition) {
                 myTransition = destNode.transitions.find(t =>
                     t.sourceLinkId === this.currentLinkId &&
                     t.destLinkId === nextLinkId
@@ -6876,26 +6878,32 @@ document.addEventListener('DOMContentLoaded', () => {
                             const currentGap = distDiff - (this.length / 2) - (other.length / 2);
 
                             // ============================================================
-                            // 機車跟車邏輯（簡化版）
+                            // 機車跟車邏輯（修改版：回歸標準判定）
                             // ============================================================
-                            // 機車之間可以更靠近，但仍需保持最小安全間距
-                            if (this.isMotorcycle && other.isMotorcycle && currentGap > 0.3) {
-                                // 機車可以比汽車更近，有效間距減少 0.3m
-                                const effectiveGap = currentGap - 0.3;
-                                if (effectiveGap > 0 && effectiveGap < gap) {
-                                    gap = effectiveGap;
-                                    leader = other;
-                                }
-                            } else if (currentGap < gap) {
+                            // 移除針對機車扣除 0.3m 的邏輯，完全遵循 XML 的 minDistance
+                            if (currentGap < gap) {
                                 gap = currentGap;
                                 leader = other;
                             }
+                            // ============================================================
                             // ============================================================
                         }
                     }
                 }
             }
+            // --- B. [新增] 右轉禮讓直行邏輯 (Right Hook Protection) ---
+            // 只有「汽車」且「正在路口或接近路口」時才檢查
+            if (!this.isMotorcycle && (this.state === 'inIntersection' || (this.state === 'onLink' && distanceToEndOfCurrentPath < 30))) {
+                const conflictGap = this.detectRightTurnConflict(allVehicles, network);
 
+                // 如果偵測到衝突，conflictGap 會是一個很小的數值 (例如 2.0米)
+                // 這會強制覆蓋掉原本的 Gap，讓車子以為前面有障礙物
+                if (conflictGap < gap) {
+                    gap = conflictGap;
+                    // 我們不設定實體 leader，因為這是虛擬障礙物，但 gap 的縮小足以觸發 IDM 減速
+                    leader = null;
+                }
+            }
             // 4. [修正核心] 預判：檢查號誌、路口衝突、下游回堵
             if (this.state === 'onLink') {
                 // =================================================================
@@ -6939,7 +6947,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         // ★★★★★ [關鍵修正結束] ★★★★★
 
                         let myTransition = destNode.transitions.find(t => t.sourceLinkId === this.currentLinkId && t.sourceLaneIndex === finalLane && t.destLinkId === nextLinkId);
-                        if (!myTransition && network.navigationMode === 'FLOW_BASED') {
+                        if (!myTransition) {
                             myTransition = destNode.transitions.find(t => t.sourceLinkId === this.currentLinkId && t.destLinkId === nextLinkId);
                         }
 
@@ -7082,6 +7090,116 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             return { leader, gap: Math.max(0.1, gap) };
         }
+
+        /**
+         * [新增] 偵測右轉衝突 (Right Hook Detection)
+         * 回傳：如果有衝突，回傳一個虛擬的小 Gap 值；如果沒有，回傳 Infinity
+         */
+        detectRightTurnConflict(allVehicles, network) {
+            // 1. 判斷自己是否正在右轉 (或準備右轉)
+            let isTurningRight = false;
+
+            // 方法：比較當前角度與下一條路的角度
+            // 如果在路口內
+            if (this.state === 'inIntersection' && this.currentTransition) {
+                // 使用 Transition 的起終點角度差
+                // 簡單判定：貝茲曲線角度變化。若角度往順時針變化超過一定閾值，視為右轉。
+                // (注意：在標準數學座標，順時針是角度減少，Delta < 0)
+
+                // 簡化判定：檢查 TurnGroupId 的訊號類型，或者檢查幾何
+                // 這裡使用幾何判定：
+                const pStart = this.currentTransition.bezier ? this.currentTransition.bezier.points[0] : null;
+                const pEnd = this.currentTransition.bezier ? this.currentTransition.bezier.points[3] : null;
+                if (pStart && pEnd) {
+                    const startAngle = Math.atan2(pStart.y - this.y, pStart.x - this.x); // 近似
+                    const endAngle = Math.atan2(pEnd.y - pStart.y, pEnd.x - pStart.x);
+                    let diff = endAngle - this.angle;
+                    while (diff <= -Math.PI) diff += Math.PI * 2;
+                    while (diff > Math.PI) diff -= Math.PI * 2;
+
+                    // 閾值：-0.2 rad (約 11度) ~ -2.5 rad
+                    if (diff < -0.2 && diff > -2.5) isTurningRight = true;
+                }
+            }
+            // 如果在路段上 (接近路口)
+            else if (this.state === 'onLink') {
+                // 預判下一個 Transition
+                // 簡化：如果目前在最外側車道，且下一條路是接續的，假設可能右轉風險較低
+                // 但如果汽車不在最外側，而機車在更外側，就有風險。
+                // 這裡為了效能與簡化，主要針對「已進入路口」或「路口極近處」做保護
+                // 若要精確預判，需讀取 route 的下一條 link 計算角度，此處暫略，主要依靠 Intersection 狀態
+            }
+
+            if (!isTurningRight) return Infinity;
+
+            // 2. 掃描危險區域 (右側與右後方)
+            let minVirtualGap = Infinity;
+
+            // 定義危險區參數
+            const scanDistFwd = 10.0;  // 前方掃描距離
+            const scanDistBack = -10.0; // 後方掃描距離 (盲點)
+            const scanDistSide = 5.0;   // 右側寬度
+
+            // 計算本車的右側向量 (假設 angle 是標準逆時針弧度)
+            const cos = Math.cos(this.angle);
+            const sin = Math.sin(this.angle);
+            // 右側向量 (Right Vector): (sin, -cos) 
+            const rx = sin;
+            const ry = -cos;
+            // 前方向量 (Forward Vector)
+            const fx = cos;
+            const fy = sin;
+
+            for (const other of allVehicles) {
+                // 只檢查機車
+                if (!other.isMotorcycle) continue;
+                if (other.id === this.id) continue;
+
+                // 排除對向車道的車 (簡單過濾：距離太遠就跳過)
+                const distSq = (other.x - this.x) ** 2 + (other.y - this.y) ** 2;
+                if (distSq > 400) continue; // > 20m 忽略
+
+                // 計算相對位置 (投影)
+                const dx = other.x - this.x;
+                const dy = other.y - this.y;
+
+                // 投影到前方軸 (Longitudinal)
+                const fwdProj = dx * fx + dy * fy;
+                // 投影到右側軸 (Lateral) -> 正值代表在右邊
+                const latProj = dx * rx + dy * ry;
+
+                // 判斷是否在危險區內
+                // 1. 在我右邊 (latProj > 0) 且不遠 (latProj < 5m)
+                // 2. 在我前後範圍內 (-10m ~ +10m)
+                if (latProj > 0.5 && latProj < scanDistSide &&
+                    fwdProj > scanDistBack && fwdProj < scanDistFwd) {
+
+                    // 3. 判斷機車意圖：必須是「直行」或「速度夠快」
+                    // 如果機車也在右轉，那沒衝突；如果機車直行，就有衝突
+                    // 這裡簡單判定：如果機車跟我的角度差不大 (代表它在直行)，或者它速度比我快
+
+                    let angleDiff = other.angle - this.angle;
+                    while (angleDiff <= -Math.PI) angleDiff += Math.PI * 2;
+                    while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+
+                    // 如果機車角度相對我是直的 ( abs(diff) < 0.5 )，視為直行車
+                    // 或者機車速度 > 10km/h
+                    if (Math.abs(angleDiff) < 0.8 || other.speed > 2.0) {
+                        // ★ 觸發禮讓機制 ★
+                        // 計算一個虛擬的 Gap，讓 IDM 煞車
+                        // 我們希望車子停在衝突點之前，或是直接急煞
+
+                        // 虛擬 Gap 設為 2.0 公尺 (強迫減速，但不至於瞬間定桿穿模)
+                        // 如果機車很近，Gap 設更小
+                        const penalty = Math.max(0.5, latProj / 2); // 越近越危險
+                        minVirtualGap = Math.min(minVirtualGap, penalty);
+                    }
+                }
+            }
+
+            return minVirtualGap;
+        }
+
         // ==================================================================================
         // 輔助與繪圖
         // ==================================================================================
@@ -7289,7 +7407,7 @@ document.addEventListener('DOMContentLoaded', () => {
         meterChartsContainer.innerHTML = '';
         meterCharts = {};
         const dict = translations[currentLang];
-        
+
         const chartOptions = {
             responsive: true,
             maintainAspectRatio: false, // 關鍵：讓它隨父容器 (.chart-box) 縮放
@@ -7319,7 +7437,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // 4. 建立 Canvas
             const canvasEl = document.createElement('canvas');
             canvasEl.id = `meter-chart-${meter.id}`;
-            
+
             boxDiv.appendChild(canvasEl);
             cardDiv.appendChild(boxDiv);
             meterChartsContainer.appendChild(cardDiv);
@@ -7337,7 +7455,7 @@ document.addEventListener('DOMContentLoaded', () => {
         sectionMeterChartsContainer.innerHTML = '';
         sectionMeterCharts = {};
         const dict = translations[currentLang];
-        
+
         const chartOptions = {
             responsive: true,
             maintainAspectRatio: false, // 關鍵
@@ -7367,7 +7485,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // 4. 建立 Canvas
             const canvasEl = document.createElement('canvas');
             canvasEl.id = `section-meter-chart-${meter.id}`;
-            
+
             boxDiv.appendChild(canvasEl);
             cardDiv.appendChild(boxDiv);
             sectionMeterChartsContainer.appendChild(cardDiv);
