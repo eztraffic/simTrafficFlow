@@ -46,6 +46,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const propertiesContent = document.getElementById('properties-content');
     const statusBar = document.getElementById('status-bar');
 
+    let lastActiveNodeTab = 'tab-settings'; // [新增] 用於記憶 Node 屬性面板當前的分頁
+
     // --- DATA MODELS ---
     // 我們將 numLanes 參數改為 lanesOrNumLanes
     function createLink(points, lanesOrNumLanes = 2) {
@@ -54,18 +56,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // 判斷傳入的是數字還是陣列
         if (Array.isArray(lanesOrNumLanes)) {
-            // 如果是陣列，直接使用它 (從 XML 匯入時會是這種情況)
             lanes = lanesOrNumLanes.map(width => ({ width: width }));
         } else {
-            // 如果是數字，像以前一樣創建陣列 (手動新增 Link 時會是這種情況)
             lanes = Array.from({ length: lanesOrNumLanes }, () => ({ width: LANE_WIDTH }));
         }
 
         const link = {
             id,
+            name: id, // <--- [新增] 初始化名稱，預設為 ID
             type: 'Link',
             waypoints: points,
-            lanes, // 使用新的 lanes 屬性
+            lanes,
             startNodeId: null,
             endNodeId: null,
             konvaGroup: new Konva.Group({ id, draggable: false }),
@@ -1534,7 +1535,7 @@ document.addEventListener('DOMContentLoaded', () => {
             case 'add-parking-gate': text += " - Drag to create a rectangle representing an Entrance or Exit on a Parking Lot boundary."; break;
 
         }
-        statusBar.textContent = text;
+        statusBar.textContent = I18N.t(text);
     }
 
     // --- START OF MODIFICATION: NEW HELPER FUNCTION ---
@@ -1825,7 +1826,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     || network.measurements[group.id()]
                     || network.parkingLots[group.id()]
                     || network.parkingGates[group.id()]
-                    || network.pushpins[group.id()];
+                    || network.pushpins[group.id()]
+                    // [修正] 加入這一行，讓點擊事件能找到 RoadMarking 物件
+                    || network.roadMarkings[group.id()];
 
                 if (obj) {
                     if (e.evt.altKey && obj.type === 'Link') {
@@ -1905,9 +1908,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 deselectAll();
             }
         });
+        // --- 修改後 (新代碼) ---
         document.getElementById('toolbar').addEventListener('click', (e) => {
-            if (e.target.classList.contains('tool-btn')) {
-                setTool(e.target.dataset.tool);
+            // [修正] 使用 closest 以支援 FontAwesome 圖示點擊
+            const btn = e.target.closest('.tool-btn');
+            if (btn) {
+                setTool(btn.dataset.tool);
             }
         });
 
@@ -1934,7 +1940,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     createAndLoadNetworkFromXML(event.target.result);
                 } catch (error) {
                     console.error("Failed to parse or load XML file:", error);
-                    alert("Error loading XML file. See console for details.");
+                    alert(I18N.t("Error loading XML file. See console for details."));
                 }
             };
             reader.readAsText(file);
@@ -2205,14 +2211,32 @@ document.addEventListener('DOMContentLoaded', () => {
             drawGrid();
         });
 
-        document.getElementById('simulationModeSelect').addEventListener('change', (e) => {
-            network.navigationMode = (e.target.value === 'flow_turning') ? 'FLOW_BASED' : 'OD_BASED';
-            console.log("Simulation Mode changed to:", network.navigationMode);
-        });
-
         initModals();
         setTool('select');
         initBackgroundLock();
+
+        // --- [新增] 語言初始化邏輯 ---
+        const langSelect = document.getElementById('languageSelect');
+
+        // 1. 讀取使用者上次設定，若無則偵測瀏覽器語言
+        const savedLang = localStorage.getItem('simTrafficFlow_lang');
+        const systemLang = navigator.language.toLowerCase().startsWith('zh') ? 'zh' : 'en';
+        const initLang = savedLang || systemLang; // 預設邏輯：有存讀存，沒存讀系統
+
+        // 2. 設定下拉選單的值
+        if (langSelect) {
+            langSelect.value = initLang;
+
+            // 3. 綁定切換事件
+            langSelect.addEventListener('change', (e) => {
+                // 切換語言時移除 focus，避免按鍵盤快捷鍵(如 Del)時誤觸選單
+                e.target.blur();
+                I18N.setLang(e.target.value);
+            });
+        }
+
+        // 4. 執行初次翻譯
+        I18N.setLang(initLang);
     }
 
     // --- END OF CORRECTED `init` FUNCTION ---
@@ -2357,30 +2381,60 @@ document.addEventListener('DOMContentLoaded', () => {
         updateAllOverpasses(); // <--- 在函數結尾新增呼叫
     }
 
+    // --- 刪除單一連接線 ---
     function deleteConnection(connId) {
         const conn = network.connections[connId];
         if (!conn) return;
 
-        // Remove from traffic light signal groups
-        const tfl = network.trafficLights[conn.nodeId];
+        // 1. 從交通號誌群組中移除此連接線的 ID
+        // (避免刪除線後，號誌還以為這條線存在)
+        const nodeId = conn.nodeId;
+        const tfl = network.trafficLights[nodeId];
         if (tfl && tfl.signalGroups) {
             Object.values(tfl.signalGroups).forEach(group => {
                 const index = group.connIds.indexOf(connId);
-                if (index > -1) group.connIds.splice(index, 1);
+                if (index > -1) {
+                    group.connIds.splice(index, 1);
+                }
             });
         }
 
-        // Cleanup Konva objects
-        // destroyConnectionControls(conn); // <--- 移除了此行
-        conn.konvaBezier.destroy();
+        // 2. 銷毀 Konva 圖形
+        if (conn.konvaBezier) {
+            conn.konvaBezier.destroy();
+        }
+        // 如果有控制點 (Control Points) 也要銷毀
+        destroyConnectionControls(conn);
+
+        // 3. 從資料模型中刪除
         delete network.connections[connId];
     }
-    function deleteDetector(detId) {
-        const det = network.detectors[detId];
-        if (!det) return;
 
-        det.konvaGroup.destroy();
-        delete network.detectors[detId];
+    // --- 刪除連接群組 ---
+    function deleteConnectionGroup(groupObj) {
+        if (!groupObj || !groupObj.connectionIds) return;
+
+        // 1. 遍歷群組內的所有 ID，逐一刪除單一連接線
+        // (複製一份陣列再遍歷，避免在迴圈中修改陣列長度導致錯誤)
+        [...groupObj.connectionIds].forEach(connId => {
+            deleteConnection(connId);
+        });
+
+        // 2. 刪除群組本身的視覺線條 (綠色粗線)
+        if (groupObj.konvaLine) {
+            groupObj.konvaLine.destroy();
+        }
+
+        // 注意：ConnectionGroup 本身沒有存在 network 物件的頂層 (它是附屬的)，
+        // 所以只要銷毀視覺元素並刪除內部的 connections 即可。
+    }
+
+    // --- 輔助：銷毀控制點 (如果有的話) ---
+    function destroyConnectionControls(conn) {
+        if (conn && conn.konvaControls) {
+            conn.konvaControls.forEach(c => c.destroy());
+            conn.konvaControls = [];
+        }
     }
 
     function deleteRoadSign(signId) {
@@ -2491,7 +2545,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } else if (activeTool === 'add-background') {
             if (e.target !== stage) return;
             if (network.background) {
-                alert("背景已存在，無法新增。請先刪除現有背景。");
+                alert(I18N.t("背景已存在，無法新增。請先刪除現有背景。"));
                 setTool('select');
                 return;
             }
@@ -2540,13 +2594,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 const hasOrigin = Object.values(network.origins).some(o => o.linkId === link.id);
                 const hasDestination = Object.values(network.destinations).some(d => d.linkId === link.id);
                 if (dist < linkLength / 2) {
-                    if (hasOrigin) { alert(`Link ${link.id} already has an Origin.`); return; }
+                    if (hasOrigin) { alert(I18N.t(`Link ${link.id} already has an Origin.`)); return; }
                     const originPosition = Math.min(5, linkLength * 0.1);
                     const newOrigin = createOrigin(link, originPosition);
                     selectObject(newOrigin);
                 }
                 else {
-                    if (hasDestination) { alert(`Link ${link.id} already has a Destination.`); return; }
+                    if (hasDestination) { alert(I18N.t(`Link ${link.id} already has a Destination.`)); return; }
                     const destPosition = Math.max(linkLength - 5, linkLength * 0.9);
                     const newDest = createDestination(link, destPosition);
                     selectObject(newDest);
@@ -2636,7 +2690,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             if (rawPoints.length < 6) { // 至少需要3個點 (6個座標值) 才能構成多邊形
-                alert("Parking lot must have at least 3 points.");
+                alert(I18N.t("Parking lot must have at least 3 points."));
                 tempShape.destroy();
                 tempShape = null;
                 return;
@@ -3504,6 +3558,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const LINE_COLOR = 'white';
         const STROKE_WIDTH = 0.5;
+        // [修正] 增加點擊判定範圍 (隱形邊框寬度)
+        const HIT_WIDTH = 15;
 
         // 判斷是否使用「車道依附模式」
         const isLaneAttached = marking.linkId && !marking.isFree;
@@ -3536,7 +3592,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     points: [p1.x, p1.y, p2.x, p2.y],
                     stroke: LINE_COLOR,
                     strokeWidth: STROKE_WIDTH,
-                    hitStrokeWidth: 1.0,
+                    hitStrokeWidth: HIT_WIDTH, // [修正] 讓停止線容易被點到
+                    listening: true, // 確保可監聽
                     name: 'marking-shape'
                 });
                 marking.konvaGroup.add(line);
@@ -3554,8 +3611,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     closed: true,
                     stroke: LINE_COLOR,
                     strokeWidth: STROKE_WIDTH,
-                    hitStrokeWidth: 1.0,
-                    fill: null,
+                    hitStrokeWidth: HIT_WIDTH,
+                    fill: 'rgba(0,0,0,0)', // [修正] 透明填充，讓點擊內部也能選取
+                    listening: true,
                     name: 'marking-shape'
                 });
                 marking.konvaGroup.add(rect);
@@ -3565,23 +3623,20 @@ document.addEventListener('DOMContentLoaded', () => {
             marking.konvaGroup.rotation(0);
 
         } else {
-            // [修改重點] 自由模式 (Node 模式 或 Link 的 Free 模式)
-            // 因為旋轉角度是以「車道方向」為 X 軸：
-            // Konva Rect 的 width (X軸) 應該對應標線的 length (縱深)
-            // Konva Rect 的 height (Y軸) 應該對應標線的 width (橫寬)
-
-            const rectWidth = marking.length; // 視覺上的 X 軸長度
-            const rectHeight = marking.width; // 視覺上的 Y 軸長度
+            // 自由模式 (Node 模式 或 Link 的 Free 模式)
+            const rectWidth = marking.length;
+            const rectHeight = marking.width;
 
             const rect = new Konva.Rect({
                 x: -rectWidth / 2,
                 y: -rectHeight / 2,
-                width: rectWidth,   // 這裡填入 length
-                height: rectHeight, // 這裡填入 width
+                width: rectWidth,
+                height: rectHeight,
                 stroke: LINE_COLOR,
                 strokeWidth: STROKE_WIDTH,
-                hitStrokeWidth: 1.0,
-                fill: null,
+                hitStrokeWidth: HIT_WIDTH,
+                fill: 'rgba(0,0,0,0)', // [修正] 透明填充
+                listening: true,
                 name: 'marking-shape'
             });
 
@@ -3679,71 +3734,241 @@ document.addEventListener('DOMContentLoaded', () => {
 
         switch (obj.type) {
             case 'Link':
-                content += `<div class="prop-group">
-                            <label for="prop-lanes">Number of Lanes</label>
-                            <input type="number" id="prop-lanes" value="${obj.lanes.length}" min="1" max="10">
-                        </div>`;
+                // --- SECTION: GENERAL ---
+                content += `<div class="prop-section-header">General</div>`;
 
-                content += `<div class="prop-group" id="lane-widths-container">
-                            <label>Lane Widths (m)</label>`;
-                obj.lanes.forEach((lane, index) => {
-                    content += `<div class="lane-width-item" style="display: flex; align-items: center; margin-bottom: 5px;">
-                                <label for="prop-lane-width-${index}" style="margin-right: 10px; font-weight: normal; margin-bottom: 0;">Lane ${index + 1}:</label>
-                                <input type="number" id="prop-lane-width-${index}" class="prop-lane-width" data-index="${index}" value="${lane.width.toFixed(2)}" step="0.1" min="1">
+                // Name
+                content += `<div class="prop-row">
+                                <span class="prop-label">Name</span>
+                                <input type="text" id="prop-link-name" class="prop-input" value="${obj.name || obj.id}">
                             </div>`;
+
+                // ID (Read-only)
+                content += `<div class="prop-row">
+                                <span class="prop-label">ID</span>
+                                <input type="text" class="prop-input" value="${obj.id}" disabled>
+                            </div>`;
+
+                // --- SECTION: GEOMETRY ---
+                content += `<div class="prop-section-header">Geometry</div>`;
+
+                // Length (Read-only)
+                content += `<div class="prop-row">
+                                <span class="prop-label">Length</span>
+                                <span class="prop-value-text">${getPolylineLength(obj.waypoints).toFixed(2)} m</span>
+                            </div>`;
+
+                // Total Width (Read-only)
+                content += `<div class="prop-row">
+                                <span class="prop-label">Total Width</span>
+                                <span class="prop-value-text">${getLinkTotalWidth(obj).toFixed(2)} m</span>
+                            </div>`;
+
+                // --- SECTION: LANES ---
+                content += `<div class="prop-section-header">Lanes Configuration</div>`;
+
+                // Lane Count
+                content += `<div class="prop-row">
+                                <span class="prop-label">Count</span>
+                                <input type="number" id="prop-lanes" class="prop-input" value="${obj.lanes.length}" min="1" max="10">
+                            </div>`;
+
+                // Lane Widths Grid
+                content += `<label class="prop-label" style="font-size:0.75rem; margin-top:8px; display:block;">Individual Widths (m)</label>`;
+                content += `<div class="prop-grid-container" id="lane-widths-container">`;
+                obj.lanes.forEach((lane, index) => {
+                    content += `<div class="prop-grid-item">
+                                    <span class="prop-grid-label">L${index + 1}</span>
+                                    <input type="number" id="prop-lane-width-${index}" class="prop-grid-input prop-lane-width" data-index="${index}" value="${lane.width.toFixed(2)}" step="0.1" min="1">
+                                </div>`;
                 });
                 content += `</div>`;
 
-                content += `<div class="prop-group">
-                            <label>Total Width</label>
-                            <p>${getLinkTotalWidth(obj).toFixed(2)} m</p>
-                        </div>`;
-
-                content += `<div class="prop-group">
-                            <label>Length</label>
-                            <p>${getPolylineLength(obj.waypoints).toFixed(2)} m</p>
-                        </div>`;
-
-                content += `<div class="prop-group">
-                            <label>Hint</label>
-                            <p>Alt + Left Click: Add a turning point to the road segment</p>
-                        </div>`;
+                // Hint
+                content += `<div class="prop-hint">
+                                <i class="fa-solid fa-circle-info"></i> 
+                                <strong>Tip:</strong> Alt + Left Click on the road to add a shaping point.
+                            </div>`;
                 break;
 
             case 'Node':
-                const tflData = network.trafficLights[obj.id] || { timeShift: 0 };
+                // 1. 定義分頁按鈕 HTML (調整順序：Settings -> Links -> Flow)
+                // 根據 lastActiveNodeTab 決定哪個按鈕有 active class
+                const getTabClass = (tabName) => lastActiveNodeTab === tabName ? 'active' : '';
 
-                // --- [新增] 轉向邏輯設定區塊 (針對流量模式) ---
-                content += `<hr><h5>🔄 Turning Logic (Flow Mode)</h5>`;
-                content += `<div style="margin-bottom: 10px;">
-                                <button id="btn-auto-calc-turns" class="tool-btn" style="background-color:#17a2b8; color:white; width:100%;">Auto-Calc from Detectors</button>
-                                <small style="color:#666; display:block; margin-top:4px;">Uses downstream detectors to set ratios.</small>
+                content += `
+                <div class="prop-tab-header">
+                    <button class="prop-tab-btn ${getTabClass('tab-settings')}" data-target="tab-settings">
+                        <i class="fa-solid fa-sliders"></i> Settings
+                    </button>
+                    <button class="prop-tab-btn ${getTabClass('tab-conn')}" data-target="tab-conn">
+                        <i class="fa-solid fa-network-wired"></i> Links
+                    </button>
+                    <button class="prop-tab-btn ${getTabClass('tab-flow')}" data-target="tab-flow">
+                        <i class="fa-solid fa-arrow-right-arrow-left"></i> Flow
+                    </button>
+                </div>`;
+
+                // 2. 準備各分頁內容容器
+                const getContentClass = (tabName) => lastActiveNodeTab === tabName ? 'active' : '';
+
+                // --- TAB 1: SETTINGS (Signal Control Only) ---
+                content += `<div id="tab-settings" class="prop-tab-content ${getContentClass('tab-settings')}">`;
+
+                // Signal Control Header
+                content += `<div class="prop-section-header">Signal Control</div>`;
+
+                const tflData = network.trafficLights[obj.id] || { timeShift: 0 };
+                const hasSignal = tflData.schedule && tflData.schedule.length > 0;
+
+                // 1. Status
+                content += `<div class="prop-row">
+                                <span class="prop-label">Status</span>
+                                ${hasSignal
+                        ? '<span class="prop-status-indicator success" style="padding:2px 8px; margin:0;">Active</span>'
+                        : '<span class="prop-status-indicator" style="padding:2px 8px; margin:0; background:#f1f5f9; color:#94a3b8;">No Signal</span>'}
+                            </div>`;
+
+                // 2. Time Shift (Moved Up)
+                content += `<div class="prop-row">
+                                <span class="prop-label">Time Shift (s)</span>
+                                <input type="number" id="prop-tfl-shift" class="prop-input" value="${tflData.timeShift}" min="0" step="1">
+                            </div>`;
+
+                // 3. Edit Button (Moved Down)
+                content += `<button id="edit-tfl-btn" class="btn-action" style="width:100%; margin-top:8px;">
+                                <i class="fa-solid fa-traffic-light"></i> Edit Schedule
+                            </button>`;
+
+                content += `</div>`; // End Tab 1
+
+
+                // --- TAB 2: LINKS (Connection Groups) ---
+                content += `<div id="tab-conn" class="prop-tab-content ${getContentClass('tab-conn')}">`;
+                content += `<div class="prop-section-header">Connection Groups</div>`;
+
+                // Logic for groups
+                const relatedGroups = [];
+                layer.find('.group-connection-visual').forEach(groupShape => {
+                    const meta = groupShape.getAttr('meta');
+                    if (meta && meta.nodeId === obj.id) {
+                        relatedGroups.push({
+                            id: groupShape.id(),
+                            domId: `group-selector-${meta.sourceLinkId}-${meta.destLinkId}`,
+                            ...meta
+                        });
+                    }
+                });
+
+                if (relatedGroups.length > 0) {
+                    const tflDataForGroup = network.trafficLights[obj.id] || { signalGroups: {} };
+                    const signalGroupOptions = Object.keys(tflDataForGroup.signalGroups || {});
+
+                    relatedGroups.forEach(group => {
+                        // Logic to find current signal group ... (保持不變)
+                        let currentSignalGroupId = "";
+                        const firstConnId = group.connectionIds[0];
+                        if (firstConnId) {
+                            for (const [sgId, sgData] of Object.entries(tflDataForGroup.signalGroups)) {
+                                if (sgData.connIds.includes(firstConnId)) {
+                                    currentSignalGroupId = sgId;
+                                    break;
+                                }
+                            }
+                        }
+
+                        // Dropdown HTML ... (保持不變)
+                        let signalSelectHtml = `<select class="prop-select prop-group-signal-select" data-group-json='${JSON.stringify(group.connectionIds)}' style="font-size:0.8rem; padding:2px;">`;
+                        signalSelectHtml += `<option value="">(No Signal)</option>`;
+                        signalGroupOptions.forEach(sgId => {
+                            const selected = sgId === currentSignalGroupId ? "selected" : "";
+                            signalSelectHtml += `<option value="${sgId}" ${selected}>${sgId}</option>`;
+                        });
+                        signalSelectHtml += `</select>`;
+
+                        // 3. 渲染卡片
+                        // [修正重點] 加入 class "connection-group-card" 和 data-source/data-dest
+                        content += `<div class="prop-card connection-group-card" 
+                                         data-source="${group.sourceLinkId}" 
+                                         data-dest="${group.destLinkId}"
+                                         id="${group.domId}" 
+                                         style="cursor:default;">
+                                         
+                                        <!-- Header Row -->
+                                        <div class="prop-card-row" style="margin-bottom:8px; border-bottom:1px solid #f1f5f9; padding-bottom:6px;">
+                                            <span style="font-weight:700; font-size:0.85rem; color:var(--text-main);">
+                                                ${group.sourceLinkId} <i class="fa-solid fa-arrow-right" style="font-size:0.7rem; color:#94a3b8;"></i> ${group.destLinkId}
+                                            </span>
+                                            
+                                            <!-- Buttons -->
+                                            <div style="display:flex; gap:6px;">
+                                                <button class="btn-mini group-edit-btn" title="Edit Lanes" data-source="${group.sourceLinkId}" data-dest="${group.destLinkId}" style="background:#f1f5f9; border:1px solid #e2e8f0; color:var(--text-muted);">
+                                                    <i class="fa-solid fa-pen"></i>
+                                                </button>
+                                                <button class="btn-mini group-delete-btn" title="Delete Group" data-source="${group.sourceLinkId}" data-dest="${group.destLinkId}" style="background:#fff; border:1px solid #fecaca; color:#ef4444;">
+                                                    <i class="fa-solid fa-trash-can"></i>
+                                                </button>
+                                            </div>
+                                        </div>
+                                        
+                                        <!-- Info Row -->
+                                        <div class="prop-card-row">
+                                            <span class="prop-card-label">Lanes Connected</span>
+                                            <span style="font-size:0.8rem; font-weight:600; color:var(--text-main);">${group.connectionIds.length}</span>
+                                        </div>
+
+                                        <!-- Control Row -->
+                                        <div class="prop-card-row" style="margin-top:6px;">
+                                            <span class="prop-card-label"><i class="fa-solid fa-traffic-light"></i> Signal Group</span>
+                                            <div style="flex:1; margin-left:8px;">
+                                                ${signalSelectHtml}
+                                            </div>
+                                        </div>
+                                    </div>`;
+                    });
+                } else {
+                    content += `<div style="font-size:0.8rem; color:#94a3b8; font-style:italic; padding:4px;">No connection groups found.</div>`;
+                }
+
+                content += `<div class="prop-section-header" style="margin-top:16px;">Tools</div>`;
+                content += `<button id="redraw-node-connections-btn" class="btn-action" style="width:100%;">
+                                <i class="fa-solid fa-rotate"></i> Redraw Connections
+                            </button>`;
+                content += `</div>`; // End Tab 2
+
+
+                // --- TAB 3: FLOW (Turning Ratios) ---
+                content += `<div id="tab-flow" class="prop-tab-content ${getContentClass('tab-flow')}">`;
+                content += `<div class="prop-section-header" style="display:flex; justify-content:space-between; align-items:center;">
+                                Turning Ratios
+                                <button id="btn-auto-calc-turns" class="btn-mini" style="background:#e0f2fe; color:#0284c7;">Auto-Calc</button>
                             </div>`;
 
                 const incomingLinks = [...obj.incomingLinkIds];
                 const outgoingLinks = [...obj.outgoingLinkIds];
-
-                // 確保資料結構存在
                 if (!obj.turningRatios) obj.turningRatios = {};
 
                 if (incomingLinks.length > 0 && outgoingLinks.length > 0) {
-                    content += `<div id="turning-ratios-container" style="max-height: 200px; overflow-y: auto; border: 1px solid #eee; padding: 5px;">`;
+                    content += `<div id="turning-ratios-container">`;
                     incomingLinks.forEach(inLink => {
-                        content += `<div class="turning-group" style="margin-bottom:12px; padding-bottom:8px; border-bottom:1px dashed #ccc;">`;
-                        content += `<strong style="color:#333;">From Link ${inLink}:</strong>`;
+                        content += `<div class="prop-card" style="padding:8px; background:#f8fafc;">`;
+
+                        // [修正] 加入 class "turn-ratio-header" 與 data-link，用於滑鼠移入高亮來源路段
+                        content += `<div class="turn-ratio-header" data-link="${inLink}" style="font-size:0.8rem; font-weight:700; color:#475569; margin-bottom:6px; border-bottom:1px solid #e2e8f0; padding-bottom:4px; cursor:default;">
+                                        From ${inLink}
+                                    </div>`;
 
                         outgoingLinks.forEach(outLink => {
-                            // 取得現有比率 (0.0 ~ 1.0)，若無則預設 0
                             const ratio = (obj.turningRatios[inLink] && obj.turningRatios[inLink][outLink] !== undefined)
-                                ? obj.turningRatios[inLink][outLink]
-                                : 0;
+                                ? obj.turningRatios[inLink][outLink] : 0;
                             const percent = (ratio * 100).toFixed(1);
 
-                            content += `<div style="display:flex; align-items:center; margin-top:4px; justify-content:space-between;">
-                                            <span style="font-size:0.9em;">➡ To ${outLink}:</span>
-                                            <div style="display:flex; align-items:center;">
-                                                <input type="number" class="prop-turn-ratio" data-from="${inLink}" data-to="${outLink}" value="${percent}" min="0" max="100" step="1" style="width:60px; text-align:right;">
-                                                <span style="margin-left:4px;">%</span>
+                            // [修正] 加入 class "turn-ratio-row" 與 data-from/to，用於滑鼠移入高亮轉向路徑
+                            content += `<div class="prop-row turn-ratio-row" data-from="${inLink}" data-to="${outLink}" style="margin-bottom:4px; padding:2px; border-radius:4px; cursor:default;">
+                                            <span class="prop-label" style="font-size:0.75rem;">To ${outLink}</span>
+                                            <div style="display:flex; align-items:center; gap:4px;">
+                                                <input type="number" class="prop-turn-ratio prop-input" style="width:50px; padding:2px;" data-from="${inLink}" data-to="${outLink}" value="${percent}" min="0" max="100" step="1">
+                                                <span style="font-size:0.75rem; color:#64748b;">%</span>
                                             </div>
                                         </div>`;
                         });
@@ -3751,100 +3976,70 @@ document.addEventListener('DOMContentLoaded', () => {
                     });
                     content += `</div>`;
                 } else {
-                    content += `<p style="font-size:0.8em; color:grey; font-style:italic;">Add incoming & outgoing links to configure turning ratios.</p>`;
+                    content += `<div class="prop-hint">Connect links to configure flow ratios.</div>`;
                 }
-                // ----------------------------------------------------
+                content += `</div>`; // End Tab 3
 
-                content += `<hr><h5>🚦 Traffic Light Control</h5>`;
-                content += `<div class="prop-group"><label for="prop-tfl-shift">Schedule Time Shift (sec)</label><input type="number" id="prop-tfl-shift" value="${tflData.timeShift}" min="0" step="1"></div>`;
-                content += `<button id="edit-tfl-btn" class="tool-btn">Edit Traffic Light Table</button>`;
-
-                content += `<div class="prop-group" style="margin-top:10px;"><label>Incoming Links</label><ul>${[...obj.incomingLinkIds].map(id => `<li>${id}</li>`).join('')}</ul><label>Outgoing Links</label><ul>${[...obj.outgoingLinkIds].map(id => `<li>${id}</li>`).join('')}</ul></div>`;
-
-                // 顯示關聯的連接群組
-                const relatedGroups = [];
-                layer.find('.group-connection-visual').forEach(groupShape => {
-                    const meta = groupShape.getAttr('meta');
-                    if (meta && meta.nodeId === obj.id) {
-                        relatedGroups.push({
-                            domId: `group-selector-${meta.sourceLinkId}-${meta.destLinkId}`,
-                            sourceLinkId: meta.sourceLinkId,
-                            destLinkId: meta.destLinkId,
-                            konvaLine: groupShape
-                        });
-                    }
-                });
-
-                if (relatedGroups.length > 0) {
-                    content += `<hr><h5>🔗 Connection Groups</h5>`;
-                    content += `<ul class="prop-list">`;
-                    relatedGroups.forEach(group => {
-                        content += `<li><a href="#" class="prop-group-selector" id="${group.domId}" title="Select this Connection Group">From ${group.sourceLinkId} to ${group.destLinkId}</a></li>`;
-                    });
-                    content += `</ul>`;
-                }
-
-                // 顯示獨立連接
-                const connectionsAtNode = Object.values(network.connections).filter(c => c.nodeId === obj.id);
-                const groupedConnIds = new Set();
-                relatedGroups.forEach(group => {
-                    const meta = group.konvaLine.getAttr('meta');
-                    if (meta && meta.connectionIds) {
-                        meta.connectionIds.forEach(id => groupedConnIds.add(id));
-                    }
-                });
-
-                const individualConnections = connectionsAtNode.filter(c => !groupedConnIds.has(c.id));
-
-                if (individualConnections.length > 0) {
-                    content += `<hr><h5>🔗 Individual Connections</h5>`;
-                    content += `<ul class="prop-list">`;
-                    individualConnections.forEach(conn => {
-                        content += `<li><a href="#" class="prop-conn-selector" id="conn-selector-${conn.id}" title="Select this Connection">From ${conn.sourceLinkId} (L${conn.sourceLaneIndex}) → ${conn.destLinkId} (L${conn.destLaneIndex})</a></li>`;
-                    });
-                    content += `</ul>`;
-                }
-                content += `<hr><button id="redraw-node-connections-btn" class="tool-btn" style="font-size:0.85em;">🔄 Redraw Connections</button>`;
                 break;
 
             case 'PointDetector':
             case 'SectionDetector':
-                content += `<div class="prop-group"><label for="prop-det-name">Name</label><input type="text" id="prop-det-name" value="${obj.name}"></div>`;
-                content += `<div class="prop-group"><label>Link</label><p>${obj.linkId}</p></div>`;
-                content += `<div class="prop-group"><label for="prop-det-pos">Position (m)</label><input type="number" step="0.1" id="prop-det-pos" value="${obj.position.toFixed(2)}"></div>`;
-                if (obj.type === 'SectionDetector') {
-                    content += `<div class="prop-group"><label for="prop-det-len">Length (m)</label><input type="number" step="0.1" id="prop-det-len" value="${(obj.length || 0).toFixed(2)}"></div>`;
+                const isSection = obj.type === 'SectionDetector';
+
+                // --- SECTION: GENERAL ---
+                content += `<div class="prop-section-header">General</div>`;
+                content += `<div class="prop-row">
+                                <span class="prop-label">Name</span>
+                                <input type="text" id="prop-det-name" class="prop-input" value="${obj.name}">
+                            </div>`;
+                content += `<div class="prop-row">
+                                <span class="prop-label">Parent Link</span>
+                                <input type="text" class="prop-input" value="${obj.linkId}" disabled>
+                            </div>`;
+                content += `<div class="prop-row">
+                                <span class="prop-label">Position (m)</span>
+                                <input type="number" step="0.5" id="prop-det-pos" class="prop-input" value="${obj.position.toFixed(2)}">
+                            </div>`;
+
+                if (isSection) {
+                    content += `<div class="prop-row">
+                                    <span class="prop-label">Length (m)</span>
+                                    <input type="number" step="0.5" id="prop-det-len" class="prop-input" value="${(obj.length || 0).toFixed(2)}">
+                                </div>`;
                 }
 
-                // --- 流量與車輛設定區塊 ---
-                content += `<hr><h5>Flow Configuration</h5>`;
-                content += `<div class="prop-group">
-                                <label for="prop-det-flow" style="color:#0056b3; font-weight:bold;">Observed Flow (veh/hr)</label>
-                                <input type="number" id="prop-det-flow" value="${obj.observedFlow || 0}" min="0">
-                                <small style="color:#666;">Used to drive traffic generation.</small>
+                // --- SECTION: TRAFFIC DATA ---
+                content += `<div class="prop-section-header">Traffic Data</div>`;
+                content += `<div class="prop-row">
+                                <span class="prop-label">Observed Flow</span>
+                                <input type="number" id="prop-det-flow" class="prop-input" value="${obj.observedFlow || 0}" min="0">
+                            </div>`;
+                content += `<div class="prop-hint" style="margin-top:4px; font-size:0.7rem; padding:4px;">
+                                Unit: Vehicles per Hour (veh/h)
                             </div>`;
 
-                content += `<div class="prop-group" style="margin-top:8px;">
-                                <label style="display:flex; align-items:center; cursor:pointer;">
-                                    <input type="checkbox" id="prop-det-is-source" ${obj.isSource ? 'checked' : ''} style="width:auto; margin-right:8px; cursor:pointer;">
-                                    <strong>Set as Flow Source</strong>
+                // --- SECTION: SOURCE CONFIG ---
+                content += `<div class="prop-section-header">Source Configuration</div>`;
+
+                // Checkbox Row
+                content += `<div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; padding: 6px; background: #fff; border: 1px solid var(--border-light); border-radius: 4px;">
+                                <label for="prop-det-is-source" style="font-size:0.85rem; color:var(--text-main); font-weight:500; cursor:pointer;">
+                                    Act as Flow Source
                                 </label>
-                                <small style="color:#666; display:block; margin-left:24px;">Mark this detector as a boundary input.</small>
+                                <input type="checkbox" id="prop-det-is-source" ${obj.isSource ? 'checked' : ''} style="cursor:pointer;">
                             </div>`;
 
-                // [修改重點] 改為權重列表模式
+                // Vehicle Mix List (Conditional)
                 if (obj.isSource) {
-                    // 確保 vehicleProfiles 存在
+                    // Ensure profiles exist
                     if (!network.vehicleProfiles) network.vehicleProfiles = {};
                     const profileOptions = Object.keys(network.vehicleProfiles);
                     if (profileOptions.length === 0) {
                         network.vehicleProfiles['default'] = { id: 'default', length: 4.5, width: 1.8, maxSpeed: 16.67, maxAcceleration: 1.5, comfortDeceleration: 3.0, minDistance: 2.0, desiredHeadwayTime: 1.5 };
                         profileOptions.push('default');
                     }
-
                     if (!obj.spawnProfiles) obj.spawnProfiles = [];
-                    // 兼容舊資料
-                    if (obj.spawnProfileId) {
+                    if (obj.spawnProfileId) { // Compatibility migration
                         obj.spawnProfiles.push({ profileId: obj.spawnProfileId, weight: 1.0 });
                         delete obj.spawnProfileId;
                     }
@@ -3852,38 +4047,40 @@ document.addEventListener('DOMContentLoaded', () => {
                         obj.spawnProfiles.push({ profileId: 'default', weight: 1.0 });
                     }
 
-                    content += `<div class="prop-group" style="background-color:#f8f9fa; padding:8px; border:1px solid #dee2e6; border-radius:4px; margin-top:5px;">
-                                    <label style="color:#004085; font-weight:bold; margin-bottom:5px; display:block;">Vehicle Mix (Weighted):</label>
-                                    
-                                    <div id="det-profiles-list" style="margin-bottom:8px;">`;
+                    content += `<label class="prop-label" style="margin-bottom:6px; display:block;">Vehicle Mix (Weighted)</label>`;
+                    content += `<div id="det-profiles-list">`;
 
-                    // 使用 Flexbox 生成每個項目的區塊
                     obj.spawnProfiles.forEach((entry, idx) => {
-                        // 產生下拉選單 HTML
                         const dropdownHtml = generateDropdown(`det-prof-sel-${idx}`, profileOptions, entry.profileId);
-                        // 強制讓下拉選單寬度 100%
-                        const styledDropdown = dropdownHtml.replace('<select', '<select style="width:100%; box-sizing:border-box; padding:2px;"');
+                        // Inject class into generated dropdown
+                        const styledDropdown = dropdownHtml.replace('<select', '<select class="prop-select" style="padding:2px 4px; font-size:0.8rem;"');
 
                         content += `
-                        <div class="profile-entry" style="background:white; border:1px solid #e0e0e0; padding:6px; margin-bottom:5px; border-radius:3px;">
-                            <div style="margin-bottom:4px;">
-                                <label style="font-size:0.85em; color:#666; display:block; margin-bottom:1px;">Type:</label>
-                                ${styledDropdown}
+                        <div class="prop-card">
+                            <div class="prop-card-row">
+                                <span class="prop-card-label">Type</span>
+                                <div style="flex:1; margin-left:8px;">${styledDropdown}</div>
                             </div>
-                            <div style="display:flex; justify-content: space-between; align-items: center;">
-                                <div style="display:flex; align-items:center; gap:5px;">
-                                    <label style="font-size:0.85em; color:#666; margin:0;">Wt:</label>
-                                    <input type="number" step="0.1" class="det-prof-weight" data-index="${idx}" value="${entry.weight}" style="width:50px; padding:2px; text-align:right;">
+                            <div class="prop-card-row">
+                                <div style="display:flex; align-items:center; gap:6px;">
+                                    <span class="prop-card-label">Weight</span>
+                                    <input type="number" step="0.1" class="det-prof-weight prop-card-input" data-index="${idx}" value="${entry.weight}">
                                 </div>
-                                <button class="det-prof-del-btn tool-btn" data-index="${idx}" style="background-color:#dc3545; color:white; padding:2px 8px; font-size:0.8em; margin:0; height:24px; line-height:1;">Delete</button>
+                                <button class="det-prof-del-btn btn-mini btn-mini-danger" data-index="${idx}">
+                                    <i class="fa-solid fa-trash-can"></i>
+                                </button>
                             </div>
                         </div>`;
                     });
+                    content += `</div>`; // End list
 
-                    content += `    </div>
-                                    <button id="btn-add-det-profile" class="tool-btn" style="width:100%; margin-bottom:5px; background-color:#28a745; color:white; padding:6px;">+ Add Type</button>
-                                    <button id="btn-manage-profiles" class="tool-btn" style="width:100%; font-size:0.85em; background-color:#6c757d; color:white; padding:6px;">⚙️ Manage Definitions</button>
-                                </div>`;
+                    // Add Buttons
+                    content += `<button id="btn-add-det-profile" class="btn-full">
+                                    <i class="fa-solid fa-plus"></i> Add Vehicle Type
+                                </button>`;
+                    content += `<button id="btn-manage-profiles" class="btn-full" style="background:#f1f5f9; color:var(--text-muted); border-style:solid; margin-top:8px;">
+                                    <i class="fa-solid fa-gear"></i> Manage Definitions
+                                </button>`;
                 }
                 break;
 
@@ -3903,47 +4100,176 @@ document.addEventListener('DOMContentLoaded', () => {
                 break;
 
             case 'Connection':
-                content += `<p>From: ${obj.sourceLinkId} (Lane ${obj.sourceLaneIndex})</p><p>To: ${obj.destLinkId} (Lane ${obj.destLaneIndex})</p><p>Via: ${obj.nodeId}</p>`;
-                content += `<button id="prop-conn-delete-btn" class="tool-btn" style="background-color: #dc3545; color: white; margin-top: 15px; width: 100%;">Delete Connection</button>`;
+                // --- SECTION: GENERAL ---
+                content += `<div class="prop-section-header">General</div>`;
+                content += `<div class="prop-row">
+                                <span class="prop-label">ID</span>
+                                <input type="text" class="prop-input" value="${obj.id}" disabled>
+                            </div>`;
+
+                // --- SECTION: TOPOLOGY ---
+                content += `<div class="prop-section-header">Topology</div>`;
+
+                // Source
+                content += `<div class="prop-row">
+                                <span class="prop-label">From Link</span>
+                                <input type="text" class="prop-input" value="${obj.sourceLinkId}" disabled>
+                            </div>`;
+                content += `<div class="prop-row">
+                                <span class="prop-label">From Lane</span>
+                                <input type="text" class="prop-input" value="L${obj.sourceLaneIndex + 1}" disabled>
+                            </div>`;
+
+                // Destination
+                content += `<div class="prop-row" style="margin-top:8px;">
+                                <span class="prop-label">To Link</span>
+                                <input type="text" class="prop-input" value="${obj.destLinkId}" disabled>
+                            </div>`;
+                content += `<div class="prop-row">
+                                <span class="prop-label">To Lane</span>
+                                <input type="text" class="prop-input" value="L${obj.destLaneIndex + 1}" disabled>
+                            </div>`;
+
+                // Via Node
+                content += `<div class="prop-row" style="margin-top:8px;">
+                                <span class="prop-label">Via Node</span>
+                                <input type="text" class="prop-input" value="${obj.nodeId}" disabled>
+                            </div>`;
+
+                // --- SECTION: ACTIONS ---
+                content += `<div class="prop-section-header">Actions</div>`;
+                content += `<button id="prop-conn-delete-btn" class="btn-danger-outline">
+                                <i class="fa-solid fa-trash-can"></i> Delete Connection
+                            </button>`;
                 break;
 
             case 'ConnectionGroup':
-                content += `<p>From Link: ${obj.sourceLinkId}</p>`;
-                content += `<p>To Link: ${obj.destLinkId}</p>`;
-                content += `<p>Via Node: ${obj.nodeId}</p>`;
-                content += `<p>Represents: <strong>${obj.connectionIds.length}</strong> individual connections.</p>`;
-                content += `<div style="display: flex; gap: 10px; margin-top: 15px;">`;
-                content += `<button id="edit-group-btn" class="tool-btn" style="flex: 1; background-color: #007bff; color: white;">Edit</button>`;
-                content += `<button id="delete-group-btn" class="tool-btn" style="flex: 1; background-color: #dc3545; color: white;">Delete</button>`;
-                content += `</div>`;
+                // --- SECTION: GROUP INFO ---
+                content += `<div class="prop-section-header">Group Info</div>`;
+
+                content += `<div class="prop-row">
+                                <span class="prop-label">From Link</span>
+                                <input type="text" class="prop-input" value="${obj.sourceLinkId}" disabled>
+                            </div>`;
+                content += `<div class="prop-row">
+                                <span class="prop-label">To Link</span>
+                                <input type="text" class="prop-input" value="${obj.destLinkId}" disabled>
+                            </div>`;
+                content += `<div class="prop-row">
+                                <span class="prop-label">Via Node</span>
+                                <input type="text" class="prop-input" value="${obj.nodeId}" disabled>
+                            </div>`;
+
+                content += `<div class="prop-row">
+                                <span class="prop-label">Total Connections</span>
+                                <span class="prop-value-text" style="font-weight:bold; color:var(--primary);">${obj.connectionIds.length}</span>
+                            </div>`;
+
+                // --- SECTION: ACTIONS ---
+                content += `<div class="prop-section-header">Management</div>`;
+                content += `<div class="btn-group-row">
+                                <button id="edit-group-btn" class="btn-action">
+                                    <i class="fa-solid fa-pen-to-square"></i> Edit
+                                </button>
+                                <button id="delete-group-btn" class="btn-action" style="color:#ef4444; border-color:#fecaca;">
+                                    <i class="fa-solid fa-trash-can"></i> Delete
+                                </button>
+                            </div>`;
                 break;
 
             case 'Origin':
-                content += `<div class="prop-group"><label>On Link</label><p>${obj.linkId}</p></div>`;
-                content += `<hr><h5>🚗 Vehicle Spawner</h5>`;
-                content += `<p>Configure time-based vehicle generation (OD Mode).</p>`;
-                content += `<button id="configure-spawner-btn" class="tool-btn">Configure Spawner</button>`;
+                // --- SECTION: GENERAL ---
+                content += `<div class="prop-section-header">General</div>`;
+                content += `<div class="prop-row">
+                                <span class="prop-label">ID</span>
+                                <input type="text" class="prop-input" value="${obj.id}" disabled>
+                            </div>`;
+                content += `<div class="prop-row">
+                                <span class="prop-label">Parent Link</span>
+                                <input type="text" class="prop-input" value="${obj.linkId}" disabled>
+                            </div>`;
+
+                // --- SECTION: GENERATION ---
+                content += `<div class="prop-section-header">Traffic Generation</div>`;
+
+                content += `<button id="configure-spawner-btn" class="btn-action" style="width:100%; justify-content:center; gap:6px;">
+                                <i class="fa-solid fa-clock"></i> Configure Schedule
+                            </button>`;
+
+                content += `<div class="prop-hint">
+                                <i class="fa-solid fa-circle-info"></i> 
+                                Defines time-based vehicle spawn rates and destinations (OD Mode).
+                            </div>`;
                 break;
 
             case 'Destination':
-                content += `<div class="prop-group"><label>On Link</label><p>${obj.linkId}</p></div>`;
+                // --- SECTION: GENERAL ---
+                content += `<div class="prop-section-header">General</div>`;
+                content += `<div class="prop-row">
+                                <span class="prop-label">ID</span>
+                                <input type="text" class="prop-input" value="${obj.id}" disabled>
+                            </div>`;
+                content += `<div class="prop-row">
+                                <span class="prop-label">Parent Link</span>
+                                <input type="text" class="prop-input" value="${obj.linkId}" disabled>
+                            </div>`;
+                content += `<div class="prop-hint">
+                                Vehicles reaching this point will be removed from the simulation.
+                            </div>`;
                 break;
 
             case 'Background':
-                content += `
-                <div class="prop-group">
-                    <button id="prop-bg-file-btn" class="tool-btn" style="width: 100%;">選擇圖片檔案</button>
-                    <input type="file" id="prop-bg-file-input" style="display: none;" accept="image/jpeg,image/png,image/gif,image/bmp,image/tiff">
-                </div>
-                <div class="prop-group">
-                    <label for="prop-bg-opacity">透明度 (%)</label>
-                    <input type="number" id="prop-bg-opacity" value="${obj.opacity}" min="0" max="100" step="1">
-                </div>
-                <div class="prop-group">
-                    <label for="prop-bg-scale">縮放</label>
-                    <input type="number" id="prop-bg-scale" value="${obj.scale.toFixed(2)}" min="0.01" step="0.01">
-                </div>
-            `;
+                // --- SECTION: SOURCE ---
+                content += `<div class="prop-section-header">Image Source</div>`;
+
+                content += `<button id="prop-bg-file-btn" class="btn-action" style="width:100%; justify-content:center; gap:6px;">
+                                <i class="fa-regular fa-folder-open"></i> Replace Image...
+                            </button>`;
+                content += `<input type="file" id="prop-bg-file-input" style="display: none;" accept="image/*">`;
+
+                if (obj.imageType) {
+                    content += `<div class="prop-row" style="margin-top:8px;">
+                                    <span class="prop-label">Format</span>
+                                    <input type="text" class="prop-input" value="${obj.imageType}" disabled>
+                                </div>`;
+                }
+
+                // --- SECTION: APPEARANCE ---
+                content += `<div class="prop-section-header">Appearance</div>`;
+
+                content += `<div class="prop-row">
+                                <span class="prop-label">Opacity (%)</span>
+                                <input type="number" id="prop-bg-opacity" class="prop-input" value="${obj.opacity}" min="0" max="100" step="10">
+                            </div>`;
+
+                content += `<div class="prop-row">
+                                <span class="prop-label">Scale</span>
+                                <input type="number" id="prop-bg-scale" class="prop-input" value="${obj.scale.toFixed(2)}" min="0.01" step="0.01">
+                            </div>`;
+
+                // --- SECTION: DIMENSIONS ---
+                content += `<div class="prop-section-header">Dimensions (px)</div>`;
+
+                content += `<div class="prop-row">
+                                <span class="prop-label">Width</span>
+                                <input type="text" class="prop-input" value="${(obj.width).toFixed(0)}" disabled>
+                            </div>`;
+                content += `<div class="prop-row">
+                                <span class="prop-label">Height</span>
+                                <input type="text" class="prop-input" value="${(obj.height).toFixed(0)}" disabled>
+                            </div>`;
+
+                content += `<div class="prop-hint">
+                                <i class="fa-solid fa-lock"></i> 
+                                Use the toggle button at the bottom right of the canvas to Lock/Unlock positioning.
+                            </div>`;
+
+                // --- SECTION: ACTIONS ---
+                content += `<div class="prop-section-header">Actions</div>`;
+                // 注意：這裡假設 deleteSelectedObject() 會處理 Background，或是你可以呼叫 deleteBackground()
+                content += `<button onclick="deleteSelectedObject()" class="btn-danger-outline">
+                                <i class="fa-solid fa-trash-can"></i> Delete Background
+                            </button>`;
                 break;
 
             case 'Overpass':
@@ -3960,155 +4286,309 @@ document.addEventListener('DOMContentLoaded', () => {
                 break;
 
             case 'Pushpin':
-                content += `<div class="prop-group">
-                                <label>Canvas X</label>
-                                <input type="number" disabled value="${obj.x.toFixed(2)}">
-                            </div>
-                            <div class="prop-group">
-                                <label>Canvas Y</label>
-                                <input type="number" disabled value="${obj.y.toFixed(2)}">
-                            </div>
-                            <hr>
-                            <div class="prop-group">
-                                <label for="prop-pin-lat" style="color:red; font-weight:bold;">Latitude</label>
-                                <input type="number" id="prop-pin-lat" value="${obj.lat}" step="0.000001">
-                            </div>
-                            <div class="prop-group">
-                                <label for="prop-pin-lon" style="color:blue; font-weight:bold;">Longitude</label>
-                                <input type="number" id="prop-pin-lon" value="${obj.lon}" step="0.000001">
-                            </div>
-                            <div class="prop-group">
-                                <button id="btn-delete-pin" class="tool-btn" style="background-color: #dc3545; width:100%; margin-top:10px;">Delete Pin</button>
+                // --- SECTION: CANVAS COORDINATES ---
+                content += `<div class="prop-section-header">Canvas Position</div>`;
+
+                content += `<div class="prop-row">
+                                <span class="prop-label">X</span>
+                                <input type="number" class="prop-input" value="${obj.x.toFixed(2)}" disabled>
                             </div>`;
+                content += `<div class="prop-row">
+                                <span class="prop-label">Y</span>
+                                <input type="number" class="prop-input" value="${obj.y.toFixed(2)}" disabled>
+                            </div>`;
+
+                // --- SECTION: GEO REFERENCE ---
+                content += `<div class="prop-section-header">Geo Reference</div>`;
+
+                // 使用 border-left 色條來區分 Lat/Lon
+                content += `<div class="prop-row" style="border-left: 3px solid #ef4444; padding-left: 8px;">
+                                <span class="prop-label">Latitude</span>
+                                <input type="number" id="prop-pin-lat" class="prop-input" value="${obj.lat}" step="0.000001">
+                            </div>`;
+
+                content += `<div class="prop-row" style="border-left: 3px solid #3b82f6; padding-left: 8px;">
+                                <span class="prop-label">Longitude</span>
+                                <input type="number" id="prop-pin-lon" class="prop-input" value="${obj.lon}" step="0.000001">
+                            </div>`;
+
+                content += `<div class="prop-hint">
+                                <i class="fa-solid fa-map-pin"></i> 
+                                Used to align the simulation grid with real-world map coordinates (Max 2 pins).
+                            </div>`;
+
+                // --- SECTION: ACTIONS ---
+                content += `<div class="prop-section-header">Actions</div>`;
+                content += `<button id="btn-delete-pin" class="btn-danger-outline">
+                                <i class="fa-solid fa-trash-can"></i> Delete Pin
+                            </button>`;
                 break;
 
             case 'ParkingLot':
-                content += `<div class="prop-group">
-                            <label for="prop-pl-name">Name</label>
-                            <input type="text" id="prop-pl-name" value="${obj.name}">
-                        </div>
-                        <div class="prop-group">
-                            <label>ID</label>
-                            <input type="text" disabled value="${obj.id}">
-                        </div>
-                        <div class="prop-group">
-                            <label for="prop-pl-car">Car Spaces</label>
-                            <input type="number" id="prop-pl-car" value="${obj.carCapacity}" min="0">
-                        </div>
-                        <div class="prop-group">
-                            <label for="prop-pl-moto">Motorcycle Spaces</label>
-                            <input type="number" id="prop-pl-moto" value="${obj.motoCapacity}" min="0">   
-                        </div>
-                        <!-- [新增] 吸引機率輸入框 -->
-                        <div class="prop-group">
-                            <label for="prop-pl-attr">Attraction Prob (%)</label>
-                            <input type="number" id="prop-pl-attr" value="${obj.attractionProb || 0}" min="0" max="100" step="1">
-                        </div>
-                        <!-- [結束新增] -->
-                        <!-- [新增] 停留時間輸入框 -->
-                        <div class="prop-group">
-                            <label for="prop-pl-duration">Stay Duration (min)</label>
-                            <input type="number" id="prop-pl-duration" value="${obj.stayDuration || 0}" min="0" step="1">
-                        </div>
-                        <!-- [結束新增] -->
-                        <div class="prop-group">
-                            <button id="btn-delete-pl" class="tool-btn" style="background-color: #dc3545; width:100%; margin-top:10px;">Delete Parking Lot</button>
-                        </div>`;
+                // --- SECTION: GENERAL ---
+                content += `<div class="prop-section-header">General</div>`;
+
+                content += `<div class="prop-row">
+                                <span class="prop-label">Name</span>
+                                <input type="text" id="prop-pl-name" class="prop-input" value="${obj.name}">
+                            </div>`;
+                content += `<div class="prop-row">
+                                <span class="prop-label">ID</span>
+                                <input type="text" class="prop-input" value="${obj.id}" disabled>
+                            </div>`;
+
+                // --- SECTION: CAPACITY ---
+                content += `<div class="prop-section-header">Capacity</div>`;
+
+                content += `<div class="prop-row">
+                                <span class="prop-label"><i class="fa-solid fa-car"></i> Cars</span>
+                                <input type="number" id="prop-pl-car" class="prop-input" value="${obj.carCapacity}" min="0">
+                            </div>`;
+                content += `<div class="prop-row">
+                                <span class="prop-label"><i class="fa-solid fa-motorcycle"></i> Motos</span>
+                                <input type="number" id="prop-pl-moto" class="prop-input" value="${obj.motoCapacity}" min="0">
+                            </div>`;
+
+                // --- SECTION: SIMULATION ---
+                content += `<div class="prop-section-header">Simulation Behavior</div>`;
+
+                content += `<div class="prop-row">
+                                <span class="prop-label">Attraction (%)</span>
+                                <input type="number" id="prop-pl-attr" class="prop-input" value="${obj.attractionProb || 0}" min="0" max="100" step="1">
+                            </div>`;
+
+                content += `<div class="prop-row">
+                                <span class="prop-label">Stay Duration (min)</span>
+                                <input type="number" id="prop-pl-duration" class="prop-input" value="${obj.stayDuration || 0}" min="0" step="1">
+                            </div>`;
+
+                content += `<div class="prop-hint">
+                                <i class="fa-solid fa-circle-info"></i> 
+                                Double-click on canvas to finish drawing polygon.
+                            </div>`;
+
+                // --- SECTION: ACTIONS ---
+                content += `<div class="prop-section-header">Actions</div>`;
+                content += `<button id="btn-delete-pl" class="btn-danger-outline">
+                                <i class="fa-solid fa-trash-can"></i> Delete Parking Lot
+                            </button>`;
                 break;
 
             case 'ParkingGate':
-                const linkedPl = obj.parkingLotId ? network.parkingLots[obj.parkingLotId] : null;
-                const statusColor = linkedPl ? 'green' : 'red';
-                const statusText = linkedPl ? `Linked to: ${linkedPl.name}` : 'Not linked';
+                // --- SECTION: STATUS ---
+                content += `<div class="prop-section-header">Connection Status</div>`;
 
-                content += `<div class="prop-group">
-                                <label style="color:${statusColor}; font-weight:bold;">${statusText}</label>
-                            </div>
-                            <div class="prop-group">
-                                <label for="prop-gate-type">Gate Type</label>
-                                <select id="prop-gate-type">
-                                    <option value="entry" ${obj.gateType === 'entry' ? 'selected' : ''}>Entry</option>
-                                    <option value="exit" ${obj.gateType === 'exit' ? 'selected' : ''}>Exit</option>
-                                    <option value="bidirectional" ${obj.gateType === 'bidirectional' ? 'selected' : ''}>Entry & Exit</option>
-                                </select>
-                            </div>
-                            <div class="prop-group">
-                                <label for="prop-gate-rotation">Rotation (deg)</label>
-                                <input type="number" id="prop-gate-rotation" value="${(obj.rotation || 0).toFixed(1)}">
-                            </div>
-                            <div class="prop-group">
-                                <button id="btn-delete-gate" class="tool-btn" style="background-color: #dc3545; width:100%; margin-top:10px;">Delete Gate</button>
+                const linkedPl = obj.parkingLotId ? network.parkingLots[obj.parkingLotId] : null;
+                if (linkedPl) {
+                    content += `<div class="prop-status-indicator success">
+                                    <i class="fa-solid fa-link"></i>
+                                    <div>
+                                        <div>Linked</div>
+                                        <div style="font-size:0.75rem; opacity:0.8;">${linkedPl.name}</div>
+                                    </div>
+                                </div>`;
+                } else {
+                    content += `<div class="prop-status-indicator error">
+                                    <i class="fa-solid fa-link-slash"></i>
+                                    <div>
+                                        <div>Not Linked</div>
+                                        <div style="font-size:0.75rem; opacity:0.8;">Drag onto a Parking Lot boundary.</div>
+                                    </div>
+                                </div>`;
+                }
+
+                // --- SECTION: CONFIGURATION ---
+                content += `<div class="prop-section-header">Configuration</div>`;
+
+                content += `<div class="prop-row">
+                                <span class="prop-label">ID</span>
+                                <input type="text" class="prop-input" value="${obj.id}" disabled>
                             </div>`;
+
+                content += `<div class="prop-row">
+                                <span class="prop-label">Type</span>
+                                <select id="prop-gate-type" class="prop-select">
+                                    <option value="entry" ${obj.gateType === 'entry' ? 'selected' : ''}>Entry Only</option>
+                                    <option value="exit" ${obj.gateType === 'exit' ? 'selected' : ''}>Exit Only</option>
+                                    <option value="bidirectional" ${obj.gateType === 'bidirectional' ? 'selected' : ''}>Bi-directional</option>
+                                </select>
+                            </div>`;
+
+                // --- SECTION: GEOMETRY ---
+                content += `<div class="prop-section-header">Geometry</div>`;
+
+                content += `<div class="prop-row">
+                                <span class="prop-label">Rotation (deg)</span>
+                                <input type="number" id="prop-gate-rotation" class="prop-input" value="${(obj.rotation || 0).toFixed(1)}">
+                            </div>`;
+
+                content += `<div class="prop-row">
+                                <span class="prop-label">Width (m)</span>
+                                <input type="text" class="prop-input" value="${obj.width.toFixed(2)}" disabled>
+                            </div>`;
+
+                // --- SECTION: ACTIONS ---
+                content += `<div class="prop-section-header">Actions</div>`;
+                content += `<button id="btn-delete-gate" class="btn-danger-outline">
+                                <i class="fa-solid fa-trash-can"></i> Delete Gate
+                            </button>`;
                 break;
             case 'RoadMarking':
-                content += `<div class="prop-group">
-                    <label>Marking Type</label>
-                    <select id="prop-mark-type">
-                        <option value="stop_line" ${obj.markingType === 'stop_line' ? 'selected' : ''}>Stop Line (停止線)</option>
-                        <option value="waiting_area" ${obj.markingType === 'waiting_area' ? 'selected' : ''}>Scooter Waiting Area (機車停等區)</option>
-                        <option value="two_stage_box" ${obj.markingType === 'two_stage_box' ? 'selected' : ''}>Two-Stage Turn Box (兩段式左轉)</option>
-                    </select>
-                </div>`;
+                // --- SECTION: GENERAL ---
+                content += `<div class="prop-section-header">General</div>`;
 
-                if (obj.linkId) {
-                    content += `<div class="prop-group"><label>On Link</label><p>${obj.linkId}</p></div>`;
+                // ID (Read-only)
+                content += `<div class="prop-row">
+                                <span class="prop-label">ID</span>
+                                <input type="text" class="prop-input" value="${obj.id}" disabled>
+                            </div>`;
 
-                    // [新增] 針對 Link 上的 Two-Stage Box，顯示「自由移動」切換開關
-                    if (obj.markingType === 'two_stage_box') {
-                        content += `<div class="prop-group" style="background:#fff3cd; padding:5px; border-radius:4px;">
-                            <label style="display:flex; align-items:center; cursor:pointer; color:#856404;">
-                                <input type="checkbox" id="prop-mark-isfree" ${obj.isFree ? 'checked' : ''} style="width:auto; margin-right:8px;">
-                                <strong>Manual Position (Move to Intersection)</strong>
-                            </label>
-                        </div>`;
-                    }
+                // Type Select
+                content += `<div class="prop-row">
+                                <span class="prop-label">Type</span>
+                                <select id="prop-mark-type" class="prop-select">
+                                    <option value="stop_line" ${obj.markingType === 'stop_line' ? 'selected' : ''}>Stop Line</option>
+                                    <option value="waiting_area" ${obj.markingType === 'waiting_area' ? 'selected' : ''}>Waiting Area</option>
+                                    <option value="two_stage_box" ${obj.markingType === 'two_stage_box' ? 'selected' : ''}>Two-Stage Box</option>
+                                </select>
+                            </div>`;
 
-                    if (!obj.isFree) {
-                        // 鎖定模式顯示 Position 和 Lane
-                        content += `<div class="prop-group"><label>Position (m)</label><input type="number" step="0.5" id="prop-mark-pos" value="${obj.position.toFixed(2)}"></div>`;
-                        content += `<div class="prop-group"><label>Lanes Covered</label><div style="display:flex; flex-wrap:wrap; gap:10px;">`;
-                        const link = network.links[obj.linkId];
-                        if (link) {
-                            link.lanes.forEach((_, idx) => {
-                                const checked = obj.laneIndices.includes(idx) ? 'checked' : '';
-                                content += `<label style="font-weight:normal; font-size:0.9em;"><input type="checkbox" class="prop-mark-lane" value="${idx}" ${checked}> L${idx + 1}</label>`;
-                            });
-                        }
-                        content += `</div></div>`;
-                    } else {
-                        // 自由模式顯示座標 (Link 模式下也可以顯示座標)
-                        content += `<div class="prop-group"><label>X</label><input type="number" disabled value="${obj.x.toFixed(2)}"></div>`;
-                        content += `<div class="prop-group"><label>Y</label><input type="number" disabled value="${obj.y.toFixed(2)}"></div>`;
-                        content += `<div class="prop-group"><label>Rotation</label><input type="number" id="prop-mark-rot" value="${(obj.rotation || 0).toFixed(1)}"></div>`;
+                // --- SECTION: PLACEMENT ---
+                content += `<div class="prop-section-header">Placement</div>`;
+
+                // 判斷是否為 Link 上的鎖定模式
+                if (obj.linkId && !obj.isFree) {
+                    content += `<div class="prop-row">
+                                    <span class="prop-label">Parent Link</span>
+                                    <input type="text" class="prop-input" value="${obj.linkId}" disabled>
+                                </div>`;
+
+                    content += `<div class="prop-row">
+                                    <span class="prop-label">Position (m)</span>
+                                    <input type="number" step="0.5" id="prop-mark-pos" class="prop-input" value="${obj.position.toFixed(2)}">
+                                </div>`;
+
+                    // Lane Selection (Grid Layout)
+                    const link = network.links[obj.linkId];
+                    if (link) {
+                        content += `<label class="prop-label" style="margin-top:8px; display:block;">Active Lanes</label>`;
+                        content += `<div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; padding: 4px; border: 1px solid var(--border-light); border-radius: 4px; background: #fff;">`;
+
+                        link.lanes.forEach((_, idx) => {
+                            const checked = obj.laneIndices.includes(idx) ? 'checked' : '';
+                            content += `<label style="font-size: 0.8rem; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; background: #f8fafc; padding: 2px 6px; border-radius: 4px; border: 1px solid var(--border-light);">
+                                            <input type="checkbox" class="prop-mark-lane" value="${idx}" ${checked}>
+                                            L${idx + 1}
+                                        </label>`;
+                        });
+                        content += `</div>`;
                     }
                 }
-                else if (obj.nodeId) {
-                    content += `<div class="prop-group"><label>On Node</label><p>${obj.nodeId}</p></div>`;
-                    content += `<div class="prop-group"><label>Rotation (deg)</label><input type="number" id="prop-mark-rot" value="${(obj.rotation || 0).toFixed(1)}"></div>`;
+                // 自由模式或 Node 模式
+                else {
+                    const parentLabel = obj.nodeId ? "Parent Node" : "Origin Link";
+                    const parentId = obj.nodeId || obj.linkId;
+
+                    content += `<div class="prop-row">
+                                    <span class="prop-label">${parentLabel}</span>
+                                    <input type="text" class="prop-input" value="${parentId}" disabled>
+                                </div>`;
+
+                    content += `<div class="prop-row">
+                                    <span class="prop-label">Global X</span>
+                                    <input type="text" class="prop-input" value="${obj.x.toFixed(2)}" disabled>
+                                </div>`;
+                    content += `<div class="prop-row">
+                                    <span class="prop-label">Global Y</span>
+                                    <input type="text" class="prop-input" value="${obj.y.toFixed(2)}" disabled>
+                                </div>`;
+                    content += `<div class="prop-row">
+                                    <span class="prop-label">Rotation (deg)</span>
+                                    <input type="number" id="prop-mark-rot" class="prop-input" value="${(obj.rotation || 0).toFixed(1)}">
+                                </div>`;
                 }
 
-                // Length
+                // --- SECTION: DIMENSIONS (若非停止線) ---
                 if (obj.markingType !== 'stop_line') {
-                    content += `<div class="prop-group"><label>Length (m)</label><input type="number" step="0.1" id="prop-mark-len" value="${obj.length}"></div>`;
+                    content += `<div class="prop-section-header">Dimensions</div>`;
+                    content += `<div class="prop-row">
+                                    <span class="prop-label">Length (m)</span>
+                                    <input type="number" step="0.1" id="prop-mark-len" class="prop-input" value="${obj.length}">
+                                </div>`;
+
+                    // Width 僅在自由模式或 Two-Stage Box 顯示
+                    if (obj.markingType === 'two_stage_box' && (obj.nodeId || obj.isFree)) {
+                        content += `<div class="prop-row">
+                                        <span class="prop-label">Width (m)</span>
+                                        <input type="number" step="0.1" id="prop-mark-wid" class="prop-input" value="${obj.width.toFixed(2)}">
+                                    </div>`;
+                    }
                 }
 
-                // Width: 僅在 Free 模式 (Link 的自由模式 或 Node 模式) 顯示
-                if (obj.markingType === 'two_stage_box' && (obj.nodeId || obj.isFree)) {
-                    content += `<div class="prop-group"><label>Width (m)</label><input type="number" step="0.1" id="prop-mark-wid" value="${obj.width.toFixed(2)}"></div>`;
+                // --- SECTION: CONFIGURATION (自由移動開關) ---
+                if (obj.markingType === 'two_stage_box' && obj.linkId) {
+                    content += `<div class="prop-section-header">Configuration</div>`;
+
+                    // 使用 Flex Row 讓 Checkbox 與文字對齊
+                    content += `<div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                                    <input type="checkbox" id="prop-mark-isfree" ${obj.isFree ? 'checked' : ''} style="cursor: pointer;">
+                                    <label for="prop-mark-isfree" style="font-size: 0.85rem; color: var(--text-main); cursor: pointer;">
+                                        Manual Positioning
+                                    </label>
+                                </div>`;
+
+                    if (obj.isFree) {
+                        content += `<div class="prop-hint" style="margin-top:0;">
+                                        <i class="fa-solid fa-hand-pointer"></i> 
+                                        You can now drag the box freely (e.g., into the intersection).
+                                    </div>`;
+                    } else {
+                        content += `<div class="prop-hint" style="margin-top:0;">
+                                        Attached to link lanes. Check "Manual Positioning" to detach.
+                                    </div>`;
+                    }
                 }
 
-                content += `<button id="btn-delete-marking" class="tool-btn" style="background-color: #dc3545; width:100%; margin-top:10px;">Delete Marking</button>`;
+                // --- SECTION: ACTIONS ---
+                content += `<div class="prop-section-header">Actions</div>`;
+                content += `<button id="btn-delete-marking" class="btn-danger-outline">
+                                <i class="fa-solid fa-trash-can"></i> Delete Marking
+                            </button>`;
                 break;
         }
 
         propertiesContent.innerHTML = content;
         attachPropertiesEventListeners(obj);
+        I18N.translateDOM(propertiesContent);
     }
 
     // 完整替換此函數
     // 完整替換 attachPropertiesEventListeners 函數
     function attachPropertiesEventListeners(obj) {
         if (!obj) return;
+
+        // --- 通用：分頁切換邏輯 (針對 Node) ---
+        if (obj.type === 'Node') {
+            const tabBtns = document.querySelectorAll('.prop-tab-btn');
+            const tabContents = document.querySelectorAll('.prop-tab-content');
+
+            tabBtns.forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    // 1. 移除所有 active 狀態
+                    tabBtns.forEach(b => b.classList.remove('active'));
+                    tabContents.forEach(c => c.classList.remove('active'));
+
+                    // 2. 激活當前選取
+                    const targetId = btn.dataset.target;
+                    btn.classList.add('active');
+                    const targetContent = document.getElementById(targetId);
+                    if (targetContent) targetContent.classList.add('active');
+
+                    // 3. 更新全域狀態，記住使用者選擇
+                    lastActiveNodeTab = targetId;
+                });
+            });
+        }
 
         // --- 通用：返回節點按鈕 (針對連接線編輯) ---
         const backBtn = document.getElementById('back-to-node-btn');
@@ -4169,7 +4649,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     ctx.closePath();
                     ctx.fillShape(shape);
                 },
-                fill: 'rgba(255, 255, 0, 0.4)',
+                fill: 'rgba(255, 0, 43, 0.67)',
                 name: 'link-highlight',
                 listening: false
             });
@@ -4339,6 +4819,152 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             });
 
+            // =======================================================
+            // ★★★ [請從這裡開始，貼上/替換 以下 Connection Groups 相關代碼] ★★★
+            // 原本這裡可能有針對 .prop-group-selector 的監聽，請用下面的新代碼取代
+            // =======================================================
+
+            // [監聽 A] Connection Group 的 Signal Group 下拉選單
+            document.querySelectorAll('.prop-group-signal-select').forEach(select => {
+                // [關鍵修正] 防止點擊下拉選單時觸發任何父層事件
+                select.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                });
+
+                // 處理數值變更
+                select.addEventListener('change', (e) => {
+                    e.stopPropagation(); // 變更時也阻擋冒泡
+                    const connIdsToUpdate = JSON.parse(e.target.dataset.groupJson);
+                    const newGroupId = e.target.value;
+                    const tfl = network.trafficLights[obj.id];
+                    if (!tfl) return;
+
+                    // 從所有群組移除
+                    Object.values(tfl.signalGroups).forEach(group => {
+                        group.connIds = group.connIds.filter(id => !connIdsToUpdate.includes(id));
+                    });
+
+                    // 加入新群組
+                    if (newGroupId && tfl.signalGroups[newGroupId]) {
+                        tfl.signalGroups[newGroupId].connIds.push(...connIdsToUpdate);
+                    }
+                });
+            });
+
+            // [監聽 B] Edit 按鈕 (保持不變)
+            document.querySelectorAll('.group-edit-btn').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const sourceLink = network.links[btn.dataset.source];
+                    const destLink = network.links[btn.dataset.dest];
+
+                    let targetGroupObj = null;
+                    const groupShapes = layer.find('.group-connection-visual');
+                    for (let shape of groupShapes) {
+                        const meta = shape.getAttr('meta');
+                        if (meta && meta.sourceLinkId === sourceLink.id && meta.destLinkId === destLink.id) {
+                            targetGroupObj = { id: shape.id(), ...meta, konvaLine: shape };
+                            break;
+                        }
+                    }
+
+                    if (sourceLink && destLink && targetGroupObj) {
+                        const modalPos = { x: window.innerWidth / 2 - 150, y: window.innerHeight / 2 - 150 };
+                        showLaneRangeSelector(sourceLink, destLink, modalPos, targetGroupObj);
+                    }
+                });
+            });
+
+            // [監聽 C] Delete 按鈕 (保持不變)
+            document.querySelectorAll('.group-delete-btn').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const sourceId = btn.dataset.source;
+                    const destId = btn.dataset.dest;
+
+                    if (confirm(I18N.t(`Delete connection group from ${sourceId} to ${destId}?`))) {
+                        let targetGroupObj = null;
+                        const groupShapes = layer.find('.group-connection-visual');
+                        for (let shape of groupShapes) {
+                            const meta = shape.getAttr('meta');
+                            if (meta && meta.sourceLinkId === sourceId && meta.destLinkId === destId) {
+                                targetGroupObj = { id: shape.id(), ...meta, konvaLine: shape };
+                                break;
+                            }
+                        }
+
+                        if (targetGroupObj) {
+                            deleteConnectionGroup(targetGroupObj);
+                            updatePropertiesPanel(obj);
+                        }
+                    }
+                });
+            });
+
+            // =======================================================
+            // [新增] Flow Tab 的高亮互動 (Hover Highlight)
+            // =======================================================
+
+            // 1. 滑鼠移到 "From Link" 標題：高亮來源路段
+            document.querySelectorAll('.turn-ratio-header').forEach(header => {
+                header.addEventListener('mouseenter', (e) => {
+                    clearLinkHighlights();
+                    highlightLink(e.target.dataset.link);
+                });
+                header.addEventListener('mouseleave', () => {
+                    clearLinkHighlights();
+                });
+            });
+
+            // 2. 滑鼠移到 "To Link" 列：高亮 來源(From) 與 目的(To) 兩條路段，形成路徑視覺
+            document.querySelectorAll('.turn-ratio-row').forEach(row => {
+                row.addEventListener('mouseenter', (e) => {
+                    // 停止冒泡，避免觸發外層 Card 的 hover (如果外層也有效果的話)
+                    e.stopPropagation();
+
+                    clearLinkHighlights();
+                    highlightLink(e.target.dataset.from); // 高亮來源
+                    highlightLink(e.target.dataset.to);   // 高亮目的
+
+                    // 視覺回饋：讓該列背景變深一點點
+                    e.target.style.backgroundColor = '#e2e8f0';
+                });
+                row.addEventListener('mouseleave', (e) => {
+                    clearLinkHighlights();
+                    e.target.style.backgroundColor = 'transparent';
+                });
+            });
+
+            // =======================================================
+
+            // =======================================================
+            // [新增] Links Tab 的高亮互動 (Connection Groups)
+            // =======================================================
+            document.querySelectorAll('.connection-group-card').forEach(card => {
+                card.addEventListener('mouseenter', (e) => {
+                    // 清除舊高亮
+                    clearLinkHighlights();
+
+                    // 讀取這張卡片紀錄的來源與目的 Link ID
+                    const srcId = e.currentTarget.dataset.source;
+                    const dstId = e.currentTarget.dataset.dest;
+
+                    // 高亮這兩條路，形成視覺路徑
+                    if (srcId) highlightLink(srcId);
+                    if (dstId) highlightLink(dstId);
+
+                    // 視覺回饋：讓卡片邊框稍微明顯一點
+                    e.currentTarget.style.borderColor = 'var(--primary)';
+                });
+
+                card.addEventListener('mouseleave', (e) => {
+                    clearLinkHighlights();
+                    // 恢復邊框
+                    e.currentTarget.style.borderColor = ''; // 恢復 CSS 定義的顏色 (var(--border-light))
+                });
+            });
+            // =======================================================
+
             // 6. Redraw Connections
             const redrawBtn = document.getElementById('redraw-node-connections-btn');
             if (redrawBtn) {
@@ -4503,6 +5129,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // --- LINK ---
         if (obj.type === 'Link') {
+            // [新增] 監聽名稱變更
+            const nameInput = document.getElementById('prop-link-name');
+            if (nameInput) {
+                nameInput.addEventListener('change', (e) => {
+                    obj.name = e.target.value;
+                });
+            }
+
             document.getElementById('prop-lanes').addEventListener('change', (e) => {
                 const newLaneCount = parseInt(e.target.value, 10);
                 const currentLaneCount = obj.lanes.length;
@@ -4546,32 +5180,50 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
 
-        // --- CONNECTION ---
+        // --- CONNECTION (單一連接線) ---
         if (obj.type === 'Connection') {
             const deleteBtn = document.getElementById('prop-conn-delete-btn');
             if (deleteBtn) {
                 deleteBtn.addEventListener('click', () => {
-                    deleteSelectedObject();
+                    // 建議加入確認對話框，避免誤刪
+                    if (confirm(I18N.t(`Delete connection ${obj.id}?`))) {
+                        deleteConnection(obj.id); // 呼叫刪除函數
+                        deselectAll();            // 取消選取
+                        layer.batchDraw();        // 重繪畫面
+                    }
                 });
             }
         }
 
-        // --- CONNECTION GROUP ---
+        // --- CONNECTION GROUP (連接群組) ---
         if (obj.type === 'ConnectionGroup') {
-            document.getElementById('edit-group-btn').addEventListener('click', () => {
-                const sourceLink = network.links[obj.sourceLinkId];
-                const destLink = network.links[obj.destLinkId];
-                if (sourceLink && destLink) {
-                    const modalPos = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
-                    showLaneRangeSelector(sourceLink, destLink, modalPos, obj);
-                }
-            });
-            document.getElementById('delete-group-btn').addEventListener('click', () => {
-                deleteConnectionGroup(obj);
-                deselectAll();
-                layer.batchDraw();
-            });
+            // 編輯按鈕
+            const editBtn = document.getElementById('edit-group-btn');
+            if (editBtn) {
+                editBtn.addEventListener('click', () => {
+                    const sourceLink = network.links[obj.sourceLinkId];
+                    const destLink = network.links[obj.destLinkId];
+                    if (sourceLink && destLink) {
+                        // 取得目前滑鼠位置或螢幕中心作為彈出位置
+                        const modalPos = { x: window.innerWidth / 2 - 150, y: window.innerHeight / 2 - 150 };
+                        showLaneRangeSelector(sourceLink, destLink, modalPos, obj);
+                    }
+                });
+            }
+
+            // 刪除按鈕
+            const deleteGroupBtn = document.getElementById('delete-group-btn');
+            if (deleteGroupBtn) {
+                deleteGroupBtn.addEventListener('click', () => {
+                    if (confirm(I18N.t(`Delete connection group (contains ${obj.connectionIds.length} connections)?`))) {
+                        deleteConnectionGroup(obj); // 呼叫群組刪除函數
+                        deselectAll();
+                        layer.batchDraw();
+                    }
+                });
+            }
         }
+
 
         // --- TRAFFIC LIGHT SIGNAL GROUP SELECTOR (For Connection/Group) ---
         const tflGroupSelect = document.getElementById('prop-tfl-group');
@@ -5426,6 +6078,7 @@ document.addEventListener('DOMContentLoaded', () => {
             modalContent.style.top = `${position.y - 30}px`;
         }
         modal.style.display = 'block';
+        I18N.translateDOM(modal);
 
         const closeAndCleanup = () => {
             modal.style.display = 'none';
@@ -5728,6 +6381,7 @@ document.addEventListener('DOMContentLoaded', () => {
         renderTflGroupingTab();
         renderTflPhasingTab();
         document.getElementById('traffic-light-modal').style.display = 'block';
+        I18N.translateDOM(document.getElementById('traffic-light-modal'));
     }
 
     function renderTflGroupingTab() {
@@ -5754,7 +6408,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 renderTflGroupingTab();
                 renderTflPhasingTab();
             } else {
-                alert('Group name is empty or already exists.');
+                alert(I18N.t('Group name is empty or already exists.'));
             }
         };
 
@@ -5808,40 +6462,82 @@ document.addEventListener('DOMContentLoaded', () => {
         tableBody.innerHTML = '';
 
         const signalGroupIds = Object.keys(tflData.signalGroups);
-        let headerHtml = '<tr><th>Duration (sec)</th>';
-        signalGroupIds.forEach(id => headerHtml += `<th>${id}</th>`);
-        headerHtml += '<th>Actions</th></tr>';
+
+        // 渲染表頭
+        // --- 修正表頭生成 ---
+        // 移除多餘的 inline style，讓 CSS 控制對齊
+        let headerHtml = '<tr><th style="width: 100px;">Duration (s)</th>';
+
+        // 生成多個 Group Name 表頭
+        signalGroupIds.forEach(id => {
+            headerHtml += `<th>${id}</th>`;
+        });
+
+        headerHtml += '<th style="width: 80px;">Actions</th></tr>';
         tableHead.innerHTML = headerHtml;
 
+        // 渲染表格內容
         let bodyHtml = '';
         tflData.schedule.forEach((phase, phaseIndex) => {
             bodyHtml += `<tr>`;
-            bodyHtml += `<td><input type="number" class="tfl-duration-input" data-phase="${phaseIndex}" value="${phase.duration}" min="1"></td>`;
+
+            // Duration Input
+            bodyHtml += `<td><input type="number" class="tfl-duration-input prop-input" data-phase="${phaseIndex}" value="${phase.duration}" min="1" style="text-align:center;"></td>`;
+
+            // Signal Blocks (修改處)
             signalGroupIds.forEach(id => {
                 const signal = phase.signals[id] || 'Red';
-                bodyHtml += `<td class="signal-cell signal-${signal.toLowerCase()}" data-phase="${phaseIndex}" data-group-id="${id}">${signal}</td>`;
+                // 將文字轉換為 CSS class
+                const colorClass = `signal-${signal.toLowerCase()}`;
+
+                bodyHtml += `<td>
+                                <div class="signal-block ${colorClass}" 
+                                     data-phase="${phaseIndex}" 
+                                     data-group-id="${id}" 
+                                     title="Current: ${signal} (Click to toggle)">
+                                </div>
+                             </td>`;
             });
-            bodyHtml += `<td><button class="tfl-delete-phase-btn" data-phase="${phaseIndex}">Delete</button></td></tr>`;
+
+            // Delete Button
+            bodyHtml += `<td><button class="tfl-delete-phase-btn btn-danger-outline" data-phase="${phaseIndex}" style="padding: 4px 8px; font-size: 0.8rem; margin:0 auto;">Delete</button></td></tr>`;
         });
         tableBody.innerHTML = bodyHtml;
 
+        // 綁定事件：Duration 變更
         tableBody.querySelectorAll('.tfl-duration-input').forEach(input => {
             input.onchange = (e) => {
                 const phaseIndex = e.target.dataset.phase;
                 tflData.schedule[phaseIndex].duration = parseInt(e.target.value, 10) || 30;
             };
         });
-        tableBody.querySelectorAll('.signal-cell').forEach(cell => {
-            cell.onclick = (e) => {
+
+        // 綁定事件：點擊色塊切換燈號 (修改處)
+        tableBody.querySelectorAll('.signal-block').forEach(block => {
+            block.onclick = (e) => {
                 const phaseIndex = e.target.dataset.phase;
                 const groupId = e.target.dataset.groupId;
+
+                // 定義切換順序：紅 -> 綠 -> 黃 -> 紅
                 const signals = ['Green', 'Yellow', 'Red'];
                 const currentSignal = tflData.schedule[phaseIndex].signals[groupId] || 'Red';
-                const nextSignal = signals[(signals.indexOf(currentSignal) + 1) % 3];
-                tflData.schedule[phaseIndex].signals[groupId] = nextSignal;
+
+                // 找到下一個顏色
+                // 如果目前是 Red (index -1 or 2)，下一個是 Green (index 0)
+                // 如果目前是 Green (index 0)，下一個是 Yellow (index 1)
+                let nextIndex = 0;
+                if (currentSignal === 'Green') nextIndex = 1; // -> Yellow
+                else if (currentSignal === 'Yellow') nextIndex = 2; // -> Red
+                else nextIndex = 0; // -> Green (Red or undefined goes to Green)
+
+                tflData.schedule[phaseIndex].signals[groupId] = signals[nextIndex];
+
+                // 重新渲染以更新視圖
                 renderTflPhasingTab();
             };
         });
+
+        // 綁定事件：刪除 Phase
         tableBody.querySelectorAll('.tfl-delete-phase-btn').forEach(btn => {
             btn.onclick = (e) => {
                 const phaseIndex = e.target.dataset.phase;
@@ -5849,6 +6545,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 renderTflPhasingTab();
             };
         });
+
+        // Add Phase 按鈕邏輯保持不變
         document.getElementById('tfl-add-phase-btn').onclick = () => {
             tflData.schedule.push({ duration: 30, signals: {} });
             renderTflPhasingTab();
@@ -5874,13 +6572,14 @@ document.addEventListener('DOMContentLoaded', () => {
         renderSpawnerPeriodsTab();
         renderSpawnerProfilesTab();
         document.getElementById('spawner-modal').style.display = 'block';
+        I18N.translateDOM(document.getElementById('spawner-modal'));
     }
 
     function renderSpawnerPeriodsTab() {
         const spawnerData = currentModalOrigin;
         const periodsList = document.getElementById('spawner-periods-list');
 
-        // 輔助函數：從目前的UI讀取所有週期的設定 (包含 Destination, Profiles, 和新增的 Stops)
+        // 讀取 UI 數據的輔助函數 (保持不變)
         const readPeriodsFromUI = () => {
             const periods = [];
             const uiPeriodElements = periodsList.querySelectorAll('.spawner-period');
@@ -5891,10 +6590,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     numVehicles: parseInt(div.querySelector('.period-num-vehicles').value, 10) || 100,
                     destinations: [],
                     profiles: [],
-                    stops: [] // <--- 新增
+                    stops: []
                 };
 
-                // 讀取 destinations 表格
+                // Destinations
                 div.querySelectorAll('.dest-table tbody tr').forEach(row => {
                     const select = row.cells[0].querySelector('select');
                     const weightInput = row.cells[1].querySelector('input');
@@ -5906,7 +6605,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 });
 
-                // 讀取 profiles 表格
+                // Profiles
                 div.querySelectorAll('.profile-table tbody tr').forEach(row => {
                     const select = row.cells[0].querySelector('select');
                     const weightInput = row.cells[1].querySelector('input');
@@ -5918,11 +6617,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 });
 
-                // 讀取 stops (Parking) 表格 <--- 新增讀取邏輯
+                // Stops
                 div.querySelectorAll('.stops-table tbody tr').forEach(row => {
-                    const select = row.cells[0].querySelector('select'); // Parking Lot ID
-                    const probInput = row.cells[1].querySelector('input'); // Probability
-                    const durInput = row.cells[2].querySelector('input');  // Duration
+                    const select = row.cells[0].querySelector('select');
+                    const probInput = row.cells[1].querySelector('input');
+                    const durInput = row.cells[2].querySelector('input');
 
                     if (select && select.value) {
                         newPeriod.stops.push({
@@ -5938,17 +6637,15 @@ document.addEventListener('DOMContentLoaded', () => {
             return periods;
         };
 
-        // --- 核心渲染邏輯 ---
+        // --- 核心渲染邏輯 (更新結構) ---
         periodsList.innerHTML = '';
         (spawnerData.periods || []).forEach((period, index) => {
-            // 準備 Parking Lots 的選項
+            // Parking Dropdown Generator
             const parkingOptions = Object.values(network.parkingLots).map(pl => pl.id);
             const parkingLabels = Object.values(network.parkingLots).map(pl => `${pl.name || pl.id}`);
-
-            // 為了生成帶有名稱的下拉選單，我們需要自定義 generateDropdown
             const generateParkingDropdown = (id, selectedValue) => {
-                if (parkingOptions.length === 0) return '<span>No Parking Lots</span>';
-                let html = `<select id="${id}">`;
+                if (parkingOptions.length === 0) return '<span style="color:#999; font-style:italic;">No Parking Lots</span>';
+                let html = `<select id="${id}" class="prop-select" style="width:100%">`;
                 parkingOptions.forEach((optId, idx) => {
                     const label = parkingLabels[idx];
                     const selected = optId === selectedValue ? 'selected' : '';
@@ -5959,51 +6656,113 @@ document.addEventListener('DOMContentLoaded', () => {
             };
 
             const periodDiv = document.createElement('div');
-            periodDiv.className = 'spawner-period';
-            periodDiv.innerHTML = `<div style="display: flex; justify-content: space-between;"><h4>Period ${index + 1}</h4><button class="delete-period-btn" data-index="${index}">× Delete Period</button></div>
-                <div class="spawner-grid">
-                    <div><label>Duration (s)</label><input type="number" class="period-duration" data-index="${index}" value="${period.duration || 3600}"></div>
-                    <div><label>Number of Vehicles</label><input type="number" class="period-num-vehicles" data-index="${index}" value="${period.numVehicles || 100}"></div>
+            periodDiv.className = 'spawner-period spawner-card'; // 加入 card class
+            periodDiv.innerHTML = `
+                <!-- 1. Card Header -->
+                <div class="spawner-card-header">
+                    <div class="spawner-card-title">
+                        <i class="fa-regular fa-clock"></i> 
+                        Time Period ${index + 1}
+                    </div>
+                    <button class="delete-period-btn btn-sm" style="color:#ef4444; border:1px solid #fecaca; background:#fff;" data-index="${index}">
+                        <i class="fa-solid fa-trash-can"></i> Remove
+                    </button>
                 </div>
-                <div class="spawner-grid">
+
+                <!-- 2. Basic Settings Grid -->
+                <div class="spawner-grid-row">
+                    <div class="spawner-input-group">
+                        <label>Duration (sec)</label>
+                        <input type="number" class="period-duration prop-input" data-index="${index}" value="${period.duration || 3600}">
+                    </div>
+                    <div class="spawner-input-group">
+                        <label>Vehicle Count</label>
+                        <input type="number" class="period-num-vehicles prop-input" data-index="${index}" value="${period.numVehicles || 100}">
+                    </div>
+                </div>
+
+                <!-- 3. Split Layout for Destinations & Profiles -->
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                    <!-- Left: Destinations -->
                     <div>
-                        <h5>Destinations</h5>
+                        <div class="spawner-sub-header"><i class="fa-solid fa-location-dot"></i> Destinations</div>
                         <table class="spawner-table dest-table" data-index="${index}">
-                            <thead><tr><th>Destination</th><th>Weight</th><th></th></tr></thead>
-                            <tbody>${(period.destinations || []).map((dest, d_idx) => `<tr><td>${generateDropdown(`dest-sel-${index}-${d_idx}`, Object.keys(network.destinations), dest.nodeId)}</td><td><input type="number" step="0.1" value="${dest.weight || 1}"></td><td><button class="delete-row-btn">×</button></td></tr>`).join('')}</tbody>
+                            <thead>
+                                <tr>
+                                    <th>Node</th>
+                                    <th style="width:70px; text-align:right;">Weight</th>
+                                    <th style="width:30px;"></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${(period.destinations || []).map((dest, d_idx) => `
+                                    <tr>
+                                        <td>${generateDropdown(`dest-sel-${index}-${d_idx}`, Object.keys(network.destinations), dest.nodeId).replace('<select', '<select class="prop-select" style="width:100%"')}</td>
+                                        <td><input type="number" step="0.1" value="${dest.weight || 1}" class="prop-input" style="text-align:right;"></td>
+                                        <td style="text-align:center;"><button class="delete-row-btn btn-icon-only"><i class="fa-solid fa-xmark"></i></button></td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
                         </table>
-                        <button class="add-dest-btn" data-index="${index}">+ Add Destination</button>
+                        <button class="add-dest-btn btn-dashed" data-index="${index}">+ Add Destination</button>
                     </div>
+
+                    <!-- Right: Profiles -->
                     <div>
-                        <h5>Vehicle Profiles</h5>
+                        <div class="spawner-sub-header"><i class="fa-solid fa-car-side"></i> Vehicle Mix</div>
                         <table class="spawner-table profile-table" data-index="${index}">
-                            <thead><tr><th>Profile</th><th>Weight</th><th></th></tr></thead>
-                            <tbody>${(period.profiles || []).map((prof, p_idx) => `<tr><td>${generateDropdown(`prof-sel-${index}-${p_idx}`, Object.keys(network.vehicleProfiles), prof.profileId)}</td><td><input type="number" step="0.1" value="${prof.weight || 1}"></td><td><button class="delete-row-btn">×</button></td></tr>`).join('')}</tbody>
+                            <thead>
+                                <tr>
+                                    <th>Profile</th>
+                                    <th style="width:70px; text-align:right;">Weight</th>
+                                    <th style="width:30px;"></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${(period.profiles || []).map((prof, p_idx) => `
+                                    <tr>
+                                        <td>${generateDropdown(`prof-sel-${index}-${p_idx}`, Object.keys(network.vehicleProfiles), prof.profileId).replace('<select', '<select class="prop-select" style="width:100%"')}</td>
+                                        <td><input type="number" step="0.1" value="${prof.weight || 1}" class="prop-input" style="text-align:right;"></td>
+                                        <td style="text-align:center;"><button class="delete-row-btn btn-icon-only"><i class="fa-solid fa-xmark"></i></button></td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
                         </table>
-                        <button class="add-prof-btn" data-index="${index}">+ Add Profile</button>
+                        <button class="add-prof-btn btn-dashed" data-index="${index}">+ Add Profile</button>
                     </div>
                 </div>
-                <!-- 新增：中途點 (Parking Stops) 區塊 -->
-                <div style="margin-top: 10px; border-top: 1px dashed #ccc; padding-top: 5px;">
-                    <h5>Intermediate Stops (Parking Lots)</h5>
-                    <table class="spawner-table stops-table" data-index="${index}" style="width: 100%;">
-                        <thead><tr><th>Parking Lot</th><th>Enter Prob (%)</th><th>Duration (min)</th><th></th></tr></thead>
-                        <tbody>${(period.stops || []).map((stop, s_idx) => `
+
+                <!-- 4. Intermediate Stops -->
+                <div class="spawner-sub-section">
+                    <div class="spawner-sub-header"><i class="fa-solid fa-square-parking"></i> Intermediate Stops</div>
+                    <table class="spawner-table stops-table" data-index="${index}">
+                        <thead>
                             <tr>
-                                <td>${generateParkingDropdown(`stop-sel-${index}-${s_idx}`, stop.parkingLotId)}</td>
-                                <td><input type="number" step="1" min="0" max="100" value="${stop.probability || 0}"></td>
-                                <td><input type="number" step="1" min="0" value="${stop.duration || 0}"></td>
-                                <td><button class="delete-row-btn">×</button></td>
+                                <th>Parking Lot</th>
+                                <th style="width:100px; text-align:right;">Enter Prob (%)</th>
+                                <th style="width:100px; text-align:right;">Stay (min)</th>
+                                <th style="width:30px;"></th>
                             </tr>
-                        `).join('')}</tbody>
+                        </thead>
+                        <tbody>
+                            ${(period.stops || []).map((stop, s_idx) => `
+                                <tr>
+                                    <td>${generateParkingDropdown(`stop-sel-${index}-${s_idx}`, stop.parkingLotId)}</td>
+                                    <td><input type="number" step="1" min="0" max="100" value="${stop.probability || 0}" class="prop-input"></td>
+                                    <td><input type="number" step="1" min="0" value="${stop.duration || 0}" class="prop-input"></td>
+                                    <td style="text-align:center;"><button class="delete-row-btn btn-icon-only"><i class="fa-solid fa-xmark"></i></button></td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
                     </table>
-                    <button class="add-stop-btn" data-index="${index}">+ Add Parking Stop</button>
+                    <button class="add-stop-btn btn-dashed" data-index="${index}">+ Add Parking Stop</button>
                 </div>
-                `;
+            `;
             periodsList.appendChild(periodDiv);
         });
 
-        // --- 事件監聽器綁定 ---
+        // --- 事件綁定 (保持原有邏輯，僅重新綁定) ---
+        // (這部分邏輯不變，因為我們只是換了 HTML 結構的 class，邏輯依賴的 class 名稱如 delete-row-btn 都還在)
 
         document.getElementById('spawner-add-period-btn').onclick = () => {
             spawnerData.periods = readPeriodsFromUI();
@@ -6019,6 +6778,7 @@ document.addEventListener('DOMContentLoaded', () => {
             };
         });
 
+        // Add Destination/Profile/Stop Logic ...
         periodsList.querySelectorAll('.add-dest-btn').forEach(btn => {
             btn.onclick = () => {
                 spawnerData.periods = readPeriodsFromUI();
@@ -6035,35 +6795,29 @@ document.addEventListener('DOMContentLoaded', () => {
             };
         });
 
-        // 新增：Add Stop 按鈕事件
         periodsList.querySelectorAll('.add-stop-btn').forEach(btn => {
             btn.onclick = () => {
                 spawnerData.periods = readPeriodsFromUI();
-                // 預設第一個停車場ID (如果有的話)
                 const firstPlId = Object.keys(network.parkingLots)[0] || '';
-                (spawnerData.periods[btn.dataset.index].stops ??= []).push({
-                    parkingLotId: firstPlId,
-                    probability: 0,
-                    duration: 0
-                });
+                (spawnerData.periods[btn.dataset.index].stops ??= []).push({ parkingLotId: firstPlId, probability: 0, duration: 0 });
                 renderSpawnerPeriodsTab();
             };
         });
 
+        // Delete Rows Logic ...
         periodsList.querySelectorAll('.delete-row-btn').forEach(btn => {
             btn.onclick = (e) => {
                 spawnerData.periods = readPeriodsFromUI();
                 const row = e.target.closest('tr');
                 const table = e.target.closest('table');
                 const periodIndex = table.dataset.index;
-                const rowIndex = row.rowIndex - 1; // header is row 0
+                const rowIndex = row.rowIndex - 1;
 
                 if (table.classList.contains('dest-table')) {
                     (spawnerData.periods[periodIndex].destinations ??= []).splice(rowIndex, 1);
                 } else if (table.classList.contains('profile-table')) {
                     (spawnerData.periods[periodIndex].profiles ??= []).splice(rowIndex, 1);
                 } else if (table.classList.contains('stops-table')) {
-                    // 新增：刪除 Stop
                     (spawnerData.periods[periodIndex].stops ??= []).splice(rowIndex, 1);
                 }
                 renderSpawnerPeriodsTab();
@@ -6073,14 +6827,75 @@ document.addEventListener('DOMContentLoaded', () => {
     function renderSpawnerProfilesTab() {
         const profilesList = document.getElementById('spawner-profiles-list');
         profilesList.innerHTML = '';
+
         Object.values(network.vehicleProfiles).forEach(profile => {
             const profileDiv = document.createElement('div');
-            profileDiv.className = 'spawner-profile-item';
-            profileDiv.innerHTML = `<div style="display: flex; justify-content: space-between;"><h4>Profile: <input type="text" class="profile-id" value="${profile.id}" ${profile.id === 'default' ? 'readonly' : ''}></h4>${profile.id !== 'default' ? `<button class="delete-profile-btn" data-id="${profile.id}">×</button>` : ''}</div><div class="spawner-grid"><div><label>Length (m)</label><input type="number" step="0.1" class="profile-prop" data-prop="length" value="${profile.length}"></div><div><label>Width (m)</label><input type="number" step="0.1" class="profile-prop" data-prop="width" value="${profile.width}"></div><div><label>Max Speed (m/s)</label><input type="number" step="0.1" class="profile-prop" data-prop="maxSpeed" value="${profile.maxSpeed}"></div><div><label>Max Accel (m/s²)</label><input type="number" step="0.1" class="profile-prop" data-prop="maxAcceleration" value="${profile.maxAcceleration}"></div><div><label>Comfort Decel (m/s²)</label><input type="number" step="0.1" class="profile-prop" data-prop="comfortDeceleration" value="${profile.comfortDeceleration}"></div><div><label>Min Gap (m)</label><input type="number" step="0.1" class="profile-prop" data-prop="minDistance" value="${profile.minDistance}"></div><div><label>Headway Time (s)</label><input type="number" step="0.1" class="profile-prop" data-prop="desiredHeadwayTime" value="${profile.desiredHeadwayTime}"></div></div>`;
+            profileDiv.className = 'spawner-profile-item spawner-card'; // 卡片樣式
+
+            // 是否為預設 (唯讀)
+            const isDefault = profile.id === 'default';
+            const idInputAttr = isDefault ? 'disabled style="background:#f1f5f9; color:#64748b;"' : '';
+
+            profileDiv.innerHTML = `
+                <!-- Header -->
+                <div class="spawner-card-header">
+                    <div class="spawner-card-title">
+                        <i class="fa-solid fa-car"></i>
+                        <input type="text" class="profile-id prop-input" value="${profile.id}" ${idInputAttr} style="width:200px; text-align:left; font-weight:bold;">
+                    </div>
+                    ${!isDefault ? `<button class="delete-profile-btn btn-sm" style="color:#ef4444; border:1px solid #fecaca; background:#fff;" data-id="${profile.id}"><i class="fa-solid fa-trash-can"></i> Remove</button>` : '<span style="font-size:0.75rem; color:#94a3b8;">(Default Profile)</span>'}
+                </div>
+                
+                <!-- Parameters Grid (4 columns) -->
+                <div class="profile-params-grid">
+                    <div class="spawner-input-group">
+                        <label>Length (m)</label>
+                        <input type="number" step="0.1" class="profile-prop prop-input" data-prop="length" value="${profile.length}">
+                    </div>
+                    <div class="spawner-input-group">
+                        <label>Width (m)</label>
+                        <input type="number" step="0.1" class="profile-prop prop-input" data-prop="width" value="${profile.width}">
+                    </div>
+                    <div class="spawner-input-group">
+                        <label>Max Speed (m/s)</label>
+                        <input type="number" step="0.1" class="profile-prop prop-input" data-prop="maxSpeed" value="${profile.maxSpeed}">
+                    </div>
+                    <div class="spawner-input-group">
+                        <label>Max Accel (m/s²)</label>
+                        <input type="number" step="0.1" class="profile-prop prop-input" data-prop="maxAcceleration" value="${profile.maxAcceleration}">
+                    </div>
+                    <div class="spawner-input-group">
+                        <label>Comf. Decel (m/s²)</label>
+                        <input type="number" step="0.1" class="profile-prop prop-input" data-prop="comfortDeceleration" value="${profile.comfortDeceleration}">
+                    </div>
+                    <div class="spawner-input-group">
+                        <label>Min Gap (m)</label>
+                        <input type="number" step="0.1" class="profile-prop prop-input" data-prop="minDistance" value="${profile.minDistance}">
+                    </div>
+                    <div class="spawner-input-group">
+                        <label>Headway (s)</label>
+                        <input type="number" step="0.1" class="profile-prop prop-input" data-prop="desiredHeadwayTime" value="${profile.desiredHeadwayTime}">
+                    </div>
+                    <!-- Empty slot filler or extra param -->
+                    <div></div>
+                </div>
+            `;
             profilesList.appendChild(profileDiv);
         });
-        document.getElementById('spawner-add-profile-btn').onclick = () => { const newId = `profile_${Object.keys(network.vehicleProfiles).length}`; network.vehicleProfiles[newId] = { ...network.vehicleProfiles['default'], id: newId }; renderSpawnerProfilesTab(); };
-        profilesList.querySelectorAll('.delete-profile-btn').forEach(btn => { btn.onclick = () => { delete network.vehicleProfiles[btn.dataset.id]; renderSpawnerProfilesTab(); }; });
+
+        // 綁定事件
+        document.getElementById('spawner-add-profile-btn').onclick = () => {
+            const newId = `profile_${Object.keys(network.vehicleProfiles).length}`;
+            network.vehicleProfiles[newId] = { ...network.vehicleProfiles['default'], id: newId };
+            renderSpawnerProfilesTab();
+        };
+
+        profilesList.querySelectorAll('.delete-profile-btn').forEach(btn => {
+            btn.onclick = () => {
+                delete network.vehicleProfiles[btn.dataset.id];
+                renderSpawnerProfilesTab();
+            };
+        });
     }
 
     document.getElementById('spawner-save-btn').onclick = () => {
@@ -6175,7 +6990,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (typeof measureGroup !== 'undefined') measureGroup.destroyChildren();
 
         network = {
-            navigationMode: 'OD_BASED',
+            // [修正] 將導航模式預設為 HYBRID，表示同時支援 OD 路徑與轉向率
+            navigationMode: 'HYBRID',
             links: {}, nodes: {}, connections: {}, detectors: {},
             vehicleProfiles: {},
             trafficLights: {}, measurements: {}, background: null,
@@ -6184,14 +7000,15 @@ document.addEventListener('DOMContentLoaded', () => {
             parkingLots: {},
             parkingGates: {},
             roadSigns: {}, origins: {}, destinations: {},
-            roadMarkings: {} // <--- 新增此行
+            roadMarkings: {}
         };
         idCounter = 0;
         selectedObject = null;
         currentModalOrigin = null;
 
-        const modeSelect = document.getElementById('simulationModeSelect');
-        if (modeSelect) modeSelect.value = 'od_path';
+        // [修正] 移除對 simulationModeSelect DOM 的操作
+        // const modeSelect = document.getElementById('simulationModeSelect');
+        // if (modeSelect) modeSelect.value = 'od_path';
 
         drawGrid();
         updatePropertiesPanel(null);
@@ -6281,6 +7098,8 @@ document.addEventListener('DOMContentLoaded', () => {
         linkElements.forEach(linkEl => {
             const xmlId = getChildValue(linkEl, "id");
             syncIdCounter(xmlId);
+            // [新增] 讀取 XML 中的名稱
+            const xmlName = getChildValue(linkEl, "name");
 
             const waypoints = [];
             const wpContainer = getChildrenByLocalName(linkEl, "Waypoints")[0];
@@ -6322,6 +7141,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const newLink = createLink(waypoints, laneWidths);
             xmlLinkIdMap.set(xmlId, newLink.id);
 
+            // [新增] 如果 XML 有名稱則套用，否則使用 ID
+            if (xmlName) {
+                newLink.name = xmlName;
+            }
             // RoadSigns
             const signsContainer = getChildrenByLocalName(linkEl, "RoadSigns")[0];
             if (signsContainer) {
@@ -6921,10 +7744,11 @@ document.addEventListener('DOMContentLoaded', () => {
             const mode = getChildValue(paramsEl, "NavigationMode");
             if (mode) {
                 network.navigationMode = mode;
-                const modeSelect = document.getElementById('simulationModeSelect');
-                if (modeSelect) {
-                    modeSelect.value = (mode === 'FLOW_BASED') ? 'flow_turning' : 'od_path';
-                }
+                // [修正] 移除 UI 同步代碼，因為下拉選單已移除
+                // const modeSelect = document.getElementById('simulationModeSelect');
+                // if (modeSelect) {
+                //     modeSelect.value = (mode === 'FLOW_BASED') ? 'flow_turning' : 'od_path';
+                // }
             }
         }
 
@@ -7048,14 +7872,14 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         let xml = `<?xml version="1.0" encoding="UTF-8"?>\n`;
-        xml += `<tm:TrafficModel parserVersion="1.2" xmlns:tm="http://traffic.cos.ru/cossim/TrafficModelDefinitionFile0.1">\n`;
+        xml += `<tm:TrafficModel parserVersion="1.2" xmlns:tm="TrafficModelDefinitionFile0.1">\n`;
 
         // --- 1. Global Parameters ---
         xml += `  <tm:ModelParameters>\n`;
         xml += `    <tm:randomSeed>${Math.floor(Math.random() * 100000)}</tm:randomSeed>\n`;
         xml += `    <tm:immutableVehiclesPercent>70</tm:immutableVehiclesPercent>\n`;
-        // [新增] 寫入導航模式
-        xml += `    <tm:NavigationMode>${network.navigationMode || 'OD_BASED'}</tm:NavigationMode>\n`;
+        // [修正] 確保匯出模式，若無指定則預設為 HYBRID
+        xml += `    <tm:NavigationMode>${network.navigationMode || 'HYBRID'}</tm:NavigationMode>\n`;
         xml += `  </tm:ModelParameters>\n`;
 
         // [新增] 匯出全域車種定義 (確保 Flow Mode 參照的車種存在)
@@ -7087,6 +7911,8 @@ document.addEventListener('DOMContentLoaded', () => {
             if (numericId === undefined) continue;
             xml += `      <tm:Link>\n`;
             xml += `        <tm:id>${numericId}</tm:id>\n`;
+            // [新增] 匯出名稱，如果沒有則使用 ID
+            xml += `        <tm:name>${link.name || link.id}</tm:name>\n`;
 
             let sourceNodeId = -1, destNodeId = -1;
             const sourceOrigin = Object.values(network.origins).find(o => o.linkId === link.id);
@@ -7729,11 +8555,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
         network.background = bgObject;
 
-        // 顯示浮動鎖定按鈕
-        const lockFloat = document.getElementById('bg-lock-float');
-        if (lockFloat) {
-            lockFloat.style.display = 'block';
-        }
+        // [修正] 更新工具列狀態，這會顯示 #bg-lock-section
+        updateBackgroundLockState();
 
         return bgObject;
     }
@@ -7760,10 +8583,13 @@ document.addEventListener('DOMContentLoaded', () => {
         layer.batchDraw();
     }
     function initBackgroundLock() {
-        const lockFloat = document.getElementById('bg-lock-float');
+        // [修改] 改為選取工具列上的元素
+        const lockSection = document.getElementById('bg-lock-section');
+        const lockDivider = document.getElementById('bg-lock-divider');
         const lockCheckbox = document.getElementById('bg-lock-checkbox');
+        const lockIcon = document.getElementById('bg-lock-icon');
 
-        if (!lockFloat || !lockCheckbox) return;
+        if (!lockCheckbox) return;
 
         lockCheckbox.addEventListener('change', (e) => {
             if (!network.background) return;
@@ -7771,17 +8597,19 @@ document.addEventListener('DOMContentLoaded', () => {
             const isLocked = e.target.checked;
             network.background.locked = isLocked;
 
-            // FIX: 直接控制 draggability 和 listening 狀態
             if (network.background.konvaGroup) {
-                network.background.konvaGroup.draggable(!isLocked); // <--- 主要修正：防止拖曳
-                network.background.konvaGroup.listening(!isLocked); // <--- 防止點擊和選取
-                network.background.konvaHitArea.listening(!isLocked);
+                network.background.konvaGroup.draggable(!isLocked);
+                network.background.konvaGroup.listening(!isLocked);
+
+                // 如果有 hitArea 也要處理
+                if (network.background.konvaHitArea) {
+                    network.background.konvaHitArea.listening(!isLocked);
+                }
             }
 
-            // 更新顯示文字
-            const span = lockFloat.querySelector('span');
-            if (span) {
-                span.textContent = isLocked ? '🔒 背景已鎖定' : '🔓 鎖定背景';
+            // 更新圖示：鎖定時顯示鎖頭，解鎖顯示開鎖
+            if (lockIcon) {
+                lockIcon.className = isLocked ? 'fa-solid fa-lock' : 'fa-solid fa-lock-open';
             }
 
             // 如果背景被鎖定且當前選中的是背景，則取消選取
@@ -7791,27 +8619,38 @@ document.addEventListener('DOMContentLoaded', () => {
 
             layer.batchDraw();
         });
-
-        // 初始隱藏
-        lockFloat.style.display = 'none';
     }
-    function updateBackgroundLockState() {
-        const lockFloat = document.getElementById('bg-lock-float');
-        const lockCheckbox = document.getElementById('bg-lock-checkbox');
 
-        if (!lockFloat || !lockCheckbox) return;
+    // --- 替換 updateBackgroundLockState 函數 ---
+    function updateBackgroundLockState() {
+        const lockSection = document.getElementById('bg-lock-section');
+        const lockDivider = document.getElementById('bg-lock-divider');
+        const lockCheckbox = document.getElementById('bg-lock-checkbox');
+        const lockIcon = document.getElementById('bg-lock-icon');
+
+        if (!lockSection || !lockCheckbox) return;
 
         if (network.background) {
-            lockFloat.style.display = 'block';
-            lockCheckbox.checked = network.background.locked || false;
+            // [強制修正] 直接設定為 'flex'，確保瀏覽器一定會顯示它
+            // 原本的 '' 依賴 CSS 檔案，若 CSS 有快取問題可能導致失敗
+            lockSection.style.display = 'flex';
 
-            // 更新顯示文字
-            const span = lockFloat.querySelector('span');
-            if (span) {
-                span.textContent = network.background.locked ? '🔒 背景已鎖定' : '🔓 鎖定背景';
+            if (lockDivider) {
+                // 分隔線通常是 block 或 inline-block，這裡設為 block 確保顯示
+                lockDivider.style.display = 'block';
             }
+
+            // 同步狀態
+            lockCheckbox.checked = network.background.locked || false;
+            if (lockIcon) {
+                lockIcon.className = network.background.locked ? 'fa-solid fa-lock' : 'fa-solid fa-lock-open';
+            }
+
+            console.log("Force showing bg-lock-section: display set to flex");
         } else {
-            lockFloat.style.display = 'none';
+            // 無背景時隱藏
+            lockSection.style.display = 'none';
+            if (lockDivider) lockDivider.style.display = 'none';
         }
     }
 
@@ -8200,4 +9039,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- INITIALIZE ---
     init();
+
+    // Expose for i18n.js to refresh UI on language change
+    window.updatePropertiesPanel = updatePropertiesPanel;
+    window.updateStatusBar = updateStatusBar;
+    Object.defineProperty(window, 'selectedObject', {
+        get: () => selectedObject,
+        enumerable: true,
+        configurable: true
+    });
 });
