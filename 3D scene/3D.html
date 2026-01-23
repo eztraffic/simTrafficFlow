@@ -4,159 +4,364 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>3D 場景編輯器 (含內嵌模型功能)</title>
+    <title>3D Scene Editor</title>
+
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Roboto+Mono:wght@500&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
     <style>
+        :root {
+            --bg-dark: #1e293b;
+            --bg-light: #ffffff;
+            --bg-canvas: #e2e8f0;
+            --bg-panel: #f8fafc;
+            --primary: #3b82f6;
+            --primary-hover: #2563eb;
+            --accent: #06b6d4;
+            --text-main: #334155;
+            --text-muted: #64748b;
+            --text-inv: #f8fafc;
+            --border: #cbd5e1;
+            --border-light: #e2e8f0;
+            --danger: #ef4444;
+            --danger-hover: #dc2626;
+            --success: #10b981;
+        }
+
         body {
             margin: 0;
             padding: 0;
             overflow: hidden;
-            font-family: 'Segoe UI', sans-serif;
-            display: flex;
-            height: 100vh;
-            color: #333;
-        }
-
-        #sidebar {
-            width: 320px;
-            background: #2c3e50;
-            color: #ecf0f1;
+            font-family: 'Inter', sans-serif;
             display: flex;
             flex-direction: column;
-            border-right: 1px solid #1a252f;
-            box-shadow: 2px 0 5px rgba(0, 0, 0, 0.2);
+            height: 100vh;
+            color: var(--text-main);
+            background-color: var(--bg-canvas);
+        }
+
+        /* --- Navbar --- */
+        .app-navbar {
+            height: 50px;
+            background-color: var(--bg-dark);
+            color: var(--text-inv);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 16px;
+            z-index: 20;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+            flex-shrink: 0;
+        }
+
+        .brand-section {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .logo-icon {
+            font-size: 1.2rem;
+            color: var(--accent);
+        }
+
+        .brand-text h1 {
+            margin: 0;
+            font-size: 1.1rem;
+            font-weight: 600;
+            display: inline;
+        }
+
+        .version-tag {
+            background: #475569;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            margin-left: 6px;
+        }
+
+        .global-controls {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .separator {
+            width: 1px;
+            height: 24px;
+            background: rgba(255, 255, 255, 0.2);
+            margin: 0 5px;
+        }
+
+        /* Navbar Buttons */
+        .btn-input {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            cursor: pointer;
+            border: none;
+            transition: all 0.2s;
+            text-decoration: none;
+        }
+
+        .btn-input.primary {
+            background: var(--primary);
+            color: white;
+        }
+
+        .btn-input.primary:hover {
+            background: var(--primary-hover);
+        }
+
+        /* --- Main Layout --- */
+        .main-container {
+            display: flex;
+            flex: 1;
+            height: calc(100vh - 50px);
+            overflow: hidden;
+            flex-direction: row;
+        }
+
+        /* --- Sidebar (Right Side) --- */
+        #sidebar {
+            width: 280px;
+            background: var(--bg-panel);
+            border-left: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
             z-index: 10;
+            box-shadow: -2px 0 5px rgba(0, 0, 0, 0.05);
+            /* Remove padding here, move to tab-content */
+            padding: 0;
         }
 
-        .panel {
+        /* --- Tabs Styling --- */
+        .sidebar-tabs {
+            display: flex;
+            background: #fff;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .tab-btn {
+            flex: 1;
+            padding: 12px 0;
+            background: transparent;
+            border: none;
+            border-bottom: 3px solid transparent;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+        }
+
+        .tab-btn:hover {
+            background-color: #f8fafc;
+            color: var(--primary);
+        }
+
+        .tab-btn.active {
+            color: var(--primary);
+            border-bottom-color: var(--primary);
+            background-color: #f1f5f9;
+        }
+
+        .tab-content {
+            display: none;
+            flex-direction: column;
             padding: 15px;
-            border-bottom: 1px solid #34495e;
+            height: 100%;
+            overflow-y: auto;
         }
 
-        .panel h3 {
-            margin-top: 0;
-            font-size: 1.1em;
-            color: #3498db;
-            border-bottom: 2px solid #3498db;
-            padding-bottom: 5px;
-            display: inline-block;
+        .tab-content.active {
+            display: flex;
         }
 
+        /* --- Viewport (Left Side) --- */
+        #viewport {
+            flex: 1;
+            position: relative;
+            background: var(--bg-canvas);
+            overflow: hidden;
+        }
+
+        /* --- Form Elements --- */
         label {
             display: block;
             margin-bottom: 5px;
-            font-size: 0.9em;
-            font-weight: bold;
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--text-main);
         }
 
-        input[type="file"],
-        input[type="text"] {
-            width: 100%;
+        .file-upload-wrapper {
+            position: relative;
             margin-bottom: 10px;
-            box-sizing: border-box;
-            padding: 6px;
+        }
+
+        .file-upload-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            width: 100%;
+            padding: 8px;
+            background: #fff;
+            border: 1px dashed var(--border);
             border-radius: 4px;
-            border: 1px solid #ccc;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .file-upload-btn:hover {
+            border-color: var(--primary);
+            color: var(--primary);
+            background: #eff6ff;
         }
 
         input[type="file"] {
-            background: #fff;
-            color: #333;
+            display: none;
         }
 
-        button {
-            background-color: #2980b9;
-            color: white;
+        input[type="text"] {
+            width: 100%;
+            padding: 6px 8px;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            font-size: 0.85rem;
+            background: #fff;
+            color: var(--text-main);
+            box-sizing: border-box;
+            margin-bottom: 10px;
+        }
+
+        input[type="text"]:disabled {
+            background: #f1f5f9;
+            color: var(--text-muted);
+        }
+
+        /* --- Buttons --- */
+        button.panel-btn {
             border: none;
             padding: 8px 12px;
             border-radius: 4px;
             cursor: pointer;
+            font-size: 0.85rem;
+            font-weight: 500;
+            transition: all 0.2s;
             width: 100%;
-            margin-bottom: 5px;
-            transition: background 0.2s;
-            font-size: 0.9em;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
         }
 
-        button:hover {
-            background-color: #3498db;
+        .btn-danger {
+            background-color: #fff;
+            border: 1px solid #fecaca;
+            color: var(--danger);
         }
 
-        button.action-btn {
-            background-color: #27ae60;
-            font-weight: bold;
-            margin-top: 10px;
+        .btn-danger:hover {
+            background-color: #fef2f2;
+            border-color: var(--danger);
         }
 
-        button.action-btn:hover {
-            background-color: #2ecc71;
-        }
-
-        button.delete-btn {
-            background-color: #c0392b;
-            margin-top: 5px;
-        }
-
-        button.delete-btn:hover {
-            background-color: #e74c3c;
-        }
-
+        /* --- Mode Controls --- */
         .mode-controls {
             display: flex;
-            gap: 5px;
+            gap: 4px;
             margin-bottom: 10px;
         }
 
         .mode-btn {
             flex: 1;
-            background: #34495e;
-            color: #ccc;
-            border: 1px solid #444;
+            background: #fff;
+            color: var(--text-muted);
+            padding: 8px 4px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            border: 1px solid var(--border);
+            cursor: pointer;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .mode-btn:hover {
+            background: #f1f5f9;
+            color: var(--primary);
         }
 
         .mode-btn.active {
-            background: #e67e22;
-            color: #fff;
-            border-color: #d35400;
+            background: #eff6ff;
+            color: var(--primary);
+            border-color: var(--primary);
+            box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.05);
         }
 
+        .mode-btn i {
+            font-size: 1rem;
+        }
+
+        .mode-btn span {
+            font-size: 0.7rem;
+            font-weight: 600;
+        }
+
+        /* --- Object List --- */
         #object-list {
             flex: 1;
             overflow-y: auto;
-            padding: 10px;
-            background: #233140;
+            background: #fff;
+            border: 1px solid var(--border-light);
+            border-radius: 4px;
+            padding: 4px;
+            margin-bottom: 15px;
+            /* Remove fixed max-height, let flex handle it in tab */
+            min-height: 100px;
         }
 
         .obj-item {
-            padding: 8px;
-            margin-bottom: 5px;
-            background: #34495e;
+            padding: 6px 10px;
+            margin-bottom: 2px;
             border-radius: 4px;
             cursor: pointer;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            font-size: 0.85em;
+            font-size: 0.85rem;
+            color: var(--text-main);
         }
 
         .obj-item:hover {
-            background: #3e5871;
+            background: #f1f5f9;
         }
 
         .obj-item.selected {
-            border: 1px solid #e67e22;
-            background: #2c3e50;
+            background: #eff6ff;
+            color: var(--primary);
+            font-weight: 600;
+            border-left: 3px solid var(--primary);
         }
 
         .obj-name {
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
-            max-width: 180px;
-        }
-
-        #viewport {
-            flex: 1;
-            position: relative;
-            background: #444;
         }
 
         #loading-mask {
@@ -165,13 +370,40 @@
             left: 0;
             width: 100%;
             height: 100%;
-            background: rgba(0, 0, 0, 0.7);
-            color: white;
+            background: rgba(226, 232, 240, 0.8);
+            color: var(--text-main);
             display: none;
+            flex-direction: column;
             justify-content: center;
             align-items: center;
-            z-index: 20;
-            font-size: 1.5em;
+            z-index: 50;
+            font-size: 1.2rem;
+            backdrop-filter: blur(4px);
+        }
+
+        .status-text {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-top: 4px;
+            font-style: italic;
+            text-align: right;
+        }
+
+        .language-select {
+            height: 32px;
+            background-color: rgba(255, 255, 255, 0.1);
+            color: var(--text-inv);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 4px;
+            padding: 0 8px;
+            font-size: 0.85rem;
+            cursor: pointer;
+            outline: none;
+        }
+
+        .language-select option {
+            background-color: var(--bg-dark);
+            color: white;
         }
     </style>
 
@@ -183,55 +415,246 @@
 
 <body>
 
-    <div id="sidebar">
-        <div class="panel">
-            <h3>1. 專案設定</h3>
-            <label>載入路網 (SIM/XML):</label>
-            <input type="file" id="xmlInput" accept=".sim,.xml">
-
-            <label style="margin-top:10px; color:#f39c12;">匯入已存場景 (XML):</label>
-            <input type="file" id="importSceneInput" accept=".xml">
-            <div id="status-text" style="font-size:0.8em; color:#bdc3c7;">尚未載入</div>
-        </div>
-
-        <div class="panel">
-            <h3>2. 加入模型</h3>
-            <label>選擇 GLB/GLTF (將內嵌):</label>
-            <input type="file" id="glbInput" accept=".glb,.gltf">
-        </div>
-
-        <div class="panel">
-            <h3>3. 編輯工具</h3>
-            <div class="mode-controls">
-                <button class="mode-btn active" onclick="setTransformMode('translate')">移動</button>
-                <button class="mode-btn" onclick="setTransformMode('rotate')">旋轉</button>
-                <button class="mode-btn" onclick="setTransformMode('scale')">縮放</button>
+    <nav class="app-navbar">
+        <div class="brand-section">
+            <div class="logo-icon"><i class="fa-solid fa-cube"></i></div>
+            <div class="brand-text">
+                <h1 data-i18n="app_title">simTrafficFlow | 3D Scene Editor</h1>
+                <span class="version-tag">Editor</span>
             </div>
-            <label>物件名稱:</label>
-            <input type="text" id="selectedName" disabled style="background:#ddd;">
-            <button class="delete-btn" onclick="deleteSelected()">刪除物件</button>
         </div>
 
-        <div id="object-list"></div>
+        <div class="global-controls">
+            <!-- Export Button -->
+            <button class="btn-input primary" onclick="exportSceneXML()">
+                <i class="fa-solid fa-floppy-disk"></i> <span data-i18n="btn_export">Export Scene</span>
+            </button>
 
-        <div class="panel" style="margin-top: auto;">
-            <h3>4. 輸出</h3>
-            <button class="action-btn" onclick="exportSceneXML()">匯出完整場景 XML</button>
+            <div class="separator"></div>
+
+            <select id="languageSelect" class="language-select">
+                <option value="zh">繁體中文</option>
+                <option value="en">English</option>
+            </select>
         </div>
-    </div>
+    </nav>
 
-    <div id="viewport">
-        <div id="loading-mask">處理中...</div>
+    <div class="main-container">
+        <!-- Viewport (Left) -->
+        <div id="viewport">
+            <div id="loading-mask">
+                <i class="fa-solid fa-spinner fa-spin"
+                    style="font-size: 2rem; margin-bottom: 10px; color: var(--primary);"></i>
+                <span data-i18n="msg_processing">Processing...</span>
+            </div>
+        </div>
+
+        <!-- Sidebar (Right) with Tabs -->
+        <div id="sidebar">
+
+            <!-- Tab Headers -->
+            <div class="sidebar-tabs">
+                <button class="tab-btn active" onclick="switchTab('tab-project', this)">
+                    <i class="fa-solid fa-folder-tree"></i>
+                    <span data-i18n="tab_project">Project</span>
+                </button>
+                <button class="tab-btn" onclick="switchTab('tab-models', this)">
+                    <i class="fa-solid fa-cube"></i>
+                    <span data-i18n="tab_models">Models</span>
+                </button>
+                <button class="tab-btn" onclick="switchTab('tab-editor', this)">
+                    <i class="fa-solid fa-pen-ruler"></i>
+                    <span data-i18n="tab_editor">Editor</span>
+                </button>
+            </div>
+
+            <!-- Tab 1: Project -->
+            <div id="tab-project" class="tab-content active">
+                <label data-i18n="lbl_load_net">Load Network (SIM/XML):</label>
+                <div class="file-upload-wrapper">
+                    <label for="xmlInput" class="file-upload-btn">
+                        <i class="fa-solid fa-road"></i> <span data-i18n="btn_choose_file">Choose File</span>
+                    </label>
+                    <input type="file" id="xmlInput" accept=".sim,.xml">
+                </div>
+                <div id="status-text-net" class="status-text" data-i18n="status_not_loaded">Not Loaded</div>
+
+                <div style="margin-top: 20px; border-top: 1px solid var(--border-light); padding-top: 20px;">
+                    <label data-i18n="lbl_import_scene">Import Scene (XML):</label>
+                    <div class="file-upload-wrapper">
+                        <label for="importSceneInput" class="file-upload-btn">
+                            <i class="fa-solid fa-file-import"></i> <span data-i18n="btn_choose_file">Choose File</span>
+                        </label>
+                        <input type="file" id="importSceneInput" accept=".xml">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tab 2: Models -->
+            <div id="tab-models" class="tab-content">
+                <label data-i18n="lbl_add_model">Add GLB/GLTF (Embedded):</label>
+                <div class="file-upload-wrapper">
+                    <label for="glbInput" class="file-upload-btn">
+                        <i class="fa-solid fa-upload"></i> <span data-i18n="btn_add_model">Add 3D Model</span>
+                    </label>
+                    <input type="file" id="glbInput" accept=".glb,.gltf">
+                </div>
+                <div class="status-text">
+                    <i class="fa-solid fa-circle-info"></i> Files are embedded as Base64 strings.
+                </div>
+            </div>
+
+            <!-- Tab 3: Editor -->
+            <div id="tab-editor" class="tab-content">
+                <!-- Mode Controls -->
+                <div class="mode-controls">
+                    <button class="mode-btn active" onclick="setTransformMode('translate')" title="Translate (W)">
+                        <i class="fa-solid fa-arrows-up-down-left-right"></i>
+                        <span data-i18n="tool_translate">Move</span>
+                    </button>
+                    <button class="mode-btn" onclick="setTransformMode('rotate')" title="Rotate (E)">
+                        <i class="fa-solid fa-rotate"></i>
+                        <span data-i18n="tool_rotate">Rotate</span>
+                    </button>
+                    <button class="mode-btn" onclick="setTransformMode('scale')" title="Scale (R)">
+                        <i class="fa-solid fa-expand"></i>
+                        <span data-i18n="tool_scale">Scale</span>
+                    </button>
+                </div>
+
+                <!-- Selection Info -->
+                <div style="margin-top: 15px;">
+                    <label data-i18n="lbl_obj_name">Selected Object:</label>
+                    <input type="text" id="selectedName" disabled placeholder="No selection">
+
+                    <button class="panel-btn btn-danger" onclick="deleteSelected()">
+                        <i class="fa-solid fa-trash"></i> <span data-i18n="btn_delete">Delete Object</span>
+                    </button>
+                </div>
+
+                <!-- Object List (Flex container to fill height) -->
+                <div style="margin-top: 15px; display: flex; flex-direction: column; flex: 1; min-height: 0;">
+                    <label data-i18n="lbl_obj_list">Scene Objects:</label>
+                    <div id="object-list">
+                        <!-- JS generated list -->
+                    </div>
+                </div>
+            </div>
+
+        </div>
     </div>
 
     <script>
+        // ==========================================
+        // 0. UI Logic
+        // ==========================================
+        function switchTab(tabId, btn) {
+            // Remove active class from all buttons and contents
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+
+            // Add active class to clicked button and target content
+            btn.classList.add('active');
+            document.getElementById(tabId).classList.add('active');
+        }
+
+        // ==========================================
+        // 1. Internationalization (I18N)
+        // ==========================================
+        const translations = {
+            zh: {
+                app_title: "simTrafficFlow 3D場景編輯器",
+                // Tabs
+                tab_project: "專案",
+                tab_models: "模型",
+                tab_editor: "編輯",
+
+                // Content
+                lbl_load_net: "載入路網 (.sim)",
+                btn_choose_file: "選擇檔案",
+                status_not_loaded: "尚未載入",
+                lbl_import_scene: "匯入已存場景 (.xml)",
+                lbl_add_model: "選擇 GLB/GLTF:",
+                btn_add_model: "加入 3D 模型",
+                lbl_obj_name: "物件名稱:",
+                btn_delete: "刪除物件",
+                lbl_obj_list: "場景物件列表:",
+                btn_export: "匯出場景",
+                msg_processing: "處理中...",
+                alert_load_fail: "模型載入失敗",
+                alert_xml_err: "XML 格式錯誤",
+                alert_no_export: "無模型可匯出",
+                status_loaded: "已載入: ",
+                placeholder_no_sel: "未選取",
+                tool_translate: "移動",
+                tool_rotate: "旋轉",
+                tool_scale: "縮放"
+            },
+            en: {
+                app_title: "simTrafficFlow 3D Scene",
+                // Tabs
+                tab_project: "Project",
+                tab_models: "Models",
+                tab_editor: "Editor",
+
+                // Content
+                lbl_load_net: "Load Network (.sim)",
+                btn_choose_file: "Choose File",
+                status_not_loaded: "Not Loaded",
+                lbl_import_scene: "Import Scene (.xml)",
+                lbl_add_model: "Add GLB/GLTF (Embed):",
+                btn_add_model: "Add 3D Model",
+                lbl_obj_name: "Selected Object:",
+                btn_delete: "Delete Object",
+                lbl_obj_list: "Scene Objects:",
+                btn_export: "Export Scene",
+                msg_processing: "Processing...",
+                alert_load_fail: "Failed to load model",
+                alert_xml_err: "Invalid XML Format",
+                alert_no_export: "No models to export",
+                status_loaded: "Loaded: ",
+                placeholder_no_sel: "No selection",
+                tool_translate: "Move",
+                tool_rotate: "Rotate",
+                tool_scale: "Scale"
+            }
+        };
+
+        let currentLang = 'en';
+
+        function initLanguage() {
+            const sysLang = navigator.language || navigator.userLanguage;
+            currentLang = sysLang.toLowerCase().startsWith('zh') ? 'zh' : 'en';
+            document.getElementById('languageSelect').value = currentLang;
+            applyTranslations();
+        }
+
+        function applyTranslations() {
+            const t = translations[currentLang];
+            document.querySelectorAll('[data-i18n]').forEach(el => {
+                const key = el.getAttribute('data-i18n');
+                if (t[key]) el.textContent = t[key];
+            });
+            const nameInput = document.getElementById('selectedName');
+            if (nameInput) nameInput.placeholder = t.placeholder_no_sel;
+        }
+
+        document.getElementById('languageSelect').addEventListener('change', (e) => {
+            currentLang = e.target.value;
+            applyTranslations();
+        });
+
+        function t(key) { return translations[currentLang][key] || key; }
+
+        // ==========================================
+        // 2. Three.js Logic
+        // ==========================================
         let scene, camera, renderer, orbitControls, transformControl;
         let networkGroup, basemapGroup, userModelsGroup;
         let raycaster = new THREE.Raycaster();
         let mouse = new THREE.Vector2();
         let selectedObject = null;
 
-        // --- Utils ---
         function findChildren(parent, tagName) {
             if (!parent) return [];
             const arr = [];
@@ -248,19 +671,18 @@
             return nodes.length > 0 ? nodes[0].textContent : null;
         }
 
-        // --- Init ---
-        function init() {
+        function initThree() {
             const container = document.getElementById('viewport');
             scene = new THREE.Scene();
-            scene.background = new THREE.Color(0x333333);
+            scene.background = new THREE.Color(0xe2e8f0);
 
-            const gridHelper = new THREE.GridHelper(5000, 100, 0x555555, 0x222222);
+            const gridHelper = new THREE.GridHelper(5000, 100, 0x94a3b8, 0xe2e8f0);
             gridHelper.position.y = -0.05; scene.add(gridHelper);
 
-            scene.add(new THREE.AmbientLight(0xffffff, 0.6));
-            const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.8);
+            scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+            const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.6);
             hemiLight.position.set(0, 200, 0); scene.add(hemiLight);
-            const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
             dirLight.position.set(100, 200, 50); dirLight.castShadow = true; scene.add(dirLight);
 
             camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 1, 10000);
@@ -297,7 +719,6 @@
             camera.updateProjectionMatrix(); renderer.setSize(c.clientWidth, c.clientHeight);
         }
 
-        // --- Interaction ---
         function onPointerDown(e) {
             const c = document.getElementById('viewport');
             const r = c.getBoundingClientRect();
@@ -331,7 +752,14 @@
 
         function selectObject(obj) {
             selectedObject = obj;
+            // Ensure we are in the Editor tab when an object is selected
             if (obj) {
+                // If not already in editor tab, switch to it
+                if (!document.getElementById('tab-editor').classList.contains('active')) {
+                    const editorBtn = document.querySelector('button[onclick*="tab-editor"]');
+                    if (editorBtn) switchTab('tab-editor', editorBtn);
+                }
+
                 transformControl.attach(obj);
                 document.getElementById('selectedName').value = obj.userData.fileName;
             } else {
@@ -355,46 +783,39 @@
             userModelsGroup.children.forEach(obj => {
                 const div = document.createElement('div');
                 div.className = 'obj-item' + (obj === selectedObject ? ' selected' : '');
-                div.innerHTML = `<span class="obj-name">${obj.userData.fileName}</span>`;
+                const icon = '<i class="fa-solid fa-cube" style="margin-right:8px; color:#64748b;"></i>';
+                div.innerHTML = `${icon}<span class="obj-name">${obj.userData.fileName}</span>`;
                 div.onclick = (e) => { e.stopPropagation(); selectObject(obj); };
                 list.appendChild(div);
             });
         }
 
-        // --- Add Model (Embed Base64) ---
+        // --- Add Model ---
         const glbInput = document.getElementById('glbInput');
         glbInput.addEventListener('change', (e) => {
             const file = e.target.files[0];
             if (!file) return;
-
             const loadingMask = document.getElementById('loading-mask');
             loadingMask.style.display = 'flex';
-
-            // 1. Read file as Data URL (Base64) to store in XML later
             const reader = new FileReader();
             reader.readAsDataURL(file);
             reader.onload = (evt) => {
-                const base64String = evt.target.result; // "data:application/octet-stream;base64,..."
-
-                // 2. Load into Three.js scene
+                const base64String = evt.target.result;
                 const loader = new THREE.GLTFLoader();
                 loader.load(base64String, (gltf) => {
                     const model = gltf.scene;
                     model.userData.fileName = file.name;
-                    // Store the full Data URL string for export
                     model.userData.base64 = base64String;
-
                     model.position.copy(orbitControls.target);
                     model.position.y += 0.5;
                     model.traverse(c => { if (c.isMesh) { c.castShadow = true; c.receiveShadow = true; } });
-
                     userModelsGroup.add(model);
                     selectObject(model);
                     loadingMask.style.display = 'none';
                     glbInput.value = '';
                 }, undefined, (err) => {
                     console.error(err);
-                    alert('模型載入失敗');
+                    alert(t('alert_load_fail'));
                     loadingMask.style.display = 'none';
                 });
             };
@@ -405,154 +826,85 @@
         importSceneInput.addEventListener('change', (e) => {
             const file = e.target.files[0];
             if (!file) return;
-
             const loadingMask = document.getElementById('loading-mask');
             loadingMask.style.display = 'flex';
-
             const reader = new FileReader();
             reader.onload = (evt) => {
                 const parser = new DOMParser();
                 const xmlDoc = parser.parseFromString(evt.target.result, "application/xml");
-
                 if (xmlDoc.getElementsByTagName("parsererror").length) {
-                    alert("XML 格式錯誤");
+                    alert(t('alert_xml_err'));
                     loadingMask.style.display = 'none';
                     return;
                 }
-
-                // Restore Objects
                 userModelsGroup.clear();
                 const models = findChildren(xmlDoc, 'StaticModel');
                 let pending = models.length;
-
-                if (pending === 0) {
-                    loadingMask.style.display = 'none';
-                    return;
-                }
-
+                if (pending === 0) { loadingMask.style.display = 'none'; return; }
                 const loader = new THREE.GLTFLoader();
-
                 models.forEach(modelEl => {
                     const name = getVal(modelEl, 'FileName') || 'Unknown';
-                    const b64 = getVal(modelEl, 'BinaryData'); // Get embedded data
-
-                    // Get TRS
+                    const b64 = getVal(modelEl, 'BinaryData');
                     const posEl = findChildren(modelEl, 'Position')[0];
                     const rotEl = findChildren(modelEl, 'Rotation')[0];
                     const sclEl = findChildren(modelEl, 'Scale')[0];
-
-                    const xmlX = parseFloat(posEl.getAttribute('x'));
-                    const xmlY = parseFloat(posEl.getAttribute('y'));
-                    const xmlZ = parseFloat(posEl.getAttribute('z'));
-
-                    // Restore Coord: Sim -> Three
-                    // Sim Load: threeX = xmlX, threeZ = -xmlY, threeY = xmlZ
-                    const px = xmlX;
-                    const py = xmlZ;
-                    const pz = -xmlY;
-
+                    const px = parseFloat(posEl.getAttribute('x'));
+                    const py = parseFloat(posEl.getAttribute('z'));
+                    const pz = -parseFloat(posEl.getAttribute('y'));
                     if (b64) {
                         loader.load(b64, (gltf) => {
                             const mesh = gltf.scene;
                             mesh.userData.fileName = name;
-                            mesh.userData.base64 = b64; // Restore data for re-export
-
+                            mesh.userData.base64 = b64;
                             mesh.position.set(px, py, pz);
-                            mesh.rotation.set(
-                                parseFloat(rotEl.getAttribute('x')),
-                                parseFloat(rotEl.getAttribute('y')),
-                                parseFloat(rotEl.getAttribute('z'))
-                            );
-                            mesh.scale.set(
-                                parseFloat(sclEl.getAttribute('x')),
-                                parseFloat(sclEl.getAttribute('y')),
-                                parseFloat(sclEl.getAttribute('z'))
-                            );
-
+                            mesh.rotation.set(parseFloat(rotEl.getAttribute('x')), parseFloat(rotEl.getAttribute('y')), parseFloat(rotEl.getAttribute('z')));
+                            mesh.scale.set(parseFloat(sclEl.getAttribute('x')), parseFloat(sclEl.getAttribute('y')), parseFloat(sclEl.getAttribute('z')));
                             mesh.traverse(c => { if (c.isMesh) { c.castShadow = true; c.receiveShadow = true; } });
                             userModelsGroup.add(mesh);
-
                             pending--;
-                            if (pending === 0) {
-                                loadingMask.style.display = 'none';
-                                renderObjectList();
-                            }
-                        }, undefined, (err) => {
-                            console.error("Failed to load embedded model", err);
-                            pending--;
-                            if (pending === 0) loadingMask.style.display = 'none';
-                        });
-                    } else {
-                        pending--;
-                    }
+                            if (pending === 0) { loadingMask.style.display = 'none'; renderObjectList(); }
+                        }, undefined, (err) => { console.error(err); pending--; if (pending === 0) loadingMask.style.display = 'none'; });
+                    } else { pending--; }
                 });
                 importSceneInput.value = '';
             };
             reader.readAsText(file);
         });
 
-        // --- Export XML (With Base64) ---
+        // --- Export XML ---
         function exportSceneXML() {
-            if (userModelsGroup.children.length === 0) { alert('無模型可匯出'); return; }
-
+            if (userModelsGroup.children.length === 0) { alert(t('alert_no_export')); return; }
             let xml = '<?xml version="1.0" encoding="UTF-8"?>\n<SceneObjects>\n';
-
             userModelsGroup.children.forEach(obj => {
-                const pos = obj.position;
-                const rot = obj.rotation;
-                const scl = obj.scale;
-
-                // Coord Conversion: Three -> Sim
-                // xmlX = x, xmlY = -z, xmlZ = y
-                const xmlX = pos.x;
-                const xmlY = -pos.z;
-                const xmlZ = pos.y;
-
-                // Remove standard base64 prefix if you want raw data, 
-                // but keeping it as Data URL is safer for <img> src or GLTFLoader directly.
-                // XML text content handles large strings fine.
+                const pos = obj.position; const rot = obj.rotation; const scl = obj.scale;
+                const xmlX = pos.x; const xmlY = -pos.z; const xmlZ = pos.y;
                 const b64Data = obj.userData.base64 || "";
-
-                xml += `    <StaticModel>\n` +
-                    `        <FileName>${obj.userData.fileName}</FileName>\n` +
-                    `        <Position x="${xmlX.toFixed(4)}" y="${xmlY.toFixed(4)}" z="${xmlZ.toFixed(4)}" />\n` +
-                    `        <Rotation x="${rot.x.toFixed(4)}" y="${rot.y.toFixed(4)}" z="${rot.z.toFixed(4)}" />\n` +
-                    `        <Scale x="${scl.x.toFixed(4)}" y="${scl.y.toFixed(4)}" z="${scl.z.toFixed(4)}" />\n` +
-                    `        <BinaryData>${b64Data}</BinaryData>\n` +
-                    `    </StaticModel>\n`;
+                xml += `    <StaticModel>\n        <FileName>${obj.userData.fileName}</FileName>\n        <Position x="${xmlX.toFixed(4)}" y="${xmlY.toFixed(4)}" z="${xmlZ.toFixed(4)}" />\n        <Rotation x="${rot.x.toFixed(4)}" y="${rot.y.toFixed(4)}" z="${rot.z.toFixed(4)}" />\n        <Scale x="${scl.x.toFixed(4)}" y="${scl.y.toFixed(4)}" z="${scl.z.toFixed(4)}" />\n        <BinaryData>${b64Data}</BinaryData>\n    </StaticModel>\n`;
             });
-
             xml += '</SceneObjects>';
-
             const url = URL.createObjectURL(new Blob([xml], { type: 'text/xml' }));
-            const a = document.createElement('a');
-            a.href = url; a.download = 'scene_data.xml'; a.click();
-            URL.revokeObjectURL(url);
+            const a = document.createElement('a'); a.href = url; a.download = 'scene_data.xml'; a.click(); URL.revokeObjectURL(url);
         }
 
-        // --- Network Parser (Standard) ---
+        // --- Network Parser ---
         const xmlInput = document.getElementById('xmlInput');
         xmlInput.addEventListener('change', (e) => {
-            const file = e.target.files[0];
-            if (!file) return;
+            const file = e.target.files[0]; if (!file) return;
             const reader = new FileReader();
             reader.onload = (evt) => {
                 const parser = new DOMParser();
                 const xmlDoc = parser.parseFromString(evt.target.result, "application/xml");
-                if (xmlDoc.getElementsByTagName("parsererror").length) { alert("XML 錯誤"); return; }
-
+                if (xmlDoc.getElementsByTagName("parsererror").length) { alert(t('alert_xml_err')); return; }
                 networkGroup.clear(); basemapGroup.clear();
-
                 parseNetwork(xmlDoc).then(bounds => {
                     if (bounds.minX !== Infinity) {
                         const cx = (bounds.minX + bounds.maxX) / 2;
                         const cy = (bounds.minY + bounds.maxY) / 2;
                         const size = Math.max(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY);
-                        camera.position.set(cx, size, cy + size);
-                        orbitControls.target.set(cx, 0, cy);
-                        orbitControls.update();
+                        camera.position.set(cx, size, cy + size); orbitControls.target.set(cx, 0, cy); orbitControls.update();
                     }
-                    document.getElementById('status-text').textContent = `已載入: ${file.name}`;
+                    document.getElementById('status-text-net').textContent = t('status_loaded') + file.name;
+                    document.getElementById('status-text-net').style.color = 'var(--success)';
                 });
             };
             reader.readAsText(file);
@@ -562,28 +914,20 @@
             return new Promise(resolve => {
                 let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
                 const updateBounds = (x, y) => { minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); };
-                const roadMat = new THREE.MeshLambertMaterial({ color: 0x555555, side: THREE.DoubleSide });
-                const juncMat = new THREE.MeshLambertMaterial({ color: 0x666666, side: THREE.DoubleSide });
+                const roadMat = new THREE.MeshLambertMaterial({ color: 0x64748b, side: THREE.DoubleSide });
+                const juncMat = new THREE.MeshLambertMaterial({ color: 0x475569, side: THREE.DoubleSide });
 
-                // Links
-                const links = findChildren(xmlDoc, 'Link'); // simplified approach
-                // If findChildren fails due to root level, try traversing all
-                const all = xmlDoc.getElementsByTagName('*');
+                const links = findChildren(xmlDoc, 'Link'); const all = xmlDoc.getElementsByTagName('*');
                 for (let i = 0; i < all.length; i++) {
                     const name = all[i].localName || all[i].nodeName.split(':').pop();
                     if (name === 'Link') {
-                        // Find TrapSegs
-                        const traps = findChildren(all[i], 'TrapeziumSegment'); // This assumes direct child or simple structure
-                        // Fallback: search descendants
                         const desc = all[i].getElementsByTagName('*');
                         for (let j = 0; j < desc.length; j++) {
                             const dName = desc[j].localName || desc[j].nodeName.split(':').pop();
                             if (dName === 'TrapeziumSegment') {
                                 const getPt = (s, e) => {
-                                    const sNode = findChildren(desc[j], s)[0];
-                                    const eNode = findChildren(sNode, e)[0];
-                                    const x = parseFloat(getVal(eNode, 'x'));
-                                    const y = -parseFloat(getVal(eNode, 'y'));
+                                    const sNode = findChildren(desc[j], s)[0]; const eNode = findChildren(sNode, e)[0];
+                                    const x = parseFloat(getVal(eNode, 'x')); const y = -parseFloat(getVal(eNode, 'y'));
                                     updateBounds(x, y); return { x, y };
                                 };
                                 const p1 = getPt('LeftSide', 'Start'), p2 = getPt('RightSide', 'Start'), p3 = getPt('RightSide', 'End'), p4 = getPt('LeftSide', 'End');
@@ -596,8 +940,7 @@
                     if (name === 'PolygonGeometry') {
                         const pts = findChildren(all[i], 'Point');
                         if (pts.length > 2) {
-                            const points = [];
-                            pts.forEach(p => { points.push({ x: parseFloat(getVal(p, 'x')), y: -parseFloat(getVal(p, 'y')) }); });
+                            const points = []; pts.forEach(p => { points.push({ x: parseFloat(getVal(p, 'x')), y: -parseFloat(getVal(p, 'y')) }); });
                             const shape = new THREE.Shape(); shape.moveTo(points[0].x, -points[0].y);
                             for (let k = 1; k < points.length; k++) shape.lineTo(points[k].x, -points[k].y);
                             const g = new THREE.ShapeGeometry(shape); g.rotateX(-Math.PI / 2);
@@ -605,45 +948,36 @@
                         }
                     }
                 }
-
-                // Basemap
                 let bgNode = null;
                 for (let i = 0; i < all.length; i++) if ((all[i].localName || all[i].nodeName.split(':').pop()) === 'Background') bgNode = all[i];
                 if (bgNode) {
                     const tiles = findChildren(bgNode, 'Tile');
                     tiles.forEach(t => {
                         const rect = findChildren(t, 'Rectangle')[0];
-                        const start = findChildren(rect, 'Start')[0];
-                        const end = findChildren(rect, 'End')[0];
+                        const start = findChildren(rect, 'Start')[0]; const end = findChildren(rect, 'End')[0];
                         const img = findChildren(t, 'Image')[0];
                         const b64 = getVal(img, 'binaryData').replace(/\s/g, '');
                         const type = getVal(img, 'type').toUpperCase();
                         const mime = (type === 'JPG' || type === 'JPEG') ? 'jpeg' : 'png';
-                        const image = new Image();
-                        image.src = `data:image/${mime};base64,${b64}`;
+                        const image = new Image(); image.src = `data:image/${mime};base64,${b64}`;
                         image.onload = () => {
-                            const tex = new THREE.Texture(image);
-                            tex.flipY = false; tex.rotation = Math.PI; tex.center.set(0.5, 0.5); tex.needsUpdate = true;
-
+                            const tex = new THREE.Texture(image); tex.flipY = false; tex.rotation = Math.PI; tex.center.set(0.5, 0.5); tex.needsUpdate = true;
                             const p1x = parseFloat(getVal(start, 'x')), p1y = -parseFloat(getVal(start, 'y'));
                             const p2x = parseFloat(getVal(end, 'x')), p2y = -parseFloat(getVal(end, 'y'));
                             const w = Math.abs(p2x - p1x), h = Math.abs(p2y - p1y);
                             const x = Math.min(p1x, p2x) + w / 2, y = Math.min(p1y, p2y) + h / 2;
-
-                            const geom = new THREE.PlaneGeometry(w, h);
-                            const uvs = geom.attributes.uv; for (let k = 0; k < uvs.count; k++) uvs.setX(k, 1 - uvs.getX(k));
-
+                            const geom = new THREE.PlaneGeometry(w, h); const uvs = geom.attributes.uv; for (let k = 0; k < uvs.count; k++) uvs.setX(k, 1 - uvs.getX(k));
                             const m = new THREE.Mesh(geom, new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.DoubleSide, depthWrite: false }));
                             m.rotation.x = -Math.PI / 2; m.position.set(x, -0.2, y); basemapGroup.add(m);
                         };
                     });
                 }
-
                 resolve({ minX, minY, maxX, maxY });
             });
         }
 
-        init();
+        initLanguage();
+        initThree();
     </script>
 </body>
 
