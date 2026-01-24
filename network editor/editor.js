@@ -243,7 +243,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } else if (obj.type === 'Origin' || obj.type === 'Destination') {
             konvaObj = obj.konvaShape;
             if (obj.konvaLabel) {
-                obj.konvaLabel.setAttr('shadowColor', 'rgba(0, 150, 255, 1)');
+                obj.konvaLabel.setAttr('shadowColor', 'rgba(255, 132, 0, 1)');
                 obj.konvaLabel.setAttr('shadowBlur', 5);
                 obj.konvaLabel.setAttr('shadowOpacity', 0.9);
             }
@@ -278,7 +278,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 updatePropertiesPanel(obj);
                 layer.batchDraw();
             });
-        } else if (obj.type === 'Overpass') { // <--- 新增 Overpass 處理
+        } else if (obj.type === 'Overpass') { 
             konvaObj = obj.konvaRect;
             // 我們使用邊框顏色來表示選取，而不是陰影
             konvaObj.stroke('blue');
@@ -315,20 +315,28 @@ document.addEventListener('DOMContentLoaded', () => {
         } else if (obj.type === 'RoadMarking') {
             konvaObj = obj.konvaGroup;
 
-            // 只要是 Node 模式，或 (Link 模式但開啟 Free)，就允許旋轉
-            if (obj.nodeId || (obj.markingType === 'two_stage_box' && obj.isFree)) {
-                const tr = new Konva.Transformer({
-                    nodes: [konvaObj],
-                    centeredScaling: true,
-                    rotateEnabled: true,
-                    resizeEnabled: false,
-                    borderStroke: 'blue',
-                    anchorStroke: 'blue'
-                });
-                layer.add(tr);
-                tr.moveToTop();
-                obj.konvaTransformer = tr;
+            // --- [修正重點開始] ---
+            // 判斷是否為可自由操作模式 (Node 模式 或 Link 上的 Free 模式)
+            const isFreeMode = obj.nodeId || (obj.markingType === 'two_stage_box' && obj.isFree);
 
+            // 無論是否鎖定，都建立 Transformer 以顯示選取框
+            const tr = new Konva.Transformer({
+                nodes: [konvaObj],
+                centeredScaling: true,
+                resizeEnabled: false, // 標線大小由屬性面板數值控制，不透過變形框
+                rotateEnabled: isFreeMode, // 只有自由模式允許旋轉
+                borderStroke: 'blue',
+                anchorStroke: 'blue',
+                // 如果是鎖定模式(依附車道)，隱藏所有控制點，只顯示藍色邊框
+                enabledAnchors: isFreeMode ? ['top-left', 'top-right', 'bottom-left', 'bottom-right'] : []
+            });
+            
+            layer.add(tr);
+            tr.moveToTop();
+            obj.konvaTransformer = tr;
+
+            // 只有在允許自由移動時，才監聽變形結束事件
+            if (isFreeMode) {
                 konvaObj.on('transformend', () => {
                     obj.rotation = konvaObj.rotation();
                     obj.x = konvaObj.x();
@@ -336,6 +344,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     updatePropertiesPanel(obj);
                 });
             }
+            // --- [修正重點結束] ---
         }
 
         // 套用視覺陰影效果到選取的 Konva 物件
@@ -4085,18 +4094,52 @@ document.addEventListener('DOMContentLoaded', () => {
                 break;
 
             case 'RoadSign':
-                content += `<div class="prop-group"><label>On Link</label><p>${obj.linkId}</p></div>`;
-                content += `<div class="prop-group"><label for="prop-sign-type">Sign Type</label>
-                            <select id="prop-sign-type">
-                                <option value="start" ${obj.signType === 'start' ? 'selected' : ''}>Speed Limit Start</option>
-                                <option value="end" ${obj.signType === 'end' ? 'selected' : ''}>Speed Limit End</option>
-                            </select>
-                        </div>`;
-                content += `<div class="prop-group" id="prop-speed-limit-group" style="display: ${obj.signType === 'start' ? 'block' : 'none'};">
-                            <label for="prop-speed-limit">Speed Limit (km/h)</label>
-                            <input type="number" id="prop-speed-limit" value="${obj.speedLimit}" min="0">
-                        </div>`;
-                content += `<div class="prop-group"><label for="prop-sign-pos">Position (m)</label><input type="number" step="0.1" id="prop-sign-pos" value="${obj.position.toFixed(2)}"></div>`;
+                // --- SECTION: GENERAL ---
+                content += `<div class="prop-section-header">General</div>`;
+                
+                // ID (唯讀)
+                content += `<div class="prop-row">
+                                <span class="prop-label">ID</span>
+                                <input type="text" class="prop-input" value="${obj.id}" disabled>
+                            </div>`;
+                
+                // Link ID (唯讀)
+                content += `<div class="prop-row">
+                                <span class="prop-label">Parent Link</span>
+                                <input type="text" class="prop-input" value="${obj.linkId}" disabled>
+                            </div>`;
+
+                // --- SECTION: CONFIGURATION ---
+                content += `<div class="prop-section-header">Configuration</div>`;
+
+                // Sign Type (下拉選單)
+                content += `<div class="prop-row">
+                                <span class="prop-label">Sign Type</span>
+                                <select id="prop-sign-type" class="prop-select">
+                                    <option value="start" ${obj.signType === 'start' ? 'selected' : ''}>Speed Limit Start</option>
+                                    <option value="end" ${obj.signType === 'end' ? 'selected' : ''}>Speed Limit End</option>
+                                </select>
+                            </div>`;
+
+                // Speed Limit (僅在 start 類型顯示)
+                // 注意：.prop-row 預設是 flex，隱藏時設為 none
+                const limitDisplay = (obj.signType === 'start') ? 'flex' : 'none';
+                content += `<div class="prop-row" id="prop-speed-limit-row" style="display: ${limitDisplay};">
+                                <span class="prop-label">Limit (km/h)</span>
+                                <input type="number" id="prop-speed-limit" class="prop-input" value="${obj.speedLimit}" min="0">
+                            </div>`;
+
+                // Position
+                content += `<div class="prop-row">
+                                <span class="prop-label">Position (m)</span>
+                                <input type="number" step="0.1" id="prop-sign-pos" class="prop-input" value="${obj.position.toFixed(2)}">
+                            </div>`;
+
+                // --- SECTION: ACTIONS ---
+                content += `<div class="prop-section-header">Actions</div>`;
+                content += `<button id="btn-delete-sign" class="btn-danger-outline">
+                                <i class="fa-solid fa-trash-can"></i> Delete Road Sign
+                            </button>`;
                 break;
 
             case 'Connection':
@@ -5253,20 +5296,48 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // --- ROAD SIGN ---
         if (obj.type === 'RoadSign') {
-            document.getElementById('prop-sign-type').addEventListener('change', e => {
-                obj.signType = e.target.value;
-                document.getElementById('prop-speed-limit-group').style.display = (obj.signType === 'start') ? 'block' : 'none';
-                drawRoadSign(obj);
-                layer.batchDraw();
-            });
-            document.getElementById('prop-speed-limit').addEventListener('change', e => {
-                obj.speedLimit = parseFloat(e.target.value);
-            });
-            document.getElementById('prop-sign-pos').addEventListener('change', e => {
-                obj.position = parseFloat(e.target.value);
-                drawRoadSign(obj);
-                layer.batchDraw();
-            });
+            // 類型變更
+            const typeSelect = document.getElementById('prop-sign-type');
+            if (typeSelect) {
+                typeSelect.addEventListener('change', e => {
+                    obj.signType = e.target.value;
+                    // 切換速限輸入框的顯示狀態 (注意這裡改用 style.display = 'flex' 以維持排版)
+                    const limitRow = document.getElementById('prop-speed-limit-row');
+                    if (limitRow) {
+                        limitRow.style.display = (obj.signType === 'start') ? 'flex' : 'none';
+                    }
+                    drawRoadSign(obj);
+                    layer.batchDraw();
+                });
+            }
+
+            // 速限變更
+            const limitInput = document.getElementById('prop-speed-limit');
+            if (limitInput) {
+                limitInput.addEventListener('change', e => {
+                    obj.speedLimit = parseFloat(e.target.value);
+                });
+            }
+
+            // 位置變更
+            const posInput = document.getElementById('prop-sign-pos');
+            if (posInput) {
+                posInput.addEventListener('change', e => {
+                    obj.position = parseFloat(e.target.value);
+                    drawRoadSign(obj);
+                    layer.batchDraw();
+                });
+            }
+
+            // 刪除按鈕
+            const delBtn = document.getElementById('btn-delete-sign');
+            if (delBtn) {
+                delBtn.addEventListener('click', () => {
+                    deleteRoadSign(obj.id); // 確保您有定義此函數或使用 deleteSelectedObject()
+                    deselectAll();
+                    layer.batchDraw();
+                });
+            }
         }
 
         // --- BACKGROUND ---
@@ -7145,25 +7216,54 @@ document.addEventListener('DOMContentLoaded', () => {
             if (xmlName) {
                 newLink.name = xmlName;
             }
-            // RoadSigns
-            const signsContainer = getChildrenByLocalName(linkEl, "RoadSigns")[0];
+
+            // --- 修正開始：RoadSigns 讀取邏輯 ---
+            
+            // 1. 嘗試從 Segments -> 第一個 Segment 中尋找 RoadSigns (符合目前的 Export 結構)
+            let signsContainer = null;
+            const segsContainer = getChildrenByLocalName(linkEl, "Segments")[0];
+            if (segsContainer) {
+                // 找到第一個 Element 類型的子節點 (即 TrapeziumSegment)
+                const firstSeg = Array.from(segsContainer.children).find(c => c.nodeType === 1);
+                if (firstSeg) {
+                    signsContainer = getChildrenByLocalName(firstSeg, "RoadSigns")[0];
+                }
+            }
+
+            // 2. Fallback: 如果上面沒找到，嘗試直接從 Link 下層尋找 (相容舊版結構)
+            if (!signsContainer) {
+                signsContainer = getChildrenByLocalName(linkEl, "RoadSigns")[0];
+            }
+
+            // 3. 解析並建立 RoadSigns
             if (signsContainer) {
                 Array.from(signsContainer.children).forEach(signNode => {
+                    // 確保是 Element 節點
+                    if (signNode.nodeType !== 1) return;
+
                     const pos = parseFloat(getChildValue(signNode, "position"));
+                    
+                    // 建立物件
                     const newSign = createRoadSign(newLink, pos);
+                    // 雖然 XML 沒存 ID，但 createRoadSign 會自動產 ID，這裡確保計數器同步
                     syncIdCounter(newSign.id);
 
+                    // 處理 Namespace (例如 tm:SpeedLimitSign -> SpeedLimitSign)
                     const tagName = signNode.localName || signNode.nodeName.split(':').pop();
+
                     if (tagName === 'SpeedLimitSign') {
-                        const speed = parseFloat(getChildValue(signNode, "speedLimit"));
+                        const speed = parseFloat(getChildValue(signNode, "speedLimit")); // XML 是 m/s
                         newSign.signType = 'start';
-                        newSign.speedLimit = speed * 3.6;
+                        newSign.speedLimit = speed * 3.6; // 轉回 km/h
                     } else if (tagName === 'NoSpeedLimitSign') {
                         newSign.signType = 'end';
                     }
+                    
+                    // 確保視覺位置正確
                     drawRoadSign(newSign);
                 });
             }
+            // --- 修正結束 ---
         });
 
         // --- 2. Nodes ---
