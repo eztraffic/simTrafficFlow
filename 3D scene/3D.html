@@ -136,7 +136,6 @@
             flex-direction: column;
             z-index: 10;
             box-shadow: -2px 0 5px rgba(0, 0, 0, 0.05);
-            /* Remove padding here, move to tab-content */
             padding: 0;
         }
 
@@ -202,6 +201,18 @@
             font-size: 0.85rem;
             font-weight: 600;
             color: var(--text-main);
+        }
+
+        .panel-header {
+            font-size: 0.75rem;
+            font-weight: 700;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
         }
 
         .file-upload-wrapper {
@@ -331,7 +342,6 @@
             border-radius: 4px;
             padding: 4px;
             margin-bottom: 15px;
-            /* Remove fixed max-height, let flex handle it in tab */
             min-height: 100px;
         }
 
@@ -419,8 +429,7 @@
         <div class="brand-section">
             <div class="logo-icon"><i class="fa-solid fa-cube"></i></div>
             <div class="brand-text">
-                <h1 data-i18n="app_title">simTrafficFlow | 3D Scene Editor</h1>
-                <span class="version-tag">Editor</span>
+                <h1 data-i18n="app_title">simTrafficFlow | 3D Scene Editor</h1> <span class="version-tag">Editor</span>
             </div>
         </div>
 
@@ -449,7 +458,7 @@
             </div>
         </div>
 
-        <!-- Sidebar (Right) with Tabs -->
+        <!-- Sidebar (Right) with 2 Tabs -->
         <div id="sidebar">
 
             <!-- Tab Headers -->
@@ -458,28 +467,28 @@
                     <i class="fa-solid fa-folder-tree"></i>
                     <span data-i18n="tab_project">Project</span>
                 </button>
-                <button class="tab-btn" onclick="switchTab('tab-models', this)">
-                    <i class="fa-solid fa-cube"></i>
-                    <span data-i18n="tab_models">Models</span>
-                </button>
                 <button class="tab-btn" onclick="switchTab('tab-editor', this)">
                     <i class="fa-solid fa-pen-ruler"></i>
                     <span data-i18n="tab_editor">Editor</span>
                 </button>
             </div>
 
-            <!-- Tab 1: Project -->
+            <!-- Tab 1: Project (Merged Network, Scene, and Models) -->
             <div id="tab-project" class="tab-content active">
+                <!-- Section: Network -->
+                <div class="panel-header" style="margin-top: 5px;"><i class="fa-solid fa-road"></i> Network</div>
                 <label data-i18n="lbl_load_net">Load Network (SIM/XML):</label>
                 <div class="file-upload-wrapper">
                     <label for="xmlInput" class="file-upload-btn">
-                        <i class="fa-solid fa-road"></i> <span data-i18n="btn_choose_file">Choose File</span>
+                        <i class="fa-solid fa-folder-open"></i> <span data-i18n="btn_choose_file">Choose File</span>
                     </label>
                     <input type="file" id="xmlInput" accept=".sim,.xml">
                 </div>
                 <div id="status-text-net" class="status-text" data-i18n="status_not_loaded">Not Loaded</div>
 
-                <div style="margin-top: 20px; border-top: 1px solid var(--border-light); padding-top: 20px;">
+                <!-- Section: Scene -->
+                <div style="margin-top: 25px; border-top: 1px solid var(--border-light); padding-top: 20px;">
+                    <div class="panel-header"><i class="fa-solid fa-layer-group"></i> Scene Data</div>
                     <label data-i18n="lbl_import_scene">Import Scene (XML):</label>
                     <div class="file-upload-wrapper">
                         <label for="importSceneInput" class="file-upload-btn">
@@ -488,23 +497,25 @@
                         <input type="file" id="importSceneInput" accept=".xml">
                     </div>
                 </div>
+
+                <!-- Section: Models (Merged) -->
+                <div style="margin-top: 25px; border-top: 1px solid var(--border-light); padding-top: 20px;">
+                    <div class="panel-header"><i class="fa-solid fa-cube"></i> <span
+                            data-i18n="sec_models">Models</span></div>
+                    <label data-i18n="lbl_add_model">Add GLB/GLTF (Embedded):</label>
+                    <div class="file-upload-wrapper">
+                        <label for="glbInput" class="file-upload-btn">
+                            <i class="fa-solid fa-upload"></i> <span data-i18n="btn_add_model">Add 3D Model</span>
+                        </label>
+                        <input type="file" id="glbInput" accept=".glb,.gltf">
+                    </div>
+                    <div class="status-text">
+                        <i class="fa-solid fa-circle-info"></i> Files are embedded as Base64.
+                    </div>
+                </div>
             </div>
 
-            <!-- Tab 2: Models -->
-            <div id="tab-models" class="tab-content">
-                <label data-i18n="lbl_add_model">Add GLB/GLTF (Embedded):</label>
-                <div class="file-upload-wrapper">
-                    <label for="glbInput" class="file-upload-btn">
-                        <i class="fa-solid fa-upload"></i> <span data-i18n="btn_add_model">Add 3D Model</span>
-                    </label>
-                    <input type="file" id="glbInput" accept=".glb,.gltf">
-                </div>
-                <div class="status-text">
-                    <i class="fa-solid fa-circle-info"></i> Files are embedded as Base64 strings.
-                </div>
-            </div>
-
-            <!-- Tab 3: Editor -->
+            <!-- Tab 2: Editor -->
             <div id="tab-editor" class="tab-content">
                 <!-- Mode Controls -->
                 <div class="mode-controls">
@@ -566,20 +577,20 @@
                 app_title: "simTrafficFlow 3D場景編輯器",
                 // Tabs
                 tab_project: "專案",
-                tab_models: "模型",
                 tab_editor: "編輯",
 
                 // Content
-                lbl_load_net: "載入路網 (.sim)",
+                sec_models: "模型",
+                lbl_load_net: "載入路網 (.sim):",
                 btn_choose_file: "選擇檔案",
                 status_not_loaded: "尚未載入",
-                lbl_import_scene: "匯入已存場景 (.xml)",
-                lbl_add_model: "選擇 GLB/GLTF:",
+                lbl_import_scene: "匯入已存場景 (.xml):",
+                lbl_add_model: "選擇 GLB/GLTF (將內嵌):",
                 btn_add_model: "加入 3D 模型",
                 lbl_obj_name: "物件名稱:",
                 btn_delete: "刪除物件",
                 lbl_obj_list: "場景物件列表:",
-                btn_export: "匯出場景",
+                btn_export: "匯出場景 XML",
                 msg_processing: "處理中...",
                 alert_load_fail: "模型載入失敗",
                 alert_xml_err: "XML 格式錯誤",
@@ -594,14 +605,14 @@
                 app_title: "simTrafficFlow 3D Scene",
                 // Tabs
                 tab_project: "Project",
-                tab_models: "Models",
                 tab_editor: "Editor",
 
                 // Content
-                lbl_load_net: "Load Network (.sim)",
+                sec_models: "Models",
+                lbl_load_net: "Load Network (SIM/XML):",
                 btn_choose_file: "Choose File",
                 status_not_loaded: "Not Loaded",
-                lbl_import_scene: "Import Scene (.xml)",
+                lbl_import_scene: "Import Scene (XML):",
                 lbl_add_model: "Add GLB/GLTF (Embed):",
                 btn_add_model: "Add 3D Model",
                 lbl_obj_name: "Selected Object:",
@@ -698,6 +709,10 @@
             orbitControls.enableDamping = true;
 
             transformControl = new THREE.TransformControls(camera, renderer.domElement);
+
+            // 加入這一行來加大控制器，讓中心方塊更好點擊 (預設是 1.0)
+            transformControl.setSize(1.2);
+
             transformControl.addEventListener('dragging-changed', e => orbitControls.enabled = !e.value);
             scene.add(transformControl);
 
