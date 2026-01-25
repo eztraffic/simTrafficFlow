@@ -429,6 +429,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let basemapGroup = new THREE.Group(); // 新增底圖群組
 
+    // --- Drive Mode Variables ---
+    let driveController = null;
+    const driveToggle = document.getElementById('driveToggle');
+    const hudElement = document.getElementById('drive-hud');
+
+    // --- Police Mode Variables ---
+    let policeController = null;
+    const policeToggle = document.getElementById('policeToggle');
+
     // --- City Generation Variables ---
     let cityGroup = new THREE.Group(); // 裝載所有城市物件
     let customModelsGroup = new THREE.Group();
@@ -525,7 +534,28 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     canvas2D.addEventListener('wheel', handleZoom2D);
-    canvas2D.addEventListener('mousedown', handlePanStart2D);
+    canvas2D.addEventListener('mousedown', (e) => {
+        // 如果是員警模式，優先處理路口選擇
+        if (policeToggle && policeToggle.checked && policeController) {
+            // 計算 World 座標
+            const rect = canvas2D.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+            const worldX = (mouseX - panX) / scale;
+            const worldY = (mouseY - panY) / scale;
+
+            // 呼叫 Police Controller 判定
+            if (simulation && simulation.network) {
+                policeController.handleMapClick(worldX, worldY, simulation.network.nodes);
+                // 如果選中了，可以選擇是否要阻止原本的 Pan (拖曳地圖)
+                // 這裡選擇不阻止，讓使用者還是可以拖曳地圖
+                if (!isRunning) redraw2D(); // 重繪以顯示紅圈
+            }
+        }
+
+        // 呼叫原有的 Pan Start
+        handlePanStart2D(e);
+    });
     canvas2D.addEventListener('mousemove', handlePanMove2D);
     canvas2D.addEventListener('mouseup', handlePanEnd2D);
     canvas2D.addEventListener('mouseleave', handlePanEnd2D);
@@ -539,13 +569,124 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Flyover Event Listeners ---
 
     // 1. 開關切換
-    flyoverToggle.addEventListener('change', (e) => {
-        setFlyoverMode(e.target.checked);
-    });
-
     if (droneToggle) {
         droneToggle.addEventListener('change', (e) => {
+            if (e.target.checked) {
+                if (driveToggle) {
+                    driveToggle.checked = false;
+                    if (hudElement) hudElement.style.display = 'none';
+                    if (driveController) driveController.reset();
+                }
+                if (policeToggle) {
+                    policeToggle.checked = false;
+                    if (policeController) policeController.setActive(false);
+                }
+            }
             setDroneMode(e.target.checked);
+        });
+    }
+
+    // 初始化員警控制器 (預留空物件供全域參照)
+    policeController = new PoliceController({ trafficLights: [], network: null });
+
+    // 員警模式切換
+    if (policeToggle) {
+        policeToggle.addEventListener('change', (e) => {
+            const active = e.target.checked;
+
+            if (active) {
+                // 互斥邏輯：關閉其他模式
+                if (driveToggle) driveToggle.checked = false;
+                if (driveController) driveController.reset();
+                if (hudElement) hudElement.style.display = 'none';
+
+                if (flyoverToggle) { flyoverToggle.checked = false; setFlyoverMode(false); }
+                if (droneToggle) { droneToggle.checked = false; setDroneMode(false); }
+                if (isChaseActive) stopChaseMode();
+
+                // 檢查是否已載入模擬
+                if (!simulation) {
+                    alert("請先載入路網檔案！");
+                    e.target.checked = false;
+                    return;
+                }
+
+                // 更新 Controller 的參照 (確保指向最新的 simulation)
+                policeController.simulation = simulation;
+                policeController.setActive(true);
+
+            } else {
+                policeController.setActive(false);
+            }
+        });
+    }
+
+    // 監聽器：互斥開關
+    if (driveToggle) {
+        driveToggle.addEventListener('change', (e) => {
+            const active = e.target.checked;
+
+            // 互斥邏輯
+            if (active) {
+                if (flyoverToggle) flyoverToggle.checked = false;
+                setFlyoverMode(false);
+                if (droneToggle) droneToggle.checked = false;
+                setDroneMode(false);
+                if (policeToggle) {
+                    policeToggle.checked = false;
+                    if (policeController) policeController.setActive(false);
+                }
+                if (isChaseActive) stopChaseMode();
+
+                // 顯示 HUD
+                if (hudElement) hudElement.style.display = 'block';
+
+                // 如果尚未載入模擬，提示
+                if (!simulation) {
+                    alert("請先載入路網檔案！");
+                    e.target.checked = false;
+                    return;
+                }
+
+                // 更新控制器參考
+                if (!driveController) {
+                    driveController = new DriveController(simulation, camera, null);
+                } else {
+                    driveController.simulation = simulation;
+                    driveController.camera = camera;
+                }
+                driveController.reset();
+                driveController.showHUDMessage("請點擊選擇車輛", "info");
+
+            } else {
+                // 關閉駕駛模式
+                if (hudElement) hudElement.style.display = 'none';
+                if (driveController) driveController.reset();
+
+                // 恢復相機控制
+                if (controls) {
+                    controls.enabled = true;
+                    if (camera) camera.up.set(0, 1, 0);
+                }
+            }
+        });
+    }
+
+    // 修改原有的 flyover 監聽器，加入關閉 driveToggle 的邏輯
+    if (flyoverToggle) {
+        flyoverToggle.addEventListener('change', (e) => {
+            if (e.target.checked) {
+                if (driveToggle) {
+                    driveToggle.checked = false;
+                    if (hudElement) hudElement.style.display = 'none';
+                    if (driveController) driveController.reset();
+                }
+                if (policeToggle) {
+                    policeToggle.checked = false;
+                    if (policeController) policeController.setActive(false);
+                }
+            }
+            setFlyoverMode(e.target.checked);
         });
     }
 
@@ -841,6 +982,13 @@ document.addEventListener('DOMContentLoaded', () => {
         const hitObj = hits[0].object;
         const vehicleId = hitObj?.userData?.vehicleId;
         if (!vehicleId) return;
+
+        // 新增邏輯
+        if (driveToggle && driveToggle.checked) {
+            if (driveController) driveController.setTarget(vehicleId);
+            return;
+        }
+
         startChaseMode(vehicleId);
     }
 
@@ -1216,6 +1364,8 @@ document.addEventListener('DOMContentLoaded', () => {
     function redraw2D() {
         if (!isDisplay2D) return;
         ctx2D.clearRect(0, 0, canvas2D.width, canvas2D.height);
+
+        // 1. 繪製地圖與車輛 (這部分有 transform)
         ctx2D.save();
         ctx2D.translate(panX, panY);
         ctx2D.scale(scale, scale);
@@ -1230,10 +1380,18 @@ document.addEventListener('DOMContentLoaded', () => {
             drawNetwork2D(networkData, simulation ? simulation.vehicles : null);
         }
         ctx2D.restore();
+        // --- Restore 之後，座標系回到螢幕像素座標 ---
 
+        // 2. 繪製 Overlays
         drawChaseVehicleOverlay2D();
         drawFlyoverOverlay2D();
         drawDroneOverlay2D();
+
+        // 3. ★ [修正] 繪製員警標記，並傳入轉換函式
+        if (policeController && policeToggle && policeToggle.checked) {
+            // 傳入 worldToScreen2D 讓 controller 內部計算正確的螢幕位置
+            policeController.draw(ctx2D, worldToScreen2D);
+        }
     }
 
     function worldToScreen2D(x, y) {
@@ -1316,6 +1474,12 @@ document.addEventListener('DOMContentLoaded', () => {
         const world = screenToWorld2D(screenX, screenY);
         const vehicleId = pickVehicle2D(world.x, world.y);
         if (!vehicleId) return;
+
+        // 新增邏輯：如果是駕駛模式
+        if (driveToggle && driveToggle.checked) {
+            if (driveController) driveController.setTarget(vehicleId);
+            return; // 攔截，不執行追蹤模式
+        }
 
         startChaseMode(vehicleId, { force3D: false });
         if (!isRunning) redraw2D();
@@ -4627,12 +4791,17 @@ document.addEventListener('DOMContentLoaded', () => {
         const frameDt = Math.min((timestamp - lastTimestamp) / 1000.0, 0.05);
 
         if (isDisplay3D) {
-            if (isFlyoverActive) {
+            // 優先順序：駕駛 > 巡航 > 無人機 > 一般
+            if (driveToggle && driveToggle.checked && driveController && driveController.isActive) {
+                // 駕駛模式會自行接管相機
+                if (controls) controls.enabled = false;
+                // 相機更新在 driveController.update 內執行
+            } else if (isFlyoverActive) {
                 updateFlyoverCamera();
             } else if (isDroneActive) {
                 updateDroneCamera(frameDt);
             } else {
-                controls.update();
+                if (controls) controls.update();
             }
 
             // ★★★ [新增] 更新城市動畫物件 (摩天輪、雲霄飛車等) ★★★
@@ -4645,9 +4814,16 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         if (isRunning && simulation) {
+            // 1. 先計算模擬時間增量 (包含加速倍率)
             const realDt = (timestamp - lastTimestamp) / 1000.0;
             const simulationDt = Math.min(realDt, 0.1) * simulationSpeed;
 
+            // 2. ★ [修正] 員警邏輯使用 simulationDt，確保與號誌時間同步
+            if (policeController && policeToggle && policeToggle.checked) {
+                policeController.update(simulationDt);
+            }
+
+            // 3. 更新模擬核心
             simulation.update(simulationDt);
             simTimeSpan.textContent = simulation.time.toFixed(2);
 
@@ -4656,6 +4832,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 updateStatistics(currentIntegerTime);
                 lastLoggedIntegerTime = currentIntegerTime;
             }
+        }
+
+        if (simulation && driveToggle && driveToggle.checked && driveController) {
+            driveController.update(frameDt);
         }
 
         lastTimestamp = timestamp;
@@ -5062,7 +5242,78 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     class Pathfinder { constructor(links, nodes) { this.adj = new Map(); for (const linkId in links) { const link = links[linkId]; if (!this.adj.has(link.source)) this.adj.set(link.source, []); this.adj.get(link.source).push({ linkId: link.id, toNode: link.destination }); } } findRoute(startNodeId, endNodeId) { if (!startNodeId || !endNodeId) return null; const q = [[startNodeId, []]]; const visited = new Set([startNodeId]); while (q.length > 0) { const [currentNodeId, path] = q.shift(); if (currentNodeId === endNodeId) return path; const neighbors = this.adj.get(currentNodeId) || []; for (const neighbor of neighbors) { if (!visited.has(neighbor.toNode)) { visited.add(neighbor.toNode); const newPath = [...path, neighbor.linkId]; q.push([neighbor.toNode, newPath]); } } } return null; } }
-    class TrafficLightController { constructor(config) { this.nodeId = config.nodeId; this.schedule = config.schedule; this.lights = config.lights; this.timeShift = config.timeShift || 0; this.cycleDuration = this.schedule.reduce((sum, p) => sum + p.duration, 0); this.turnGroupStates = {}; } update(time) { if (this.cycleDuration <= 0) return; const effectiveTime = time - this.timeShift; let timeInCycle = ((effectiveTime % this.cycleDuration) + this.cycleDuration) % this.cycleDuration; for (const period of this.schedule) { if (timeInCycle < period.duration) { for (const [turnGroupId, signal] of Object.entries(period.signals)) { this.turnGroupStates[turnGroupId] = signal; } return; } timeInCycle -= period.duration; } } getSignalForTurnGroup(turnGroupId) { return this.turnGroupStates[turnGroupId] || 'Green'; } }
+    class TrafficLightController {
+        constructor(config) {
+            this.nodeId = config.nodeId;
+            this.schedule = config.schedule;
+            this.lights = config.lights;
+            this.timeShift = config.timeShift || 0;
+            this.cycleDuration = this.schedule.reduce((sum, p) => sum + p.duration, 0);
+            this.turnGroupStates = {};
+        }
+
+        // [新增] 輔助方法：獲取當前狀態詳細資訊
+        getCurrentStateInfo(time) {
+            if (this.cycleDuration <= 0) return { isSafeToIntervene: false, timeRemainingInPhase: 0 };
+
+            const effectiveTime = time - this.timeShift;
+            let timeInCycle = ((effectiveTime % this.cycleDuration) + this.cycleDuration) % this.cycleDuration;
+
+            let accumulatedTime = 0;
+            let currentPeriod = null;
+
+            for (const period of this.schedule) {
+                if (timeInCycle < period.duration) {
+                    currentPeriod = period;
+                    break;
+                }
+                timeInCycle -= period.duration;
+                accumulatedTime += period.duration; // 這是之前的累積時間，不含當前
+            }
+
+            if (!currentPeriod) return { isSafeToIntervene: false, timeRemainingInPhase: 0 };
+
+            // 檢查安全性：是否有任何號誌是黃燈？
+            let hasYellow = false;
+            let allRed = true;
+
+            for (const signal of Object.values(currentPeriod.signals)) {
+                if (signal === 'Yellow') hasYellow = true;
+                if (signal === 'Green') allRed = false;
+            }
+
+            // 安全規則：非黃燈 且 非全紅 (這裡簡單假設只要有綠燈就不算全紅)
+            // 注意：有些路口全紅可能有特殊定義，這裡用「沒有任何綠燈」來判斷全紅
+            const isSafe = !hasYellow && !allRed;
+
+            // 剩餘時間 = 當前週期的總長度 - 已過時間 (timeInCycle 此時已被減去之前的 period duration，所以它就是當前 period 的 elapsed)
+            const remaining = currentPeriod.duration - timeInCycle;
+
+            return {
+                isSafeToIntervene: isSafe,
+                timeRemainingInPhase: remaining
+            };
+        }
+
+        update(time) {
+            if (this.cycleDuration <= 0) return;
+            const effectiveTime = time - this.timeShift;
+            let timeInCycle = ((effectiveTime % this.cycleDuration) + this.cycleDuration) % this.cycleDuration;
+            for (const period of this.schedule) {
+                if (timeInCycle < period.duration) {
+                    for (const [turnGroupId, signal] of Object.entries(period.signals)) {
+                        this.turnGroupStates[turnGroupId] = signal;
+                    }
+                    return;
+                }
+                timeInCycle -= period.duration;
+            }
+        }
+
+        getSignalForTurnGroup(turnGroupId) {
+            return this.turnGroupStates[turnGroupId] || 'Green';
+        }
+    }
     class Spawner {
         constructor(config, pathfinder) { this.originNodeId = config.originNodeId; this.periods = config.periods || []; this.pathfinder = pathfinder; this.currentPeriodIndex = -1; this.timeInPeriod = 0; this.active = false; this.spawnInterval = Infinity; this.spawnTimer = 0; this.currentConfig = null; this._switchToNextPeriod(); }
         _switchToNextPeriod() { this.currentPeriodIndex++; if (this.currentPeriodIndex >= this.periods.length) { this.active = false; this.currentConfig = null; return; } this.active = true; this.timeInPeriod = 0; this.currentConfig = this.periods[this.currentPeriodIndex]; this.spawnInterval = this.currentConfig.numVehicles > 0 ? this.currentConfig.duration / this.currentConfig.numVehicles : Infinity; this.spawnTimer = this.spawnInterval; }
@@ -5122,6 +5373,7 @@ document.addEventListener('DOMContentLoaded', () => {
             this.id = id;
             this.length = profile.length;
             this.width = profile.width;
+            this.isPlayerControlled = false; // 新增屬性
 
             this.twoStageState = 'none'; // 'none', 'moving_to_box', 'waiting', 'leaving_box'
             this.waitingBox = null;      // 暫存目標待轉格
@@ -5222,6 +5474,36 @@ document.addEventListener('DOMContentLoaded', () => {
         // 核心更新循環
         // ==================================================================================
         update(dt, allVehicles, simulation) {
+            // 如果是玩家控制，跳過大部分 AI 邏輯
+            if (this.isPlayerControlled) {
+                // 1. 更新位置 (物理積分) - 簡單版
+                // 注意：driveController 已經設定了 this.accel 和 this.targetLateralOffset
+
+                // 速度更新
+                this.speed += this.accel * dt;
+                if (this.speed < 0) this.speed = 0;
+
+                // 距離更新
+                this.distanceOnPath += this.speed * dt;
+
+                // 橫向位置更新 (利用現有的 updateLateralPosition 方法，它會讀取 targetLateralOffset)
+                this.updateLateralPosition(dt);
+
+                // 路徑轉換 (處理過彎與切換 Link)
+                if (this.distanceOnPath > this.currentPathLength) {
+                    const leftoverDistance = this.distanceOnPath - this.currentPathLength;
+                    this.handlePathTransition(leftoverDistance, simulation.network);
+                }
+
+                // 更新繪圖位置
+                this.updateDrawingPosition(simulation.network);
+
+                // ★ 收集數據與 Meter (保留計分功能)
+                const oldDistanceOnPath = this.distanceOnPath - this.speed * dt;
+                this.collectMeterData(oldDistanceOnPath, simulation);
+
+                return; // ★ 直接返回，不執行 IDM 跟車、換道決策等 AI 邏輯
+            }
             if (this.launchDelay > 0) {
                 this.launchDelay -= dt;
                 if (this.launchDelay <= 0) {

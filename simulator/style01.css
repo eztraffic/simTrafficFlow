@@ -766,3 +766,132 @@ td {
     flex-direction: column;
     gap: 15px; /* 圖表之間的間隔 */
 }
+
+/* --- Drive Mode HUD --- */
+#drive-hud {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none; /* 讓滑鼠可以穿透點擊車輛 */
+    z-index: 100;
+}
+
+.hud-panel {
+    position: absolute;
+    top: 20px;
+    right: 20px;
+    background: rgba(0, 0, 0, 0.6);
+    padding: 15px;
+    border-radius: 8px;
+    text-align: right;
+    border: 2px solid rgba(255, 255, 255, 0.2);
+}
+
+.hud-text {
+    font-family: 'Roboto Mono', monospace;
+    font-size: 1.5rem;
+    color: #fff;
+    text-shadow: 0 0 5px rgba(0, 0, 0, 1);
+    margin-bottom: 5px;
+}
+
+#drive-hud-speed {
+    color: var(--accent);
+    font-size: 1.2rem;
+}
+
+.hud-message {
+    position: absolute;
+    top: 20%;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 2rem;
+    font-weight: bold;
+    color: white;
+    text-shadow: 0 0 10px black;
+    opacity: 0;
+    transition: opacity 0.3s;
+    background: rgba(0,0,0,0.5);
+    padding: 10px 20px;
+    border-radius: 10px;
+}
+
+.hud-message.danger {
+    color: #ff4444;
+    border: 2px solid #ff4444;
+    animation: pulse-red 0.5s infinite;
+}
+
+.hud-message.success {
+    color: #44ff44;
+}
+
+.hud-message.info {
+    color: #ffffff;
+}
+
+.hud-controls-hint {
+    position: absolute;
+    bottom: 20px;
+    left: 20px;
+    background: rgba(0, 0, 0, 0.5);
+    padding: 10px;
+    border-radius: 8px;
+    color: #ccc;
+    font-size: 0.8rem;
+}
+
+.btn-icon {
+    display: inline-block;
+    background: #333;
+    border: 1px solid #666;
+    border-radius: 4px;
+    padding: 0 4px;
+    margin: 0 2px;
+    font-weight: bold;
+    color: white;
+}
+
+@keyframes pulse-red {
+    0% { transform: translateX(-50%) scale(1); }
+    50% { transform: translateX(-50%) scale(1.1); }
+    100% { transform: translateX(-50%) scale(1); }
+}
+/* --- Added for Police Mode --- */
+
+/* 2x2 Grid for Mode Switches */
+.mode-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    gap: 4px 12px; /* Row gap 4px, Col gap 12px */
+    align-items: center;
+}
+
+/* 確保 mini-switch 在 grid 內對齊 */
+.mode-grid .mini-switch {
+    margin: 0;
+    justify-content: flex-start;
+}
+
+/* Police HUD Specifics */
+#police-hud {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 100;
+}
+
+.police-panel {
+    border-color: #44aaff; /* 藍色邊框區分員警模式 */
+}
+
+/* 確保 toggles-row 能容納 Grid */
+.toggles-row {
+    align-items: center;
+}

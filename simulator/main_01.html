@@ -127,42 +127,51 @@
             </div>
 
             <div class="toggles-row">
-                <!-- 1. 路口燈號 -->
+                <!-- 1. 路口燈號 (獨立) -->
                 <label class="mini-switch" title="Traffic Lights">
                     <input type="checkbox" id="showPathsToggle">
                     <span class="switch-label" data-i18n="lblLights">燈號</span>
                 </label>
 
-                <!-- 分隔線 -->
                 <div class="divider-v"></div>
 
-                <!-- 2. 視覺模式 -->
-                <label class="mini-switch" title="Flyover Mode">
-                    <input type="checkbox" id="flyoverToggle">
-                    <span class="switch-label" data-i18n="lblFlyover">鳥瞰</span>
-                </label>
-                <label class="mini-switch" title="Drone View">
-                    <input type="checkbox" id="droneToggle">
-                    <span class="switch-label" data-i18n="lblDrone">無人機</span>
-                </label>
+                <!-- 2. 視角/控制模式 (2x2 Grid) -->
+                <div class="mode-grid">
+                    <!-- 上排 -->
+                    <label class="mini-switch" title="Flyover Mode">
+                        <input type="checkbox" id="flyoverToggle">
+                        <span class="switch-label" data-i18n="lblFlyover">鳥瞰</span>
+                    </label>
+                    <label class="mini-switch" title="Drone View">
+                        <input type="checkbox" id="droneToggle">
+                        <span class="switch-label" data-i18n="lblDrone">無人機</span>
+                    </label>
 
-                <!-- 分隔線 -->
+                    <!-- 下排 -->
+                    <label class="mini-switch" title="Drive Mode (PS3 Controller)">
+                        <input type="checkbox" id="driveToggle">
+                        <span class="switch-label">駕駛</span>
+                    </label>
+                    <label class="mini-switch" title="Police Manual Control">
+                        <input type="checkbox" id="policeToggle">
+                        <span class="switch-label">員警</span>
+                    </label>
+                </div>
+
                 <div class="divider-v"></div>
 
-                <!-- 3. 偵測器群組 (定點/區間) -->
-                <!-- detector-group 使用相對定位，讓內部的 group-caption 可以絕對定位懸浮在下方 -->
+                <!-- 3. 偵測器群組 -->
                 <div class="detector-group">
                     <div class="switch-pair">
                         <label class="tiny-switch" title="Point Detectors">
-                            <input type="checkbox" id="showPointMetersToggle" checked>
+                            <input type="checkbox" id="showPointMetersToggle">
                             <span data-i18n="lblPoint">定點</span>
                         </label>
                         <label class="tiny-switch" title="Section Detectors">
-                            <input type="checkbox" id="showSectionMetersToggle" checked>
+                            <input type="checkbox" id="showSectionMetersToggle">
                             <span data-i18n="lblSection">區間</span>
                         </label>
                     </div>
-                    <!-- 此標籤透過 CSS absolute position 懸浮在下方，不影響上方按鈕的對齊高度 -->
                     <span class="group-caption" data-i18n="lblDetector">偵測器</span>
                 </div>
             </div>
@@ -232,8 +241,34 @@
                 </div>
             </div>
         </div>
+        <div id="drive-hud" style="display: none;">
+            <div class="hud-panel">
+                <div id="drive-hud-score" class="hud-text">SCORE: 0</div>
+                <div id="drive-hud-speed" class="hud-text">0 KM/H</div>
+            </div>
+            <div id="drive-hud-message" class="hud-message"></div>
+            <div class="hud-controls-hint">
+                <p><span class="btn-icon">START</span> 引擎開關</p>
+                <p><span class="btn-icon">R2</span> 加速 <span class="btn-icon">L2</span> 煞車</p>
+                <p><span class="btn-icon">L-Stick</span> 轉向</p>
+            </div>
+        </div>
+        <div id="police-hud" style="display: none;">
+            <div class="hud-panel police-panel">
+                <div class="hud-text" style="color: #44aaff;">POLICE MODE</div>
+            </div>
+            <div id="police-hud-message" class="hud-message"></div>
+            <div class="hud-controls-hint">
+                <p><span class="btn-icon">點擊</span> 選擇路口</p>
+                <p><span class="btn-icon">P</span> 鎖定當前燈號 (凍結)</p>
+                <p><span class="btn-icon">N</span> 強制跳下個步階</p>
+                <p style="color:#aaa; font-size:0.7em;">(黃燈/全紅期間無法操作)</p>
+            </div>
+        </div>
     </main>
 
+    <script src="script_police.js"></script>
+    <script src="script_drive.js"></script>
     <script src="script02.js"></script>
     <script>
         window.ENABLE_LEFT_TURN_YIELD = true;
