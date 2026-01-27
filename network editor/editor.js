@@ -2993,16 +2993,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // --- START: 全新的、更精確的節點合併邏輯 ---
 
-        // 步驟 1: 精準尋找候選節點
-        // 只有當一個節點已經是 sourceLink 的終點，或 destLink 的起點時，它才是一個候選節點。
-        // 這避免了基於距離的模糊判斷。
+        // 步驟 1: 精準尋找候選節點 (基於拓撲)
         const candidateNodeIds = new Set();
         Object.values(network.nodes).forEach(node => {
-            // 如果 sourceLink 已經作為一個 incoming link 連接到這個 node，則此 node 為候選
             if (node.incomingLinkIds.has(sourceLink.id)) {
                 candidateNodeIds.add(node.id);
             }
-            // 如果 destLink 已經作為一個 outgoing link 從這個 node 出發，則此 node 亦為候選
             if (node.outgoingLinkIds.has(destLink.id)) {
                 candidateNodeIds.add(node.id);
             }
@@ -3013,8 +3009,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // 步驟 2: 根據候選節點的數量決定行為
         if (candidatesArray.length === 0) {
-            // --- 情況 A: 找不到任何候選節點 ---
-            // 這表示我們正在創建一個全新的路口。
+            // --- 情況 A: 找不到任何拓撲候選節點 ---
             const sourceLanePath = getLanePath(sourceLink, sourceMeta.laneIndex);
             const destLanePath = getLanePath(destLink, destMeta.laneIndex);
             if (sourceLanePath.length < 2 || destLanePath.length < 2) return null;
@@ -3022,44 +3017,56 @@ document.addEventListener('DOMContentLoaded', () => {
             const p1 = sourceLanePath.slice(-1)[0];
             const p4 = destLanePath[0];
             const intersectionCenter = { x: (p1.x + p4.x) / 2, y: (p1.y + p4.y) / 2 };
-            survivingNode = createNode(intersectionCenter.x, intersectionCenter.y);
+
+            // [新增修正] 空間鄰近檢測 (Spatial Merge Check)
+            // 如果 XML 定義了兩個重疊但沒有共用 Link 的節點，這裡會強制將它們合併。
+            let spatialMatchNode = null;
+            const MERGE_RADIUS = 10; // 合併半徑 (公尺)，您可以根據需求調整，10m 通常足夠處理路口重疊
+
+            for (const nodeId in network.nodes) {
+                const n = network.nodes[nodeId];
+                // 計算現有節點與新連接中心的距離
+                const dist = Math.sqrt(Math.pow(n.x - intersectionCenter.x, 2) + Math.pow(n.y - intersectionCenter.y, 2));
+                if (dist < MERGE_RADIUS) {
+                    spatialMatchNode = n;
+                    break;
+                }
+            }
+
+            if (spatialMatchNode) {
+                // 找到了距離很近的孤立節點，進行空間合併
+                survivingNode = spatialMatchNode;
+            } else {
+                // 真的是新路口，建立新節點
+                survivingNode = createNode(intersectionCenter.x, intersectionCenter.y);
+            }
 
         } else {
-            // --- 情況 B: 找到一個或多個候選節點 ---
-            // 我們需要將所有候選節點合併為一個。
-
-            // 選擇第一個候選節點作為「倖存者」
+            // --- 情況 B: 找到一個或多個候選節點 (保持原樣) ---
             const survivingNodeId = candidatesArray[0];
             survivingNode = network.nodes[survivingNodeId];
 
-            // 如果有多於一個候選節點，則進行合併操作
             if (candidatesArray.length > 1) {
                 for (let i = 1; i < candidatesArray.length; i++) {
                     const doomedNodeId = candidatesArray[i];
                     const doomedNode = network.nodes[doomedNodeId];
                     if (!doomedNode || doomedNodeId === survivingNodeId) continue;
 
-                    // 1. 將被合併節點的 Link 關係轉移給倖存節點
                     doomedNode.incomingLinkIds.forEach(id => survivingNode.incomingLinkIds.add(id));
                     doomedNode.outgoingLinkIds.forEach(id => survivingNode.outgoingLinkIds.add(id));
 
-                    // 2. 更新所有指向被合併節點的 Connection，使其指向倖存節點
                     Object.values(network.connections).forEach(conn => {
                         if (conn.nodeId === doomedNodeId) conn.nodeId = survivingNodeId;
                     });
 
-                    // 3. 合併交通號誌資料
                     if (network.trafficLights[doomedNodeId]) {
                         if (!network.trafficLights[survivingNodeId]) {
-                            // 如果倖存者沒有號誌，直接繼承
                             network.trafficLights[survivingNodeId] = network.trafficLights[doomedNodeId];
                             network.trafficLights[survivingNodeId].nodeId = survivingNodeId;
                         }
-                        // (可選) 也可以在這裡實現更複雜的號誌組合併邏輯
                         delete network.trafficLights[doomedNodeId];
                     }
 
-                    // 4. 從畫布和資料模型中刪除被合併的節點
                     doomedNode.konvaShape.destroy();
                     delete network.nodes[doomedNodeId];
                 }
@@ -3072,7 +3079,6 @@ document.addEventListener('DOMContentLoaded', () => {
         survivingNode.incomingLinkIds.add(sourceLink.id);
         survivingNode.outgoingLinkIds.add(destLink.id);
 
-        // --- MODIFICATION: The logic for calculating bezier control points is removed ---
         const sourceLanePath = getLanePath(sourceLink, sourceMeta.laneIndex);
         const destLanePath = getLanePath(destLink, destMeta.laneIndex);
         if (sourceLanePath.length < 2 || destLanePath.length < 2) return null;
@@ -3080,12 +3086,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const p1 = sourceLanePath.slice(-1)[0];
         const p4 = destLanePath[0];
 
-        // The newConnection now takes only start and end points
         const newConnection = createConnection(sourceLink, sourceMeta.laneIndex, destLink, destMeta.laneIndex, survivingNode, [p1, p4], color);
 
-        // 步驟 5: 強制重繪節點
-        // 因為我們修改了節點的 incoming/outgoing LinkIds，這會影響其形狀。
-        // 我們必須清除 Konva Shape 的快取，以強制 Konva 重新執行 drawNode()。
         if (survivingNode && survivingNode.konvaShape) {
             survivingNode.konvaShape.clearCache();
         }
