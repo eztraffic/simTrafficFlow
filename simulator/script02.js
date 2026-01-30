@@ -438,6 +438,15 @@ document.addEventListener('DOMContentLoaded', () => {
     let policeController = null;
     const policeToggle = document.getElementById('policeToggle');
 
+    // --- AI Mode Variables ---
+    let aiController = null;
+    const aiToggle = document.getElementById('aiToggle');
+    const aiLearningToggle = document.getElementById('aiLearningToggle');
+    const aiCoopToggle = document.getElementById('aiCoopToggle');
+    const aiShowActionToggle = document.getElementById('aiShowActionToggle');
+    const btnExportAI = document.getElementById('btnExportAI');
+    const fileImportAI = document.getElementById('fileImportAI');
+
     // --- City Generation Variables ---
     let cityGroup = new THREE.Group(); // 裝載所有城市物件
     let customModelsGroup = new THREE.Group();
@@ -461,6 +470,16 @@ document.addEventListener('DOMContentLoaded', () => {
     </svg>`;
 
     // --- Event Listeners ---
+    const aiShowInfoToggle = document.getElementById('aiShowInfoToggle');
+    if (aiShowInfoToggle) {
+        aiShowInfoToggle.addEventListener('change', (e) => {
+            if (aiController) {
+                aiController.showOverlay = e.target.checked;
+                if (!isRunning) redraw2D(); // 暫停時立即更新
+            }
+        });
+    }
+
     langSelector.addEventListener('change', (e) => setLanguage(e.target.value));
 
     if (displayStatsBtn) {
@@ -535,6 +554,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
     canvas2D.addEventListener('wheel', handleZoom2D);
     canvas2D.addEventListener('mousedown', (e) => {
+        const rect = canvas2D.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+
+        // ★★★ 優先檢查：是否點擊了 AI 資訊浮窗？ ★★★
+        if (aiController && aiController.isActive) {
+            // 如果點到了浮窗，handleMouseDown 會回傳 true
+            // 此時我們直接 return，不執行後面的 handlePanStart2D (地圖拖曳)
+            if (aiController.handleMouseDown(mouseX, mouseY)) {
+                return;
+            }
+        }
         // 如果是員警模式，優先處理路口選擇
         if (policeToggle && policeToggle.checked && policeController) {
             // 計算 World 座標
@@ -556,6 +587,32 @@ document.addEventListener('DOMContentLoaded', () => {
         // 呼叫原有的 Pan Start
         handlePanStart2D(e);
     });
+
+    canvas2D.addEventListener('mousemove', (e) => {
+        const rect = canvas2D.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+
+        // ★★★ 優先檢查：是否正在拖曳 AI 資訊浮窗？ ★★★
+        if (aiController && aiController.isActive) {
+            if (aiController.handleMouseMove(mouseX, mouseY)) {
+                if (!isRunning) redraw2D(); // 暫停時需手動重繪以顯示拖曳效果
+                return; // 阻止地圖移動
+            }
+        }
+
+        handlePanMove2D(e);
+    });
+
+    canvas2D.addEventListener('mouseup', (e) => {
+        // ★★★ 釋放浮窗拖曳 ★★★
+        if (aiController) {
+            aiController.handleMouseUp();
+        }
+        
+        handlePanEnd2D();
+    });
+
     canvas2D.addEventListener('mousemove', handlePanMove2D);
     canvas2D.addEventListener('mouseup', handlePanEnd2D);
     canvas2D.addEventListener('mouseleave', handlePanEnd2D);
@@ -581,6 +638,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     policeToggle.checked = false;
                     if (policeController) policeController.setActive(false);
                 }
+                if (aiToggle) {
+                    aiToggle.checked = false;
+                    if (aiController) aiController.setActive(false);
+                }
             }
             setDroneMode(e.target.checked);
         });
@@ -589,6 +650,9 @@ document.addEventListener('DOMContentLoaded', () => {
     // 初始化員警控制器 (預留空物件供全域參照)
     policeController = new PoliceController({ trafficLights: [], network: null });
 
+    // 初始化 AI 控制器
+    aiController = new AIController({ trafficLights: [], network: null });
+
     // 員警模式切換
     if (policeToggle) {
         policeToggle.addEventListener('change', (e) => {
@@ -596,6 +660,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (active) {
                 // 互斥邏輯：關閉其他模式
+                if (aiToggle) { aiToggle.checked = false; aiController.setActive(false); }
                 if (driveToggle) driveToggle.checked = false;
                 if (driveController) driveController.reset();
                 if (hudElement) hudElement.style.display = 'none';
@@ -628,6 +693,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // 互斥邏輯
             if (active) {
+                if (aiToggle) { aiToggle.checked = false; aiController.setActive(false); }
                 if (flyoverToggle) flyoverToggle.checked = false;
                 setFlyoverMode(false);
                 if (droneToggle) droneToggle.checked = false;
@@ -685,8 +751,79 @@ document.addEventListener('DOMContentLoaded', () => {
                     policeToggle.checked = false;
                     if (policeController) policeController.setActive(false);
                 }
+                if (aiToggle) {
+                    aiToggle.checked = false;
+                    if (aiController) aiController.setActive(false);
+                }
             }
             setFlyoverMode(e.target.checked);
+        });
+    }
+
+    // AI 模式切換
+    if (aiToggle) {
+        aiToggle.addEventListener('change', (e) => {
+            const active = e.target.checked;
+
+            if (active) {
+                // 互斥：關閉其他模式
+                if (policeToggle) { policeToggle.checked = false; policeController.setActive(false); }
+                if (driveToggle) { driveToggle.checked = false; if (driveController) driveController.reset(); }
+                if (hudElement) hudElement.style.display = 'none';
+
+                if (!simulation) {
+                    alert("請先載入路網！");
+                    e.target.checked = false;
+                    return;
+                }
+
+                aiController.simulation = simulation;
+                aiController.setActive(true);
+            } else {
+                aiController.setActive(false);
+            }
+        });
+    }
+
+    // AI 匯出入按鈕
+    if (btnExportAI) {
+        btnExportAI.addEventListener('click', () => {
+            if (aiController) aiController.exportModel();
+        });
+    }
+    if (fileImportAI) {
+        fileImportAI.addEventListener('change', (e) => {
+            if (e.target.files.length > 0 && aiController) {
+                aiController.importModel(e.target.files[0]);
+
+                // 匯入後，確保學習開關與協作開關的狀態與 UI 同步
+                aiController.setLearningEnabled(aiLearningToggle.checked);
+                aiController.setCooperative(aiCoopToggle.checked); // 同步協作狀態
+            }
+        });
+    }
+
+    // ★★★ 新增：學習開關監聽 ★★★
+    if (aiLearningToggle) {
+        aiLearningToggle.addEventListener('change', (e) => {
+            if (aiController) {
+                aiController.setLearningEnabled(e.target.checked);
+            }
+        });
+    }
+
+    // ★★★ 新增：協作模式開關 ★★★
+    if (aiCoopToggle) {
+        aiCoopToggle.addEventListener('change', (e) => {
+            if (aiController) {
+                aiController.setCooperative(e.target.checked);
+            }
+        });
+    }
+
+    if (aiShowActionToggle) {
+        aiShowActionToggle.addEventListener('change', () => {
+            if (isDisplay2D && !isRunning) redraw2D(); // 暫停時切換可立即看到效果
         });
     }
 
@@ -1379,6 +1516,60 @@ document.addEventListener('DOMContentLoaded', () => {
         if (simulation || networkData) {
             drawNetwork2D(networkData, simulation ? simulation.vehicles : null);
         }
+
+        // =========================================================
+        // ★★★ 【新增區塊】：繪製 AI Action 文字 ★★★
+        // =========================================================
+        if (aiController && aiController.isActive && aiShowActionToggle && aiShowActionToggle.checked) {
+
+            // 定義動作名稱映射
+            const actionNames = {
+                0: "KEEP",   // 保持當前綠燈
+                1: "NEXT",   // 切換下一時相
+                2: "DEF."    // 默認 (不安全時/黃紅燈)
+            };
+
+            // 設定文字樣式 (在 World Space 中)
+            // 字體大小設為 6公尺 (World Unit)，這樣縮放地圖時文字會跟著變大變小
+            ctx2D.font = "bold 6px 'Roboto Mono', monospace";
+            ctx2D.textAlign = "center";
+            ctx2D.textBaseline = "middle";
+
+            // 遍歷所有有 AI 紀錄的路口
+            for (const [nodeId, actionCode] of Object.entries(aiController.lastAction)) {
+                const node = networkData.nodes[nodeId];
+                if (node && node.polygon && node.polygon.length > 0) {
+
+                    // 計算路口多邊形的中心點 (Centroid)
+                    let cx = 0, cy = 0;
+                    node.polygon.forEach(p => {
+                        cx += p.x;
+                        cy += p.y;
+                    });
+                    cx /= node.polygon.length;
+                    cy /= node.polygon.length;
+
+                    // 準備文字
+                    const text = actionNames[actionCode] || "UNKNOWN";
+
+                    // 繪製文字背景 (半透明黑底，增加可讀性)
+                    ctx2D.fillStyle = "rgba(0, 0, 0, 0.4)";
+                    // 概抓一個背景框大小
+                    const textWidth = ctx2D.measureText(text).width;
+                    const boxH = 8;
+                    const boxW = textWidth + 4;
+                    ctx2D.fillRect(cx - boxW / 2, cy - boxH / 2, boxW, boxH);
+
+                    // 繪製文字 (根據動作給不同顏色，半透明)
+                    if (actionCode === 0) ctx2D.fillStyle = "rgba(100, 255, 100, 0.8)"; // Green for Keep
+                    else if (actionCode === 1) ctx2D.fillStyle = "rgba(255, 100, 100, 0.8)"; // Red for Next
+                    else ctx2D.fillStyle = "rgba(200, 200, 200, 0.6)"; // Gray for Default
+
+                    ctx2D.fillText(text, cx, cy);
+                }
+            }
+        }
+        // =========================================================
         ctx2D.restore();
         // --- Restore 之後，座標系回到螢幕像素座標 ---
 
@@ -1392,6 +1583,14 @@ document.addEventListener('DOMContentLoaded', () => {
             // 傳入 worldToScreen2D 讓 controller 內部計算正確的螢幕位置
             policeController.draw(ctx2D, worldToScreen2D);
         }
+
+        // ★★★ 新增：呼叫 AI 資訊浮窗繪製 ★★★
+        // 確保 aiController 存在，且開關已開啟
+        if (aiController && aiController.isActive && aiShowActionToggle && aiShowActionToggle.checked) {
+            // 傳入 ctx2D, 座標轉換函式, 以及 scale (用於判斷是否顯示細節)
+            aiController.drawOverlay(ctx2D, worldToScreen2D, scale);
+        }
+        // ★★★ 結束新增 ★★★
     }
 
     function worldToScreen2D(x, y) {
@@ -4821,6 +5020,10 @@ document.addEventListener('DOMContentLoaded', () => {
             // 2. ★ [修正] 員警邏輯使用 simulationDt，確保與號誌時間同步
             if (policeController && policeToggle && policeToggle.checked) {
                 policeController.update(simulationDt);
+            }
+            // 3. AI (若員警未啟動)
+            else if (aiController && aiToggle && aiToggle.checked) {
+                aiController.update(simulationDt);
             }
 
             // 3. 更新模擬核心

@@ -135,9 +135,8 @@
 
                 <div class="divider-v"></div>
 
-                <!-- 2. 視角/控制模式 (2x2 Grid) -->
+                <!-- 2. 視角/控制模式 (3 Columns Grid) -->
                 <div class="mode-grid">
-                    <!-- 上排 -->
                     <label class="mini-switch" title="Flyover Mode">
                         <input type="checkbox" id="flyoverToggle">
                         <span class="switch-label" data-i18n="lblFlyover">鳥瞰</span>
@@ -146,16 +145,23 @@
                         <input type="checkbox" id="droneToggle">
                         <span class="switch-label" data-i18n="lblDrone">無人機</span>
                     </label>
-
-                    <!-- 下排 -->
-                    <label class="mini-switch" title="Drive Mode (PS3 Controller)">
+                    <label class="mini-switch" title="Drive Mode">
                         <input type="checkbox" id="driveToggle">
                         <span class="switch-label">駕駛</span>
                     </label>
-                    <label class="mini-switch" title="Police Manual Control">
+
+                    <!-- 第二排 -->
+                    <label class="mini-switch" title="Police Manual">
                         <input type="checkbox" id="policeToggle">
                         <span class="switch-label">員警</span>
                     </label>
+                    <!-- AI 選項 (移至員警右側) -->
+                    <label class="mini-switch ai-switch" title="AI Reinforcement Learning">
+                        <input type="checkbox" id="aiToggle">
+                        <span class="switch-label">AI控制</span>
+                    </label>
+                    <!-- 空位補齊 (Optional) -->
+                    <div style="width: 1px;"></div>
                 </div>
 
                 <div class="divider-v"></div>
@@ -240,7 +246,48 @@
                     <p data-i18n="canvasPlaceholder">請從上方載入路網檔案開始模擬</p>
                 </div>
             </div>
+
+            <!-- AI 訓練面板 (移至此處，位於地圖右上角) -->
+            <div id="ai-training-panel" class="floating-panel" style="display: none;">
+                <div class="panel-header-mini">
+                    <span>🤖 AI Training (Q-Learning)</span>
+                    <span id="ai-stats-info" class="stats-info">Init...</span>
+                </div>
+                <div class="chart-container-mini">
+                    <canvas id="aiTrainingChart"></canvas>
+                </div>
+
+                <!-- ★★★ 新增：學習開關選項 ★★★ -->
+                <div class="panel-options">
+                    <label class="checkbox-label" title="若取消，AI 將只使用現有經驗做決策，不再更新 Q 表">
+                        <input type="checkbox" id="aiLearningToggle" checked>
+                        <span>繼續線上學習 (Online Learning)</span>
+                    </label>
+
+                    <!-- ★★★ 新增：協作模式勾選框 ★★★ -->
+                    <label class="checkbox-label" title="納入下游路口排隊狀況，避免為了自己順暢而塞爆下游">
+                        <input type="checkbox" id="aiCoopToggle">
+                        <span>區域協作 (Cooperative Reward)</span>
+                    </label>
+
+                    <!-- ★★★ 【新增此區塊】：顯示決策開關 ★★★ -->
+                    <label class="checkbox-label" title="在 2D 地圖路口中央顯示當前採取的動作">
+                        <input type="checkbox" id="aiShowActionToggle" checked>
+                        <span>顯示決策 (Show Action)</span>
+                    </label>    
+                </div>
+                <!-- ★★★ 結束 ★★★ -->
+
+                <div class="panel-actions">
+                    <button id="btnExportAI" class="btn-mini">匯出大腦</button>
+                    <label class="btn-mini">
+                        匯入大腦
+                        <input type="file" id="fileImportAI" accept=".json" style="display:none;">
+                    </label>
+                </div>
+            </div>
         </div>
+
         <div id="drive-hud" style="display: none;">
             <div class="hud-panel">
                 <div id="drive-hud-score" class="hud-text">SCORE: 0</div>
@@ -266,7 +313,8 @@
             </div>
         </div>
     </main>
-
+    <!-- 引入 script -->
+    <script src="script_ai.js"></script>
     <script src="script_police.js"></script>
     <script src="script_drive.js"></script>
     <script src="script02.js"></script>
