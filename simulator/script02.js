@@ -5109,6 +5109,11 @@ document.addEventListener('DOMContentLoaded', () => {
             // [新增] 優化器更新 (處理採樣計時器)
             if (typeof optimizerController !== 'undefined') {
                 optimizerController.update(simulationDt);
+
+                // ★ 新增：更新迭代器 (計時與觸發)
+                if (optimizerController.looper) {
+                    optimizerController.looper.update(simulationDt);
+                }
             }
 
             const currentIntegerTime = Math.floor(simulation.time);
@@ -5749,6 +5754,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     this.preferredBias = 0.5 + (Math.random() * 0.4);  // 靠左(鑽縫)
                 }
             }
+
+            this.enterLinkTime = 0; // ★ 新增屬性：記錄進入 Link 的時間
 
             // 初始化位置
             this.initializePosition(network);
@@ -6539,6 +6546,12 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!lane || lane.path.length === 0) { this.finished = true; return; }
             this.currentPath = lane.path;
             this.currentPathLength = lane.length;
+
+            // ★ 新增：記錄進入時間
+            if (typeof simulation !== 'undefined') {
+                this.enterLinkTime = simulation.time;
+            }
+
             this.updateDrawingPosition(network);
         }
 
@@ -6796,6 +6809,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (typeof optimizerController !== 'undefined' && transition.turnGroupId) {
                         // 傳入所在路口 ID (destNodeId)、轉向群組 ID、以及是否為機車
                         optimizerController.registerVehiclePass(destNodeId, transition.turnGroupId, this.isMotorcycle);
+
+                        // ★ 新增：收集迭代用的流量數據
+                        if (optimizerController.looper) {
+                            optimizerController.looper.collectTurnData(destNodeId, transition.turnGroupId);
+                        }
                     }
 
                     if (transition.bezier) {
@@ -7093,6 +7111,13 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         switchToNextLink(leftoverDistance, network) {
+            // ★ 新增：在切換 Link 之前 (代表離開了舊 Link)，收集舊 Link 的數據
+            if (typeof optimizerController !== 'undefined' && optimizerController.looper && typeof simulation !== 'undefined') {
+                const duration = simulation.time - this.enterLinkTime;
+                // 傳入：LinkID, 行駛時間, 路段長度
+                optimizerController.looper.collectLinkData(this.currentLinkId, duration, this.currentPathLength);
+            }
+
             // 1. 標準切換邏輯 (保持原樣)
             this.currentLinkIndex++;
             if (this.currentLinkIndex >= this.route.length) {
@@ -7103,6 +7128,11 @@ document.addEventListener('DOMContentLoaded', () => {
             this.currentLaneIndex = this.currentTransition ? this.currentTransition.destLaneIndex : 0;
             this.currentTransition = null;
             this.nextSignIndex = 0;
+
+            // ★ 新增：更新進入時間
+            if (typeof simulation !== 'undefined') {
+                this.enterLinkTime = simulation.time;
+            }
 
             const link = network.links[this.currentLinkId];
             if (!link || !link.lanes[this.currentLaneIndex]) {

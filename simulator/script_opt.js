@@ -1,4 +1,4 @@
-// --- START OF FILE script_opt.js (精簡版 - Green Wave Import Sync + Single Row Picker) ---
+// --- START OF FILE script_opt.js (修正匯出失效 + 動態採樣時間) ---
 
 class OptimizerController {
     constructor() {
@@ -11,8 +11,9 @@ class OptimizerController {
         // UI Cache
         this.panel = document.getElementById('opt-panel');
         this.statusText = document.getElementById('opt-status');
-        this.optionsContainer = document.querySelector('.panel-options');
-        this.actionContainer = document.querySelector('.panel-actions');
+        this.optionsContainer = this.panel ? this.panel.querySelector('.panel-options') : null;
+        // ★★★ 修正：限定在 panel 內搜尋 actions，避免抓到 AI 面板的 ★★★
+        this.actionContainer = this.panel ? this.panel.querySelector('.panel-actions') : null;
 
         // 改名標題
         const headerTitle = this.panel ? this.panel.querySelector('.panel-header-mini span') : null;
@@ -31,7 +32,6 @@ class OptimizerController {
             hasTurns: false
         };
 
-        // Saturation Flow (PCU/hr)
         this.saturationFlow = 1800;
 
         // Data Store
@@ -43,20 +43,16 @@ class OptimizerController {
         // Interactive Picking
         this.pickingMode = null; 
 
-        // --- Draggable Overlay State ---
+        // Overlay State
         this.cardOffsets = {}; 
         this.overlayHitboxes = []; 
-        this.dragState = {
-            active: false,
-            nodeId: null,
-            startX: 0,
-            startY: 0,
-            origOffsetX: 0,
-            origOffsetY: 0
-        };
-
-        // 控制 Overlay 顯示的集合
+        this.dragState = { active: false, nodeId: null, startX: 0, startY: 0 };
         this.visibleOverlayIds = new Set();
+
+        // 迭代器初始化
+        this.looper = new OptimizationLooper(this);
+        this.isIterating = false; 
+        this.realtimeLinkSpeeds = {};
 
         this.bindGlobalEvents();
     }
@@ -78,6 +74,7 @@ class OptimizerController {
         this.gwConfig.pathLinks = [];
         this.cardOffsets = {};
         this.visibleOverlayIds.clear(); 
+        this.isIterating = false; 
         if(this.isActive) this.renderUI();
         this.triggerRedraw(); 
     }
@@ -95,24 +92,27 @@ class OptimizerController {
         window.dispatchEvent(new Event('resize'));
     }
 
+    // ★★★ 修正：使用更穩定的事件綁定方式 ★★★
     bindGlobalEvents() {
+        // 使用 onclick 直接綁定，避免 cloneNode 造成的參照問題
         const btnStart = document.getElementById('btn-opt-start');
         if (btnStart) {
             btnStart.textContent = "執行優化";
-            const newBtn = btnStart.cloneNode(true);
-            btnStart.parentNode.replaceChild(newBtn, btnStart);
-            newBtn.addEventListener('click', () => this.runOptimization());
+            btnStart.onclick = () => this.runOptimization();
         }
 
         const btnExport = document.getElementById('btn-opt-export');
         if (btnExport) {
-            const newBtn = btnExport.cloneNode(true);
-            btnExport.parentNode.replaceChild(newBtn, btnExport);
-            newBtn.addEventListener('click', () => this.exportConfig());
+            btnExport.onclick = () => this.exportConfig();
         }
         
         const fileImport = document.getElementById('file-opt-import');
-        if (fileImport) fileImport.addEventListener('change', (e) => this.importConfig(e));
+        if (fileImport) {
+            // file input change event 比較特殊，保留 addEventListener 但先移除舊的以防重複
+            const newImport = fileImport.cloneNode(true);
+            fileImport.parentNode.replaceChild(newImport, fileImport);
+            newImport.addEventListener('change', (e) => this.importConfig(e));
+        }
 
         const btnReset = document.getElementById('btn-opt-reset');
         if (btnReset) btnReset.remove();
@@ -140,10 +140,9 @@ class OptimizerController {
         `;
         this.optionsContainer.appendChild(paramGroup);
 
-        // 2. 路徑選擇器 (修正為一列三欄 Grid 布局)
+        // 2. 路徑選擇器 (一列三欄 Grid)
         const pickGroup = document.createElement('div');
         pickGroup.className = 'path-selector-group';
-        // 使用 Grid 確保嚴格的三欄配置: [按鈕] [箭頭] [按鈕]
         pickGroup.style.display = 'grid';
         pickGroup.style.gridTemplateColumns = '1fr 24px 1fr'; 
         pickGroup.style.alignItems = 'center';
@@ -159,18 +158,9 @@ class OptimizerController {
             
             return `
                 <div class="pick-btn ${styleClass}" data-type="${type}" style="
-                    display:flex; 
-                    align-items:center; 
-                    justify-content:center; 
-                    padding:4px; 
-                    border:1px solid #ccc; 
-                    border-radius:4px; 
-                    cursor:pointer; 
-                    font-size:0.8rem; 
-                    height:32px;
-                    width: 100%;
-                    background: #f8f9fa;
-                ">
+                    display:flex; align-items:center; justify-content:center; 
+                    padding:4px; border:1px solid #ccc; border-radius:4px; 
+                    cursor:pointer; font-size:0.8rem; height:32px; width:100%; background:#f8f9fa;">
                     <span style="margin-right:4px;">${icon}</span>
                     <span style="font-weight:bold; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:0.75rem;">${valueText}</span>
                     ${isSet ? '<span class="btn-clear-selection" data-type="'+type+'" style="margin-left:4px; color:#999; font-size:0.7rem;">✕</span>' : ''}
@@ -197,7 +187,7 @@ class OptimizerController {
             });
         });
 
-        // 3. 路徑資訊與警告
+        // 3. 路徑資訊
         if (this.gwConfig.pathNodes.length > 1) {
             const infoDiv = document.createElement('div');
             infoDiv.style.fontSize = '0.75rem';
@@ -241,7 +231,7 @@ class OptimizerController {
             }
         }
 
-        // 4. Node 列表 (3欄 Grid, Checkbox)
+        // 4. Node 列表
         if (this.gwConfig.pathNodes.length > 0) {
             const listHeader = document.createElement('div');
             listHeader.style.fontSize = '0.75rem';
@@ -282,11 +272,8 @@ class OptimizerController {
                 checkbox.checked = this.visibleOverlayIds.has(nodeId);
                 
                 checkbox.addEventListener('change', (e) => {
-                    if (e.target.checked) {
-                        this.visibleOverlayIds.add(nodeId);
-                    } else {
-                        this.visibleOverlayIds.delete(nodeId);
-                    }
+                    if (e.target.checked) this.visibleOverlayIds.add(nodeId);
+                    else this.visibleOverlayIds.delete(nodeId);
                     this.triggerRedraw();
                 });
 
@@ -302,7 +289,27 @@ class OptimizerController {
             this.optionsContainer.appendChild(gridContainer);
         }
 
+        // 5. 進度條容器
+        const progressContainer = document.createElement('div');
+        progressContainer.id = 'opt-progress-container';
+        progressContainer.style.marginTop = '8px';
+        progressContainer.style.display = 'none'; 
+        progressContainer.innerHTML = `
+            <div style="display:flex; justify-content:space-between; font-size:0.7rem; color:#666; margin-bottom:2px;">
+                <span>採樣進度</span>
+                <span id="opt-progress-text">0%</span>
+            </div>
+            <div style="width:100%; height:4px; background:#eee; border-radius:2px; overflow:hidden;">
+                <div id="opt-progress-bar" style="width:0%; height:100%; background:#3b82f6; transition:width 0.2s;"></div>
+            </div>
+        `;
+        this.optionsContainer.appendChild(progressContainer);
+
         this.updateActionButton();
+        
+        if (this.isIterating) {
+            this.updateActionButtonToIteration();
+        }
     }
 
     updateActionButton() {
@@ -311,7 +318,6 @@ class OptimizerController {
         btnStart.disabled = this.gwConfig.pathNodes.length < 2;
     }
 
-    // --- Interaction Logic ---
     togglePicking(type) {
         if (this.pickingMode === type) {
             this.pickingMode = null;
@@ -326,13 +332,11 @@ class OptimizerController {
     clearPicking(type) {
         if (type === 'start') this.gwConfig.startNodeId = null;
         if (type === 'end') this.gwConfig.endNodeId = null;
-        
         this.gwConfig.pathNodes = [];
         this.gwConfig.pathLinks = [];
         this.gwConfig.pathDistances = [];
         this.flowCounts = {}; 
         this.visibleOverlayIds.clear(); 
-        
         this.pickingMode = null;
         this.setMapCursor('default');
         this.renderUI();
@@ -344,10 +348,8 @@ class OptimizerController {
         if (canvas) canvas.style.cursor = cursorType;
     }
 
-    // --- Mouse Event Handling ---
     handleMouseDown(worldX, worldY) {
         if (!this.isActive || !this.simulation) return false;
-
         if (this.pickingMode) {
             let clickedNodeId = null;
             for (const nodeId in this.simulation.network.nodes) {
@@ -357,11 +359,9 @@ class OptimizerController {
                     break;
                 }
             }
-
             if (clickedNodeId) {
                 if (this.pickingMode === 'start') this.gwConfig.startNodeId = clickedNodeId;
                 if (this.pickingMode === 'end') this.gwConfig.endNodeId = clickedNodeId;
-                
                 this.calculateRoutePath();
                 this.pickingMode = null;
                 this.setMapCursor('default');
@@ -370,29 +370,23 @@ class OptimizerController {
                 return true; 
             }
         }
-        
         return false;
     }
 
     handleOverlayMouseDown(screenX, screenY) {
         if (!this.isActive) return false;
-        // 必須檢查 visibleOverlayIds，避免點擊到未顯示的卡片（如果 logic 有漏）
         for (let i = this.overlayHitboxes.length - 1; i >= 0; i--) {
             const box = this.overlayHitboxes[i];
             if (!this.visibleOverlayIds.has(box.nodeId)) continue;
-
             if (screenX >= box.x && screenX <= box.x + box.w &&
                 screenY >= box.y && screenY <= box.y + box.h) {
-                
                 this.dragState.active = true;
                 this.dragState.nodeId = box.nodeId;
                 this.dragState.startX = screenX;
                 this.dragState.startY = screenY;
-                
                 const currentOffset = this.cardOffsets[box.nodeId] || {x: 0, y: 0};
                 this.dragState.origOffsetX = currentOffset.x;
                 this.dragState.origOffsetY = currentOffset.y;
-                
                 return true; 
             }
         }
@@ -420,7 +414,6 @@ class OptimizerController {
         return false;
     }
 
-    // --- Helper Functions ---
     isPointInPolygon(p, polygon) {
         let isInside = false;
         for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
@@ -435,7 +428,6 @@ class OptimizerController {
     calculateRoutePath() {
         const { startNodeId, endNodeId } = this.gwConfig;
         if (!startNodeId || !endNodeId || !this.simulation) return;
-
         const pathLinks = this.simulation.network.pathfinder.findRoute(startNodeId, endNodeId);
         
         if (!pathLinks || pathLinks.length === 0) {
@@ -459,7 +451,6 @@ class OptimizerController {
                 totalDist += link.length;
                 nodeSeq.push(link.destination);
                 distSeq.push(totalDist);
-
                 if (link.lanes && link.lanes[0] && link.lanes[0].path.length > 1) {
                     const path = link.lanes[0].path;
                     const p1 = path[0];
@@ -483,11 +474,7 @@ class OptimizerController {
         const reversePath = this.simulation.network.pathfinder.findRoute(endNodeId, startNodeId);
         this.gwConfig.isBidirectional = (reversePath && reversePath.length > 0) && !this.gwConfig.hasTurns;
         
-        if (this.gwConfig.hasTurns) {
-            this.gwConfig.directionWeight = 0;
-        }
-
-        // 自動勾選所有路徑上的 Node
+        if (this.gwConfig.hasTurns) this.gwConfig.directionWeight = 0;
         this.visibleOverlayIds = new Set(nodeSeq);
     }
 
@@ -499,16 +486,133 @@ class OptimizerController {
         return `路徑: ${len}路口, ${(dist/1000).toFixed(2)}km ${typeStr}`;
     }
 
-    // --- Optimization Logic ---
     update(dt) {} 
     registerVehiclePass(nodeId, turnGroupId, isMotorcycle) {} 
+
+    runOptimization() {
+        if (this.gwConfig.pathNodes.length < 2) { alert("無有效路徑！"); return; }
+
+        if (this.isIterating) {
+            const iterInput = document.getElementById('inp-iter-count');
+            const count = iterInput ? parseInt(iterInput.value) : 5;
+            
+            // ★★★ 計算動態採樣時間 (3倍於當前最大週期) ★★★
+            let maxCycle = 60;
+            this.gwConfig.pathNodes.forEach(nodeId => {
+                const tfl = this.simulation.trafficLights.find(t => t.nodeId === nodeId);
+                if (tfl && tfl.cycleDuration > maxCycle) {
+                    maxCycle = tfl.cycleDuration;
+                }
+            });
+            const sampleTime = Math.ceil(maxCycle * 3);
+
+            const btn = document.getElementById('btn-opt-start');
+            if(btn) { btn.disabled = true; btn.textContent = "迭代中..."; }
+
+            const pContainer = document.getElementById('opt-progress-container');
+            if(pContainer) pContainer.style.display = 'block';
+
+            this.looper.startIteration(count, sampleTime);
+            return;
+        }
+
+        // --- 首次執行：靜態優化 ---
+        const inpSpeed = document.getElementById('inp-speed');
+        if(inpSpeed) this.gwConfig.designSpeed = parseFloat(inpSpeed.value);
+        const inpSat = document.getElementById('inp-sat');
+        if(inpSat) this.saturationFlow = parseFloat(inpSat.value);
+
+        this.gwConfig.pathNodes.forEach(nodeId => {
+            if (!this.originalSchedules[nodeId]) {
+                const tfl = this.simulation.trafficLights.find(t => t.nodeId === nodeId);
+                if (tfl) {
+                    this.originalSchedules[nodeId] = JSON.parse(JSON.stringify(tfl.schedule));
+                    this.originalOffsets[nodeId] = tfl.timeShift || 0;
+                    this.originalCycles[nodeId] = tfl.cycleDuration;
+                }
+            }
+        });
+
+        this.calculateTheoreticalDemand();
+        this.applyGreenWave();
+        this.triggerRedraw();
+
+        this.statusText.textContent = "Optimized (Static)";
+        this.statusText.style.color = "#10b981";
+        
+        this.isIterating = true;
+        this.updateActionButtonToIteration();
+    }
+
+    updateActionButtonToIteration() {
+        const btnStart = document.getElementById('btn-opt-start');
+        if (!btnStart) return;
+
+        btnStart.textContent = "繼續迭代";
+        
+        let iterGroup = document.getElementById('iter-input-group');
+        if (!iterGroup) {
+            iterGroup = document.createElement('div');
+            iterGroup.id = 'iter-input-group';
+            iterGroup.style.display = 'inline-flex';
+            iterGroup.style.alignItems = 'center';
+            iterGroup.style.gap = '4px';
+            iterGroup.style.marginRight = '8px';
+            iterGroup.innerHTML = `
+                <span style="font-size:0.7rem; color:#666;">次數:</span>
+                <input type="number" id="inp-iter-count" value="5" style="width:40px; padding:2px; font-size:0.8rem; border:1px solid #ccc; border-radius:3px;">
+            `;
+            if (this.actionContainer) {
+                this.actionContainer.insertBefore(iterGroup, this.actionContainer.firstChild);
+            }
+        }
+    }
+
+    onIterationSequenceComplete() {
+        const btnStart = document.getElementById('btn-opt-start');
+        if (btnStart) {
+            btnStart.disabled = false;
+            btnStart.textContent = "繼續迭代";
+        }
+    }
+
+    updateProgressBar(percent, text) {
+        const bar = document.getElementById('opt-progress-bar');
+        const txt = document.getElementById('opt-progress-text');
+        if (bar) bar.style.width = `${percent}%`;
+        if (txt) txt.textContent = text;
+    }
+
+    updateStatusText(text, color) {
+        if (this.statusText) {
+            this.statusText.textContent = text;
+            this.statusText.style.color = color;
+        }
+    }
+
+    mergeFlowCounts(actualCounts, alpha = 0.5) {
+        for (const [nodeId, groups] of Object.entries(actualCounts)) {
+            if (!this.flowCounts[nodeId]) this.flowCounts[nodeId] = {};
+            for (const [gid, actualRate] of Object.entries(groups)) {
+                const oldRate = this.flowCounts[nodeId][gid] || 0;
+                this.flowCounts[nodeId][gid] = oldRate * (1 - alpha) + actualRate * alpha;
+            }
+        }
+    }
+
+    setRealtimeLinkSpeeds(speedMap) {
+        this.realtimeLinkSpeeds = speedMap;
+    }
+
+    runIterationUpdate() {
+        this.applyGreenWave();
+        this.triggerRedraw();
+    }
 
     calculateTheoreticalDemand() {
         console.log("Calculating theoretical traffic demand...");
         const demandCounts = {}; 
         const net = this.simulation.network;
-
-        // Part 1: OD Flow
         let maxSimDuration = 1;
         this.simulation.spawners.forEach(s => {
             let d = 0; s.periods.forEach(p => d += p.duration);
@@ -565,7 +669,6 @@ class OptimizerController {
             }
         });
 
-        // Part 2: Detector Flow Propagation
         if (this.simulation.detectorSpawners && this.simulation.detectorSpawners.length > 0) {
             console.log(`Processing detectors flow propagation...`);
             this.simulation.detectorSpawners.forEach(det => {
@@ -587,7 +690,6 @@ class OptimizerController {
                 this.propagateDetectorFlow(det.linkId, sourceFlowPcu, demandCounts, 0);
             });
         }
-
         this.flowCounts = demandCounts;
     }
 
@@ -616,33 +718,6 @@ class OptimizerController {
         }
     }
 
-    runOptimization() {
-        if (this.gwConfig.pathNodes.length < 2) { alert("無有效路徑！"); return; }
-        
-        const inpSpeed = document.getElementById('inp-speed');
-        if(inpSpeed) this.gwConfig.designSpeed = parseFloat(inpSpeed.value);
-        const inpSat = document.getElementById('inp-sat');
-        if(inpSat) this.saturationFlow = parseFloat(inpSat.value);
-
-        this.gwConfig.pathNodes.forEach(nodeId => {
-            if (!this.originalSchedules[nodeId]) {
-                const tfl = this.simulation.trafficLights.find(t => t.nodeId === nodeId);
-                if (tfl) {
-                    this.originalSchedules[nodeId] = JSON.parse(JSON.stringify(tfl.schedule));
-                    this.originalOffsets[nodeId] = tfl.timeShift || 0;
-                    this.originalCycles[nodeId] = tfl.cycleDuration;
-                }
-            }
-        });
-
-        this.calculateTheoreticalDemand();
-        this.applyGreenWave();
-        this.triggerRedraw();
-        this.statusText.textContent = "Optimized";
-        this.statusText.style.color = "#10b981";
-        alert("Green Wave 優化完成！");
-    }
-
     calcWebsterParams(nodeId, counts, schedule) {
         let fixedLostTime = 0; 
         const greenPhaseIndices = []; 
@@ -652,7 +727,6 @@ class OptimizerController {
             let hasYellow = false;
             let hasGreen = false;
             let maxY = 0;
-
             for (const [gid, sig] of Object.entries(period.signals)) {
                 if (sig === 'Yellow') hasYellow = true;
                 else if (sig === 'Green') {
@@ -662,10 +736,8 @@ class OptimizerController {
                     if (y > maxY) maxY = y;
                 }
             }
-
-            if (hasYellow || !hasGreen) {
-                fixedLostTime += period.duration; 
-            } else {
+            if (hasYellow || !hasGreen) fixedLostTime += period.duration; 
+            else {
                 greenPhaseIndices.push(idx);
                 greenPhaseRatios.push(maxY);
             }
@@ -730,7 +802,7 @@ class OptimizerController {
         });
 
         maxCycle = Math.min(180, Math.max(60, maxCycle)); 
-        const speedMs = this.gwConfig.designSpeed / 3.6;
+        const speedMsDefault = this.gwConfig.designSpeed / 3.6;
         const dists = this.gwConfig.pathDistances;
         const weight = this.gwConfig.hasTurns ? 0 : (this.gwConfig.isBidirectional ? this.gwConfig.directionWeight : 0);
 
@@ -753,9 +825,8 @@ class OptimizerController {
                 }
                 if(hasYellow || !hasGreen) isFixed = true;
 
-                if(isFixed) {
-                    fixedTime += params.newSplits[pIdx];
-                } else {
+                if(isFixed) fixedTime += params.newSplits[pIdx];
+                else {
                     greenIndices.push(pIdx);
                     adjustableTimeInParams += params.newSplits[pIdx];
                 }
@@ -766,9 +837,7 @@ class OptimizerController {
             tfl.schedule.forEach((period, pIdx) => {
                 if (greenIndices.includes(pIdx)) {
                     let ratio = 0;
-                    if (adjustableTimeInParams > 0) {
-                        ratio = params.newSplits[pIdx] / adjustableTimeInParams;
-                    }
+                    if (adjustableTimeInParams > 0) ratio = params.newSplits[pIdx] / adjustableTimeInParams;
                     period.duration = newTotalGreen * ratio;
                 } else {
                     period.duration = params.newSplits[pIdx];
@@ -780,9 +849,22 @@ class OptimizerController {
             const inLinkId = idx > 0 ? links[idx - 1] : null;
             const outLinkId = idx < links.length ? links[idx] : null;
             const phaseStart = this.getGreenPhaseStart(nodeId, inLinkId, outLinkId, tfl);
-            const distFromStart = dists[idx];
-            const offsetFwd = (distFromStart / speedMs) - phaseStart;
-            const offsetBwd = -(distFromStart / speedMs) - phaseStart; 
+
+            if (idx === 0) {
+                this.gwConfig.accumulatedTimeFwd = [0]; 
+            }
+            const accTimeFwd = this.gwConfig.accumulatedTimeFwd[idx] || 0;
+            
+            if (idx < path.length - 1) {
+                const nextLinkId = links[idx];
+                const segmentDist = dists[idx+1] - dists[idx];
+                let segSpeed = speedMsDefault;
+                if (this.realtimeLinkSpeeds[nextLinkId]) segSpeed = Math.max(2, this.realtimeLinkSpeeds[nextLinkId]);
+                this.gwConfig.accumulatedTimeFwd[idx+1] = accTimeFwd + (segmentDist / segSpeed);
+            }
+
+            const offsetFwd = accTimeFwd - phaseStart;
+            const offsetBwd = -(accTimeFwd) - phaseStart; 
             
             let finalShift = offsetFwd * (1 - weight) + offsetBwd * weight;
             finalShift = ((finalShift % maxCycle) + maxCycle) % maxCycle;
@@ -820,21 +902,18 @@ class OptimizerController {
         return found ? accumulatedTime : 0;
     }
 
-    // --- Overlay Drawing ---
     drawOverlay(ctx, worldToScreenFunc, scale) {
         if (!this.isActive || !this.simulation) return;
         const nodesToDraw = this.gwConfig.pathNodes;
         if (nodesToDraw.length === 0) return;
 
         this.overlayHitboxes = [];
-
         ctx.save();
         ctx.font = "11px 'Roboto Mono', monospace";
         ctx.textBaseline = "top";
 
         nodesToDraw.forEach(nodeId => {
             if (!this.visibleOverlayIds.has(nodeId)) return;
-
             const tfl = this.simulation.trafficLights.find(t => t.nodeId === nodeId);
             const node = this.simulation.network.nodes[nodeId];
             if (!node || !tfl) return;
@@ -844,17 +923,13 @@ class OptimizerController {
             cx /= node.polygon.length;
             cy /= node.polygon.length;
             const center = worldToScreenFunc(cx, cy);
-
             const offset = this.cardOffsets[nodeId] || {x: 0, y: 0};
             
             const baseX = center.x - 200 + offset.x;
             const baseY = center.y + 50 + offset.y;
 
-            if (scale <= 0.5) {
-                this.drawSimpleBadge(ctx, {x: baseX + 100, y: baseY}, tfl, nodeId);
-            } else {
-                this.drawJunctionInfoCard(ctx, baseX, baseY, nodeId, tfl, center);
-            }
+            if (scale <= 0.5) this.drawSimpleBadge(ctx, {x: baseX + 100, y: baseY}, tfl, nodeId);
+            else this.drawJunctionInfoCard(ctx, baseX, baseY, nodeId, tfl, center);
         });
         ctx.restore();
     }
@@ -863,13 +938,11 @@ class OptimizerController {
         const label = `GW #${tfl.gwIndex}`;
         const color = '#8b5cf6';
         const w = 40, h = 20;
-        
         ctx.fillStyle = color;
         ctx.fillRect(pos.x, pos.y, w, h);
         ctx.fillStyle = 'white';
         ctx.textAlign = 'center';
         ctx.fillText(label, pos.x + w/2, pos.y + 4);
-
         this.overlayHitboxes.push({ nodeId, x: pos.x, y: pos.y, w, h });
     }
 
@@ -913,7 +986,6 @@ class OptimizerController {
 
         ctx.fillStyle = '#8b5cf6';
         ctx.fillRect(x, y, boxW, headerH); 
-        
         ctx.fillStyle = 'white';
         ctx.font = "bold 12px sans-serif";
         ctx.textAlign = 'left';
@@ -950,15 +1022,12 @@ class OptimizerController {
             ctx.fillStyle = '#94a3b8';
             ctx.textAlign = 'left';
             ctx.fillText(`#${row.idx}`, x + padding, curY);
-
             ctx.fillStyle = row.color;
             ctx.beginPath(); 
             ctx.arc(x + padding + 36, curY + 4, 3, 0, Math.PI*2); 
             ctx.fill();
-
             ctx.fillStyle = '#f8fafc';
             ctx.fillText(`${row.dur}s`, x + padding + 60, curY);
-
             if(row.diff !== '-') {
                 ctx.fillStyle = row.diff.includes('+') ? '#4ade80' : '#f87171'; 
                 if(row.diff === '0.0') ctx.fillStyle = '#64748b';
@@ -1011,7 +1080,6 @@ class OptimizerController {
         URL.revokeObjectURL(url);
     }
 
-    // ★★★ 修正後的 Import Logic：重建視覺狀態 ★★★
     importConfig(event) {
         const file = event.target.files[0];
         if (!file) return;
@@ -1022,10 +1090,8 @@ class OptimizerController {
                 const configs = data.configs || data; 
                 let count = 0;
                 
-                // 用於重建順序的暫存陣列
                 const importedNodes = [];
 
-                // 1. 還原 Meta 數據 (例如設計速率)
                 if (data.meta && data.meta.description) {
                     const match = data.meta.description.match(/Green Wave \((\d+)km\/h\)/);
                     if (match && match[1]) {
@@ -1033,7 +1099,6 @@ class OptimizerController {
                     }
                 }
 
-                // 2. 套用設定到 Traffic Lights 並收集 Node 資訊
                 Object.keys(configs).forEach(nodeId => {
                     const tfl = this.simulation.trafficLights.find(t => t.nodeId === nodeId);
                     const cfg = configs[nodeId];
@@ -1049,7 +1114,6 @@ class OptimizerController {
                         if (cfg.optMode) tfl.optMode = cfg.optMode;
                         if (cfg.gwIndex) {
                             tfl.gwIndex = cfg.gwIndex;
-                            // 收集有 gwIndex 的節點，用於重建路徑清單
                             importedNodes.push({ id: nodeId, index: cfg.gwIndex });
                         }
                         count++;
@@ -1059,25 +1123,13 @@ class OptimizerController {
                 event.target.value = '';
 
                 if (count > 0) {
-                    // 3. 重建路徑與 UI 狀態
                     if (importedNodes.length > 0) {
-                        // 依照 gwIndex 排序
                         importedNodes.sort((a, b) => a.index - b.index);
-                        
-                        // 重建路徑節點清單
                         this.gwConfig.pathNodes = importedNodes.map(n => n.id);
-                        
-                        // 設定起點與終點
                         this.gwConfig.startNodeId = this.gwConfig.pathNodes[0];
                         this.gwConfig.endNodeId = this.gwConfig.pathNodes[this.gwConfig.pathNodes.length - 1];
-                        
-                        // 全選顯示 (Overlay)
                         this.visibleOverlayIds = new Set(this.gwConfig.pathNodes);
                         
-                        // (選擇性) 計算路徑詳細資訊以顯示距離等
-                        // 雖然無法完全還原 Links (JSON沒存)，但可透過 calculateRoutePath 的部分邏輯或 pathfinder 來補全
-                        // 這裡為了讓 UI 的 "路徑資訊" 顯示正確，我們嘗試重新搜尋一次路徑
-                        // 這樣能拿到 distances 和 hasTurns 狀態
                         if (this.gwConfig.startNodeId && this.gwConfig.endNodeId) {
                             this.calculateRoutePath(); 
                         }
@@ -1087,7 +1139,7 @@ class OptimizerController {
                     this.statusText.textContent = "Imported";
                     this.statusText.style.color = "#8b5cf6"; 
                     
-                    // 4. 更新畫面
+                    this.isIterating = true;
                     this.renderUI(); 
                     this.triggerRedraw(); 
                 } else {
