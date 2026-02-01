@@ -1,0 +1,189 @@
+{
+  "meta": {
+    "mode": "greenwave",
+    "timestamp": "2026-02-01T07:26:22.289Z",
+    "description": "Green Wave (50km/h)"
+  },
+  "configs": {
+    "0": {
+      "cycleDuration": 71.875,
+      "timeShift": 0,
+      "schedule": [
+        {
+          "duration": 30.9375,
+          "signals": {
+            "0": "Green",
+            "1": "Red"
+          }
+        },
+        {
+          "duration": 3,
+          "signals": {
+            "0": "Yellow",
+            "1": "Red"
+          }
+        },
+        {
+          "duration": 2,
+          "signals": {
+            "0": "Red",
+            "1": "Red"
+          }
+        },
+        {
+          "duration": 30.9375,
+          "signals": {
+            "0": "Red",
+            "1": "Green"
+          }
+        },
+        {
+          "duration": 3,
+          "signals": {
+            "0": "Red",
+            "1": "Yellow"
+          }
+        },
+        {
+          "duration": 2,
+          "signals": {
+            "0": "Red",
+            "1": "Red"
+          }
+        }
+      ],
+      "optMode": "GREEN_WAVE",
+      "gwIndex": 1
+    },
+    "1": {
+      "cycleDuration": 71.875,
+      "timeShift": 38.8965728,
+      "schedule": [
+        {
+          "duration": 10,
+          "signals": {
+            "0": "Green",
+            "1": "Red",
+            "2": "Red"
+          }
+        },
+        {
+          "duration": 3,
+          "signals": {
+            "0": "Yellow",
+            "1": "Red",
+            "2": "Red"
+          }
+        },
+        {
+          "duration": 2,
+          "signals": {
+            "0": "Red",
+            "1": "Red",
+            "2": "Red"
+          }
+        },
+        {
+          "duration": 23.4375,
+          "signals": {
+            "0": "Red",
+            "1": "Green",
+            "2": "Red"
+          }
+        },
+        {
+          "duration": 3,
+          "signals": {
+            "0": "Red",
+            "1": "Yellow",
+            "2": "Red"
+          }
+        },
+        {
+          "duration": 2,
+          "signals": {
+            "0": "Red",
+            "1": "Red",
+            "2": "Red"
+          }
+        },
+        {
+          "duration": 23.4375,
+          "signals": {
+            "0": "Red",
+            "1": "Red",
+            "2": "Green"
+          }
+        },
+        {
+          "duration": 3,
+          "signals": {
+            "0": "Red",
+            "1": "Red",
+            "2": "Yellow"
+          }
+        },
+        {
+          "duration": 2,
+          "signals": {
+            "0": "Red",
+            "1": "Red",
+            "2": "Red"
+          }
+        }
+      ],
+      "optMode": "GREEN_WAVE",
+      "gwIndex": 2
+    },
+    "2": {
+      "cycleDuration": 71.875,
+      "timeShift": 2.7150687999999974,
+      "schedule": [
+        {
+          "duration": 10.3125,
+          "signals": {
+            "0": "Green",
+            "1": "Red"
+          }
+        },
+        {
+          "duration": 3,
+          "signals": {
+            "0": "Yellow",
+            "1": "Red"
+          }
+        },
+        {
+          "duration": 2,
+          "signals": {
+            "0": "Red",
+            "1": "Red"
+          }
+        },
+        {
+          "duration": 51.5625,
+          "signals": {
+            "0": "Red",
+            "1": "Green"
+          }
+        },
+        {
+          "duration": 3,
+          "signals": {
+            "0": "Red",
+            "1": "Yellow"
+          }
+        },
+        {
+          "duration": 2,
+          "signals": {
+            "0": "Red",
+            "1": "Red"
+          }
+        }
+      ],
+      "optMode": "GREEN_WAVE",
+      "gwIndex": 3
+    }
+  }
+}
