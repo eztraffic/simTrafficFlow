@@ -160,6 +160,10 @@
                         <input type="checkbox" id="aiToggle">
                         <span class="switch-label">AI控制</span>
                     </label>
+                    <label class="mini-switch" title="Signal Optimization (Webster)">
+                        <input type="checkbox" id="optToggle">
+                        <span class="switch-label">優化</span>
+                    </label>
                     <!-- 空位補齊 (Optional) -->
                     <div style="width: 1px;"></div>
                 </div>
@@ -245,6 +249,74 @@
                     <!-- 加入 data-i18n="canvasPlaceholder" -->
                     <p data-i18n="canvasPlaceholder">請從上方載入路網檔案開始模擬</p>
                 </div>
+            </div> <!-- ★★★ 注意：placeholder-text 在這裡結束 ★★★ -->
+
+            <!-- ★★★ 修正：將 opt-panel 移到這裡 (placeholder-text 外面) ★★★ -->
+            <!-- 優化設定面板 (預設隱藏) -->
+            <div id="opt-panel" class="floating-panel" style="display: none;">
+                <div class="panel-header-mini">
+                    <span>🚦 號誌優化控制</span>
+                    <span id="opt-status" class="stats-info">Ready</span>
+                </div>
+
+                <div class="panel-options">
+                    <!-- 演算法選擇 -->
+                    <div class="control-group" style="margin-bottom: 8px;">
+                        <label style="font-size: 0.75rem; color: #666;">優化方法:</label>
+                        <select id="opt-algorithm-selector" class="dropdown-light"
+                            style="width: 100%; margin-top: 4px;">
+                            <option value="webster">Webster's Optimal Cycle</option>
+                            <option value="greenwave" disabled>Green Wave (Coming Soon)</option>
+                        </select>
+
+                        <div class="control-group" style="display: flex; gap: 8px; margin-top: 8px;">
+                            <div style="flex: 1;">
+                                <label style="font-size: 0.7rem; color: #666;">採樣秒數 (s)</label>
+                                <input type="number" id="opt-sample-duration" value="300" class="dropdown-light"
+                                    style="width: 100%;">
+                            </div>
+                            <div style="flex: 1;">
+                                <label style="font-size: 0.7rem; color: #666;">飽和流率 (PCU)</label>
+                                <input type="number" id="opt-sat-flow" value="1800" class="dropdown-light"
+                                    style="width: 100%;">
+                            </div>
+                        </div>
+
+                        <!-- 進度條 -->
+                        <div id="opt-progress-container" style="margin-top: 10px; display: none;">
+                            <div
+                                style="display: flex; justify-content: space-between; font-size: 0.7rem; color: #06b6d4; margin-bottom: 2px;">
+                                <span>Sampling...</span>
+                                <span id="opt-timer-text">0/300s</span>
+                            </div>
+                            <div style="width: 100%; height: 4px; background: #eee; border-radius: 2px;">
+                                <div id="opt-progress-bar"
+                                    style="width: 0%; height: 100%; background: #06b6d4; border-radius: 2px; transition: width 0.2s;">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="separator-h" style="border-bottom: 1px solid #eee; margin: 8px 0;"></div>
+
+                    <!-- 路口選擇列表容器 -->
+                    <div style="font-size: 0.75rem; font-weight: 600; margin-bottom: 4px;">選擇優化路口 (複選):</div>
+                    <div id="opt-node-list" class="checklist-container">
+                        <!-- JS 將動態在此生成 Checkbox -->
+                        <div style="padding: 10px; text-align: center; color: #aaa;">請先載入路網</div>
+                    </div>
+                </div>
+
+                <!-- 底部操作按鈕 -->
+                <div class="panel-actions">
+                    <button id="btn-opt-start" class="btn-mini">開始採樣</button>
+                    <button id="btn-opt-reset" class="btn-mini" title="還原原始設定">還原</button>
+                    <button id="btn-opt-export" class="btn-mini" title="匯出設定">匯出</button>
+                    <label class="btn-mini" title="匯入設定" style="cursor: pointer;">
+                        匯入
+                        <input type="file" id="file-opt-import" accept=".json" style="display:none;">
+                    </label>
+                </div>
             </div>
 
             <!-- AI 訓練面板 (移至此處，位於地圖右上角) -->
@@ -274,7 +346,7 @@
                     <label class="checkbox-label" title="在 2D 地圖路口中央顯示當前採取的動作">
                         <input type="checkbox" id="aiShowActionToggle" checked>
                         <span>顯示決策 (Show Action)</span>
-                    </label>    
+                    </label>
                 </div>
                 <!-- ★★★ 結束 ★★★ -->
 
@@ -317,6 +389,7 @@
     <script src="script_ai.js"></script>
     <script src="script_police.js"></script>
     <script src="script_drive.js"></script>
+    <script src="script_opt.js"></script>
     <script src="script02.js"></script>
     <script>
         window.ENABLE_LEFT_TURN_YIELD = true;

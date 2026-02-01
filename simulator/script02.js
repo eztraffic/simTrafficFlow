@@ -558,33 +558,53 @@ document.addEventListener('DOMContentLoaded', () => {
         const mouseX = e.clientX - rect.left;
         const mouseY = e.clientY - rect.top;
 
-        // ★★★ 優先檢查：是否點擊了 AI 資訊浮窗？ ★★★
-        if (aiController && aiController.isActive) {
-            // 如果點到了浮窗，handleMouseDown 會回傳 true
-            // 此時我們直接 return，不執行後面的 handlePanStart2D (地圖拖曳)
-            if (aiController.handleMouseDown(mouseX, mouseY)) {
+        // ★★★ [新增] 優先處理 Optimizer 的 Overlay 拖曳 ★★★
+        if (typeof optimizerController !== 'undefined' && optimizerController.isActive) {
+            // 如果點擊了資訊卡，攔截事件，不進行地圖拖曳或 Picking
+            if (optimizerController.handleOverlayMouseDown(mouseX, mouseY)) {
+                return;
+            }
+
+            // 保持原有的路徑 Picking 邏輯 (worldX, worldY)
+            const worldPos = screenToWorld2D(mouseX, mouseY);
+            if (optimizerController.handleMouseDown(worldPos.x, worldPos.y)) {
                 return;
             }
         }
+
+        // ★★★ 修正重點：使用 screenToWorld2D 來獲取正確的世界座標 ★★★
+        // 這會自動處理 Pan, Scale 以及 Rotation (旋轉)
+        const worldPos = screenToWorld2D(mouseX, mouseY);
+        const worldX = worldPos.x;
+        const worldY = worldPos.y;
+
+        // 優先檢查：是否點擊了 AI 或 優化器的互動元素？
+        if (typeof optimizerController !== 'undefined' && optimizerController.isActive) {
+            // 將正確的世界座標傳給優化控制器
+            if (optimizerController.handleMouseDown(worldX, worldY)) {
+                // 如果回傳 true，代表點到了路口，直接返回，不觸發地圖拖曳
+                return;
+            }
+        }
+
         // 如果是員警模式，優先處理路口選擇
         if (policeToggle && policeToggle.checked && policeController) {
-            // 計算 World 座標
-            const rect = canvas2D.getBoundingClientRect();
-            const mouseX = e.clientX - rect.left;
-            const mouseY = e.clientY - rect.top;
-            const worldX = (mouseX - panX) / scale;
-            const worldY = (mouseY - panY) / scale;
-
             // 呼叫 Police Controller 判定
             if (simulation && simulation.network) {
                 policeController.handleMapClick(worldX, worldY, simulation.network.nodes);
-                // 如果選中了，可以選擇是否要阻止原本的 Pan (拖曳地圖)
-                // 這裡選擇不阻止，讓使用者還是可以拖曳地圖
                 if (!isRunning) redraw2D(); // 重繪以顯示紅圈
             }
         }
 
-        // 呼叫原有的 Pan Start
+        // ★★★ 優先檢查：是否點擊了 AI 資訊浮窗？ (這部分維持原樣) ★★★
+        if (aiController && aiController.isActive) {
+            // 如果點到了浮窗，handleMouseDown 會回傳 true
+            if (aiController.handleMouseDown(mouseX, mouseY)) {
+                return;
+            }
+        }
+
+        // 呼叫原有的 Pan Start (地圖拖曳)
         handlePanStart2D(e);
     });
 
@@ -592,6 +612,13 @@ document.addEventListener('DOMContentLoaded', () => {
         const rect = canvas2D.getBoundingClientRect();
         const mouseX = e.clientX - rect.left;
         const mouseY = e.clientY - rect.top;
+
+        // ★★★ [新增] 處理 Overlay 拖曳移動 ★★★
+        if (typeof optimizerController !== 'undefined' && optimizerController.isActive) {
+            if (optimizerController.handleOverlayMouseMove(mouseX, mouseY)) {
+                return;
+            }
+        }
 
         // ★★★ 優先檢查：是否正在拖曳 AI 資訊浮窗？ ★★★
         if (aiController && aiController.isActive) {
@@ -605,11 +632,17 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     canvas2D.addEventListener('mouseup', (e) => {
+        // ★★★ [新增] 釋放 Overlay 拖曳 ★★★
+        if (typeof optimizerController !== 'undefined' && optimizerController.isActive) {
+            if (optimizerController.handleOverlayMouseUp()) {
+                return;
+            }
+        }
         // ★★★ 釋放浮窗拖曳 ★★★
         if (aiController) {
             aiController.handleMouseUp();
         }
-        
+
         handlePanEnd2D();
     });
 
@@ -782,6 +815,39 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 aiController.setActive(false);
             }
+        });
+    }
+
+    // --- Optimizer Toggle ---
+    const optToggle = document.getElementById('optToggle');
+
+    if (optToggle) {
+        optToggle.addEventListener('change', (e) => {
+            const active = e.target.checked;
+
+            if (active) {
+                // 互斥邏輯：關閉 AI、員警、駕駛等模式
+                if (aiToggle) { aiToggle.checked = false; aiController.setActive(false); }
+                if (policeToggle) { policeToggle.checked = false; policeController.setActive(false); }
+                if (driveToggle) { driveToggle.checked = false; if (driveController) driveController.reset(); }
+                if (hudElement) hudElement.style.display = 'none';
+
+                // 檢查是否已載入路網
+                if (!simulation) {
+                    alert("請先載入路網檔案！");
+                    e.target.checked = false;
+                    return;
+                }
+
+                // 確保控制器拿到最新的 simulation 參照
+                optimizerController.setSimulation(simulation);
+                optimizerController.setActive(true);
+            } else {
+                optimizerController.setActive(false);
+            }
+
+            // 若在暫停狀態，觸發重繪以更新面板
+            if (!isRunning && isDisplay2D) redraw2D();
         });
     }
 
@@ -1589,6 +1655,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (aiController && aiController.isActive && aiShowActionToggle && aiShowActionToggle.checked) {
             // 傳入 ctx2D, 座標轉換函式, 以及 scale (用於判斷是否顯示細節)
             aiController.drawOverlay(ctx2D, worldToScreen2D, scale);
+        }
+
+        // [新增] 繪製優化器的高亮框 (紅框)
+        if (typeof optimizerController !== 'undefined' && optimizerController.isActive) {
+            optimizerController.drawOverlay(ctx2D, worldToScreen2D, scale);
         }
         // ★★★ 結束新增 ★★★
     }
@@ -4871,6 +4942,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 networkData = netData;
                 simulation = new Simulation(networkData);
 
+                // [新增] 通知優化控制器更新資料
+                if (typeof optimizerController !== 'undefined') {
+                    optimizerController.setSimulation(simulation);
+                }
+
                 autoCenter2D(networkData.bounds);
                 networkCenter2D = {
                     x: (networkData.bounds.minX + networkData.bounds.maxX) / 2,
@@ -5029,6 +5105,11 @@ document.addEventListener('DOMContentLoaded', () => {
             // 3. 更新模擬核心
             simulation.update(simulationDt);
             simTimeSpan.textContent = simulation.time.toFixed(2);
+
+            // [新增] 優化器更新 (處理採樣計時器)
+            if (typeof optimizerController !== 'undefined') {
+                optimizerController.update(simulationDt);
+            }
 
             const currentIntegerTime = Math.floor(simulation.time);
             if (currentIntegerTime > lastLoggedIntegerTime) {
@@ -6710,6 +6791,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 this.currentTransition = transition;
 
                 if (transition) {
+                    // [新增] 通知優化器進行流量計數
+                    // 只有當進入 Intersection 狀態時才計數
+                    if (typeof optimizerController !== 'undefined' && transition.turnGroupId) {
+                        // 傳入所在路口 ID (destNodeId)、轉向群組 ID、以及是否為機車
+                        optimizerController.registerVehiclePass(destNodeId, transition.turnGroupId, this.isMotorcycle);
+                    }
+
                     if (transition.bezier) {
                         this.state = 'inIntersection';
 
