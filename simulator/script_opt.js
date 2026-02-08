@@ -466,14 +466,102 @@ class OptimizerController {
         this.dragState = { active: false, nodeId: null, startX: 0, startY: 0 };
         this.visibleOverlayIds = new Set();
 
+        // --- 新增屬性 ---
+        this.isMinimized = false;
+        this.dockIcon = null;
+
         this.looper = new OptimizationLooper(this);
         this.isIterating = false;
         this.realtimeLinkSpeeds = {};
-
         this.tsdViewer = new TimeSpaceDiagramViewer();
 
+        // ★★★ 初始化 Dock UI 與樣式 ★★★
+        this.injectCustomStyles();
+        this.createDockIcon();
         this.bindGlobalEvents();
     }
+
+    // ★★★ 修改：注入 CSS，設定 1.5秒 動畫 ★★★
+    injectCustomStyles() {
+        if (document.getElementById('opt-custom-styles')) return;
+        const style = document.createElement('style');
+        style.id = 'opt-custom-styles';
+        style.textContent = `
+            /* 縮小按鈕樣式 */
+            .btn-win-minimize {
+                background: transparent;
+                border: none;
+                color: #666;
+                width: 24px;
+                height: 24px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                cursor: pointer;
+                border-radius: 4px;
+                font-weight: bold;
+                font-size: 16px;
+                line-height: 1;
+                margin-left: auto;
+                margin-right: 8px;
+            }
+            .btn-win-minimize:hover {
+                background-color: #e0e0e0;
+                color: #000;
+            }
+
+            /* Dock Icon 樣式 */
+            #opt-dock-icon {
+                position: fixed;
+                bottom: 30px; 
+                right: 80px; /* 位於 Pegman 左側 */
+                width: 40px;
+                height: 40px;
+                background-color: #1f2937;
+                border: 2px solid #8b5cf6;
+                border-radius: 50%;
+                display: none;
+                align-items: center;
+                justify-content: center;
+                cursor: pointer;
+                box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+                z-index: 2000;
+                transition: transform 0.2s; /* Icon 本身的 hover 效果維持快速 */
+                font-size: 20px;
+            }
+            #opt-dock-icon:hover {
+                transform: scale(1.1);
+                background-color: #374151;
+            }
+            
+            /* ★★★ 面板動畫過渡設定：改為 1.5s ★★★ */
+            #opt-panel {
+                /* 使用 cubic-bezier 模擬吸入效果的非線性速度 */
+                transition: transform 1.5s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 1.5s ease-in-out;
+                /* 明確設定 transform-origin 為中心 */
+                transform-origin: center center;
+                will-change: transform, opacity;
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
+    // ★★★ 新增：建立 Dock 圖示 ★★★
+    createDockIcon() {
+        if (document.getElementById('opt-dock-icon')) return;
+
+        this.dockIcon = document.createElement('div');
+        this.dockIcon.id = 'opt-dock-icon';
+        this.dockIcon.innerHTML = '🚦'; // 號誌圖示
+        this.dockIcon.title = "還原號誌優化面板";
+
+        this.dockIcon.onclick = () => {
+            this.toggleMinimize(false);
+        };
+
+        document.body.appendChild(this.dockIcon);
+    }
+
 
     setSimulation(sim) {
         this.simulation = sim;
@@ -499,12 +587,27 @@ class OptimizerController {
 
     setActive(active) {
         this.isActive = active;
-        if (this.panel) this.panel.style.display = active ? 'flex' : 'none';
-        if (active) {
-            this.renderUI();
-            this.triggerRedraw();
+        if (this.panel) {
+            if (active) {
+                if (this.isMinimized) {
+                    // 如果之前是最小化的，還原它
+                    this.toggleMinimize(false);
+                } else {
+                    this.panel.style.display = 'flex';
+                    // 確保沒有殘留的 transform
+                    this.panel.style.transform = '';
+                    this.panel.style.opacity = '1';
+                }
+                this.renderUI();
+                this.triggerRedraw();
+            } else {
+                this.panel.style.display = 'none';
+                if (this.dockIcon) this.dockIcon.style.display = 'none';
+                this.isMinimized = false;
+            }
         }
     }
+
 
     triggerRedraw() {
         window.dispatchEvent(new Event('resize'));
@@ -537,7 +640,37 @@ class OptimizerController {
         if (!this.optionsContainer) return;
         this.optionsContainer.innerHTML = '';
 
-        // 1. 參數設定區
+        // --- 1. 修改 Header (加入縮小按鈕) ---
+        const header = this.panel.querySelector('.panel-header-mini');
+        if (header) {
+            // 清空舊內容並重新建立結構
+            header.innerHTML = '';
+
+            const titleSpan = document.createElement('span');
+            titleSpan.innerHTML = "🚦 號誌優化";
+            header.appendChild(titleSpan);
+
+            const statusSpan = document.createElement('span');
+            statusSpan.id = 'opt-status';
+            statusSpan.className = 'stats-info';
+            statusSpan.textContent = this.statusText ? this.statusText.textContent : "Ready";
+            statusSpan.style.marginLeft = "8px";
+            header.appendChild(statusSpan);
+            this.statusText = statusSpan; // 更新參照
+
+            // 加入縮小按鈕 (_)
+            const minBtn = document.createElement('button');
+            minBtn.className = 'btn-win-minimize';
+            minBtn.innerHTML = '－'; // Windows 風格橫線
+            minBtn.title = "最小化";
+            minBtn.onclick = (e) => {
+                e.stopPropagation(); // 防止觸發拖曳
+                this.toggleMinimize(true);
+            };
+            header.appendChild(minBtn);
+        }
+
+        // 1. 參數設定區 (原代碼)
         const paramGroup = document.createElement('div');
         paramGroup.className = 'control-group';
         paramGroup.innerHTML = `
@@ -554,7 +687,16 @@ class OptimizerController {
         `;
         this.optionsContainer.appendChild(paramGroup);
 
-        // 2. 路徑選擇器
+        this.renderPathSelectorUI();
+        this.renderRouteInfoUI();
+        this.renderNodeListAndProgressUI();
+        this.updateActionButton();
+        if (this.isIterating) {
+            this.updateActionButtonToIteration();
+        }
+    }
+
+    renderPathSelectorUI() {
         const pickGroup = document.createElement('div');
         pickGroup.className = 'path-selector-group';
         pickGroup.style.display = 'grid';
@@ -600,8 +742,9 @@ class OptimizerController {
                 }
             });
         });
+    }
 
-        // 3. 路徑資訊、權重拉桿與操作按鈕
+    renderRouteInfoUI() {
         if (this.gwConfig.pathNodes.length > 1) {
             const infoDiv = document.createElement('div');
             infoDiv.style.fontSize = '0.75rem';
@@ -692,89 +835,9 @@ class OptimizerController {
             this.optionsContainer.appendChild(btnGroup);
             // --- 按鈕群組結束 ---
         }
-
-        // 4. Node 列表
-        if (this.gwConfig.pathNodes.length > 0) {
-            const listHeader = document.createElement('div');
-            listHeader.style.fontSize = '0.75rem';
-            listHeader.style.fontWeight = '600';
-            listHeader.style.marginTop = '8px';
-            listHeader.style.marginBottom = '4px';
-            listHeader.textContent = `路徑節點 (${this.gwConfig.pathNodes.length})`;
-            this.optionsContainer.appendChild(listHeader);
-
-            const gridContainer = document.createElement('div');
-            gridContainer.style.display = 'grid';
-            gridContainer.style.gridTemplateColumns = 'repeat(3, 1fr)';
-            gridContainer.style.gap = '4px';
-            gridContainer.style.maxHeight = '120px';
-            gridContainer.style.overflowY = 'auto';
-            gridContainer.style.border = '1px solid #eee';
-            gridContainer.style.padding = '4px';
-            gridContainer.style.borderRadius = '4px';
-            gridContainer.style.backgroundColor = '#f9f9f9';
-
-            this.gwConfig.pathNodes.forEach((nodeId) => {
-                const item = document.createElement('label');
-                item.style.display = 'flex';
-                item.style.alignItems = 'center';
-                item.style.gap = '4px';
-                item.style.fontSize = '0.7rem';
-                item.style.padding = '2px 4px';
-                item.style.background = '#fff';
-                item.style.border = '1px solid #ddd';
-                item.style.borderRadius = '3px';
-                item.style.cursor = 'pointer';
-                item.style.whiteSpace = 'nowrap';
-                item.style.overflow = 'hidden';
-
-                const checkbox = document.createElement('input');
-                checkbox.type = 'checkbox';
-                checkbox.style.cursor = 'pointer';
-                checkbox.checked = this.visibleOverlayIds.has(nodeId);
-
-                checkbox.addEventListener('change', (e) => {
-                    if (e.target.checked) this.visibleOverlayIds.add(nodeId);
-                    else this.visibleOverlayIds.delete(nodeId);
-                    this.triggerRedraw();
-                });
-
-                const textSpan = document.createElement('span');
-                textSpan.textContent = `Node ${nodeId}`;
-                textSpan.style.overflow = 'hidden';
-                textSpan.style.textOverflow = 'ellipsis';
-
-                item.appendChild(checkbox);
-                item.appendChild(textSpan);
-                gridContainer.appendChild(item);
-            });
-            this.optionsContainer.appendChild(gridContainer);
-        }
-
-        // 5. 進度條容器
-        const progressContainer = document.createElement('div');
-        progressContainer.id = 'opt-progress-container';
-        progressContainer.style.marginTop = '8px';
-        progressContainer.style.display = 'none';
-        progressContainer.innerHTML = `
-            <div style="display:flex; justify-content:space-between; font-size:0.7rem; color:#666; margin-bottom:2px;">
-                <span>採樣進度</span>
-                <span id="opt-progress-text">0%</span>
-            </div>
-            <div style="width:100%; height:4px; background:#eee; border-radius:2px; overflow:hidden;">
-                <div id="opt-progress-bar" style="width:0%; height:100%; background:#3b82f6; transition:width 0.2s;"></div>
-            </div>
-        `;
-        this.optionsContainer.appendChild(progressContainer);
-
-        this.updateActionButton();
-
-        if (this.isIterating) {
-            this.updateActionButtonToIteration();
-        }
     }
 
-    renderNodeListAndProgress() {
+    renderNodeListAndProgressUI() {
         // Node 列表
         if (this.gwConfig.pathNodes.length > 0) {
             const listHeader = document.createElement('div');
@@ -796,7 +859,8 @@ class OptimizerController {
                 const item = document.createElement('label');
                 Object.assign(item.style, {
                     display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.7rem',
-                    padding: '2px 4px', background: '#fff', border: '1px solid #ddd', borderRadius: '3px', cursor: 'pointer'
+                    padding: '2px 4px', background: '#fff', border: '1px solid #ddd', borderRadius: '3px', cursor: 'pointer',
+                    whiteSpace: 'nowrap', overflow: 'hidden'
                 });
 
                 const checkbox = document.createElement('input');
@@ -810,6 +874,8 @@ class OptimizerController {
 
                 const textSpan = document.createElement('span');
                 textSpan.textContent = `Node ${nodeId}`;
+                textSpan.style.overflow = 'hidden';
+                textSpan.style.textOverflow = 'ellipsis';
                 item.appendChild(checkbox);
                 item.appendChild(textSpan);
                 gridContainer.appendChild(item);
@@ -824,9 +890,86 @@ class OptimizerController {
         progressContainer.style.display = 'none';
         progressContainer.innerHTML = `<div style="display:flex; justify-content:space-between; font-size:0.7rem; color:#666; margin-bottom:2px;"><span>採樣進度</span><span id="opt-progress-text">0%</span></div><div style="width:100%; height:4px; background:#eee; border-radius:2px; overflow:hidden;"><div id="opt-progress-bar" style="width:0%; height:100%; background:#3b82f6; transition:width 0.2s;"></div></div>`;
         this.optionsContainer.appendChild(progressContainer);
+    }
 
-        this.updateActionButton();
-        if (this.isIterating) this.updateActionButtonToIteration();
+    // ★★★ 修改：縮放邏輯 (1.5秒 緩慢動畫 - 修正方向與座標計算) ★★★
+    toggleMinimize(shouldMinimize) {
+        if (!this.panel || !this.dockIcon) return;
+
+        // 防止動畫中重複點擊
+        if (this.isAnimating) return;
+        this.isAnimating = true;
+
+        if (shouldMinimize) {
+            // --- 執行縮小 (由上至下吸入) ---
+            this.isMinimized = true;
+            this.dockIcon.style.display = 'flex';
+
+            // 關鍵：先強制 Reflow 讓 Dock Icon 有實際座標，否則 getBoundingClientRect 只有 (0,0)
+            this.dockIcon.offsetHeight;
+
+            const iconRect = this.dockIcon.getBoundingClientRect();
+            const panelRect = this.panel.getBoundingClientRect();
+
+            const iconCenterX = iconRect.left + iconRect.width / 2;
+            const iconCenterY = iconRect.top + iconRect.height / 2;
+
+            const panelCenterX = panelRect.left + panelRect.width / 2;
+            const panelCenterY = panelRect.top + panelRect.height / 2;
+
+            const transX = iconCenterX - panelCenterX;
+            const transY = iconCenterY - panelCenterY;
+
+            this.panel.style.transformOrigin = 'center center';
+            this.panel.style.transform = `translate(${transX}px, ${transY}px) scale(0.05)`;
+            this.panel.style.opacity = '0';
+
+            setTimeout(() => {
+                this.panel.style.display = 'none';
+                this.isAnimating = false;
+            }, 1500);
+
+        } else {
+            // --- 執行還原 (由下至上彈出) ---
+            this.isMinimized = false;
+
+            // 1. 先顯示面板但暫停動畫 + 清除舊 Transform 以便測量原始位置
+            this.panel.style.display = 'flex';
+            this.panel.style.transition = 'none';
+            this.panel.style.transform = '';
+
+            // 2. 強制 Reflow 並測量目前的原始佈局位置
+            this.panel.offsetHeight;
+
+            const panelRect = this.panel.getBoundingClientRect();
+            const iconRect = this.dockIcon.getBoundingClientRect();
+
+            const iconCenterX = iconRect.left + iconRect.width / 2;
+            const iconCenterY = iconRect.top + iconRect.height / 2;
+            const panelCenterX = panelRect.left + panelRect.width / 2;
+            const panelCenterY = panelRect.top + panelRect.height / 2;
+
+            const transX = iconCenterX - panelCenterX;
+            const transY = iconCenterY - panelCenterY;
+
+            // 3. 設定動畫起始狀態 (瞬間移動到 Icon 位置)
+            this.panel.style.transformOrigin = 'center center';
+            this.panel.style.transform = `translate(${transX}px, ${transY}px) scale(0.05)`;
+            this.panel.style.opacity = '0';
+
+            // 4. 強制渲染起始狀態
+            this.panel.offsetHeight;
+
+            // 5. 啟動過渡效果並還原至原始位置
+            this.panel.style.transition = 'transform 1.5s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 1.5s ease-in-out';
+            this.panel.style.transform = '';
+            this.panel.style.opacity = '1';
+
+            setTimeout(() => {
+                this.dockIcon.style.display = 'none';
+                this.isAnimating = false;
+            }, 1500);
+        }
     }
 
     updateActionButton() {
