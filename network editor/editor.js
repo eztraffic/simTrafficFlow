@@ -10,6 +10,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let stage, layer, gridLayer; // <-- MODIFIED: Removed measureGroup
     let activeTool = 'select';
+    let connectMode = 'manual'; // 'manual' (拖曳) 或 'box' (框選)
     let tempShape = null;
     let tempMeasureText = null;
     let isPanning = false;
@@ -47,6 +48,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const statusBar = document.getElementById('status-bar');
 
     let lastActiveNodeTab = 'tab-settings'; // [新增] 用於記憶 Node 屬性面板當前的分頁
+    let lastActiveLinkTab = 'tab-link-general'; // <--- [新增] 記憶 Link 面板的分頁
 
     // --- DATA MODELS ---
     // 我們將 numLanes 參數改為 lanesOrNumLanes
@@ -278,7 +280,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 updatePropertiesPanel(obj);
                 layer.batchDraw();
             });
-        } else if (obj.type === 'Overpass') { 
+        } else if (obj.type === 'Overpass') {
             konvaObj = obj.konvaRect;
             // 我們使用邊框顏色來表示選取，而不是陰影
             konvaObj.stroke('blue');
@@ -330,7 +332,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 // 如果是鎖定模式(依附車道)，隱藏所有控制點，只顯示藍色邊框
                 enabledAnchors: isFreeMode ? ['top-left', 'top-right', 'bottom-left', 'bottom-right'] : []
             });
-            
+
             layer.add(tr);
             tr.moveToTop();
             obj.konvaTransformer = tr;
@@ -1174,6 +1176,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // 完整替換此函數
     function setTool(toolName) {
         activeTool = toolName;
+        deselectAll(); // Reset selection and update properties panel
         document.querySelectorAll('.tool-btn').forEach(btn => {
             btn.classList.toggle('active', btn.dataset.tool === toolName);
         });
@@ -1633,7 +1636,12 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             if (e.evt.button === 0 && e.target === stage) {
-                if (activeTool !== 'add-link' && activeTool !== 'measure' && activeTool !== 'add-background' && activeTool !== 'add-pushpin' && activeTool !== 'add-parking-lot' && activeTool !== 'add-parking-gate') {
+                // [修改] 將 connect-lanes 加入不自動平移的清單，以便進行框選
+                if (activeTool !== 'add-link' && activeTool !== 'measure' &&
+                    !(activeTool === 'connect-lanes' && connectMode === 'box') && // <--- 新增此判斷
+                    activeTool !== 'add-background' &&
+                    activeTool !== 'add-pushpin' && activeTool !== 'add-parking-lot' && activeTool !== 'add-parking-gate') {
+
                     isPanning = true;
                     lastPointerPosition = stage.getPointerPosition();
                     stage.container().style.cursor = 'grabbing';
@@ -1641,6 +1649,32 @@ document.addEventListener('DOMContentLoaded', () => {
                     return;
                 }
             }
+
+            // --- [新增] Connect Box Mode 的開始繪製邏輯 ---
+            if (activeTool === 'connect-lanes' && connectMode === 'box') {
+                if (e.target !== stage) return;
+
+                const pos = {
+                    x: (e.evt.layerX - stage.x()) / stage.scaleX(),
+                    y: (e.evt.layerY - stage.y()) / stage.scaleY(),
+                };
+
+                tempShape = new Konva.Rect({
+                    x: pos.x,
+                    y: pos.y,
+                    width: 0,
+                    height: 0,
+                    stroke: '#00D2FF',
+                    strokeWidth: 1 / stage.scaleX(),
+                    fill: 'rgba(0, 210, 255, 0.2)',
+                    listening: false,
+                    name: 'selection-box'
+                });
+                layer.add(tempShape);
+                tempShape.setAttr('startPos', pos);
+                return;
+            }
+            // --- [新增結束] ---
 
             // 在 stage.on('mousedown') 內加入
             if (activeTool === 'add-parking-gate') {
@@ -1671,6 +1705,30 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         stage.on('mouseup', (e) => {
+            // --- [新增] Connect Box Mode 的完成邏輯 ---
+            if (activeTool === 'connect-lanes' && connectMode === 'box' && tempShape) {
+                // 取得標準化的矩形參數
+                const rectBox = {
+                    x: tempShape.x(),
+                    y: tempShape.y(),
+                    width: tempShape.width(),
+                    height: tempShape.height()
+                };
+
+                // 移除視覺選取框
+                tempShape.destroy();
+                tempShape = null;
+
+                // 執行自動連結演算法 (如果框框夠大，避免誤觸)
+                if (rectBox.width > 2 || rectBox.height > 2) {
+                    autoConnectLanesInSelection(rectBox);
+                }
+
+                layer.batchDraw();
+                return;
+            }
+            // --- [新增結束] ---
+
             if (activeTool === 'add-parking-gate' && tempShape) {
                 const width = tempShape.width();
                 const height = tempShape.height();
@@ -1709,6 +1767,26 @@ document.addEventListener('DOMContentLoaded', () => {
                 drawGrid();
                 e.evt.preventDefault();
             }
+
+            // --- [新增] Connect Box Mode 的拖曳繪製邏輯 ---
+            if (activeTool === 'connect-lanes' && connectMode === 'box' && tempShape) {
+                const pos = {
+                    x: (e.evt.layerX - stage.x()) / stage.scaleX(),
+                    y: (e.evt.layerY - stage.y()) / stage.scaleY(),
+                };
+                const startPos = tempShape.getAttr('startPos');
+
+                // 支援向左/向上選取 (負寬高)
+                tempShape.x(Math.min(pos.x, startPos.x));
+                tempShape.y(Math.min(pos.y, startPos.y));
+                tempShape.width(Math.abs(pos.x - startPos.x));
+                tempShape.height(Math.abs(pos.y - startPos.y));
+
+                layer.batchDraw();
+                return;
+            }
+            // --- [新增結束] ---
+
             if (activeTool === 'add-parking-gate' && tempShape) {
                 const pos = {
                     x: (e.evt.layerX - stage.x()) / stage.scaleX(),
@@ -2973,6 +3051,209 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
     }
+    // --- [新增] 框選自動連結演算法 ---
+    function getBearing(p1, p2) {
+        // Konva 的 Y 軸向下，這裡計算標準數學角度，後續再做差值處理
+        // 使用 atan2(dy, dx)
+        return Math.atan2(p2.y - p1.y, p2.x - p1.x) * (180 / Math.PI);
+    }
+
+    // --- [修正] 判斷轉向關係 (支援直行、左右轉、迴轉) ---
+    function getTurnDirection(srcLink, dstLink) {
+        if (!srcLink.waypoints || srcLink.waypoints.length < 2) return 'straight';
+        if (!dstLink.waypoints || dstLink.waypoints.length < 2) return 'straight';
+
+        // 取得來源路段「末端」的方向向量
+        const pSrcEnd = srcLink.waypoints[srcLink.waypoints.length - 1];
+        const pSrcPrev = srcLink.waypoints[srcLink.waypoints.length - 2];
+
+        // 取得目的路段「開頭」的方向向量
+        const pDstStart = dstLink.waypoints[0];
+        const pDstNext = dstLink.waypoints[1];
+
+        const srcAngle = getBearing(pSrcPrev, pSrcEnd);
+        const dstAngle = getBearing(pDstStart, pDstNext);
+
+        // 計算角度差 (-180 ~ 180)
+        let diff = dstAngle - srcAngle;
+        while (diff <= -180) diff += 360;
+        while (diff > 180) diff -= 360;
+
+        // --- 寬鬆的角度判斷策略 ---
+        // 正值代表順時針轉 (右轉)，負值代表逆時針轉 (左轉)
+
+        // 1. 右轉區間: +30 ~ +150 度 (涵蓋緩右到銳角右轉)
+        if (diff >= 30 && diff <= 150) return 'right';
+
+        // 2. 左轉區間: -30 ~ -150 度 (涵蓋緩左到銳角左轉)
+        if (diff <= -30 && diff >= -150) return 'left';
+
+        // 3. 迴轉 (U-Turn): 角度差很大 (>150 或 <-150)
+        // 在靠右行駛系統中，迴轉通常視為「極左轉」，使用靠左對齊邏輯 (內車道轉內車道)
+        if (diff > 150 || diff < -150) return 'u-turn';
+
+        // 4. 其餘視為直行 (-30 ~ +30 度)
+        return 'straight';
+    }
+
+    // --- [修正] 框選自動連結演算法 (最大化連接策略) ---
+    function autoConnectLanesInSelection(rect) {
+        console.log("AutoConnect Box:", rect);
+
+        // [設定] 連結距離閾值 (公尺) - 稍微調大以容許寬路口
+        const CONNECT_THRESHOLD = 50;
+
+        const candidates = { sources: [], dests: [] };
+
+        // 1. 空間搜尋：篩選端點在框內的 Link
+        Object.values(network.links).forEach(link => {
+            if (!link.waypoints || link.waypoints.length < 2) return;
+
+            const startPoint = link.waypoints[0];
+            const endPoint = link.waypoints[link.waypoints.length - 1];
+
+            // 檢查是否為「下游路段」(起點在框內)
+            const startInBox =
+                startPoint.x >= rect.x && startPoint.x <= rect.x + rect.width &&
+                startPoint.y >= rect.y && startPoint.y <= rect.y + rect.height;
+
+            if (startInBox) candidates.dests.push(link);
+
+            // 檢查是否為「上游路段」(終點在框內)
+            const endInBox =
+                endPoint.x >= rect.x && endPoint.x <= rect.x + rect.width &&
+                endPoint.y >= rect.y && endPoint.y <= rect.y + rect.height;
+
+            if (endInBox) candidates.sources.push(link);
+        });
+
+        console.log(`Found candidates: ${candidates.sources.length} sources, ${candidates.dests.length} destinations.`);
+
+        let connectionCount = 0;
+
+        // 2. 雙重迴圈進行配對
+        candidates.sources.forEach(srcLink => {
+            candidates.dests.forEach(dstLink => {
+                // 防止自己連自己
+                if (srcLink.id === dstLink.id) return;
+
+                // 計算端點距離
+                const pEnd = srcLink.waypoints[srcLink.waypoints.length - 1];
+                const pStart = dstLink.waypoints[0];
+                const dist = Math.sqrt(Math.pow(pEnd.x - pStart.x, 2) + Math.pow(pEnd.y - pStart.y, 2));
+
+                // 若距離符合，則判斷連結邏輯
+                if (dist <= CONNECT_THRESHOLD) {
+                    const turnDir = getTurnDirection(srcLink, dstLink);
+                    console.log(`Connecting ${srcLink.id} -> ${dstLink.id} [${turnDir}] Dist:${dist.toFixed(1)}`);
+
+                    const srcLanes = srcLink.lanes.length;
+                    const dstLanes = dstLink.lanes.length;
+
+                    // 核心邏輯：可以建立幾條連接？取兩者最小值
+                    const laneCount = Math.min(srcLanes, dstLanes);
+                    const newIds = [];
+
+                    for (let k = 0; k < laneCount; k++) {
+                        let srcIdx, dstIdx;
+
+                        // 3. 車道映射策略 (Lane Mapping Strategy)
+                        if (turnDir === 'right') {
+                            // [右轉]: 靠右對齊 (Right-Align)
+                            // 邏輯：從最外側(最大index)開始配對
+                            // 例如 3車道轉2車道： Src[2]->Dst[1], Src[1]->Dst[0]
+                            srcIdx = srcLanes - 1 - k;
+                            dstIdx = dstLanes - 1 - k;
+                        } else {
+                            // [直行 / 左轉 / 迴轉]: 靠左對齊 (Left-Align)
+                            // 邏輯：從最內側(最小index)開始配對 (符合靠右行駛規則)
+                            // 例如 3車道轉2車道： Src[0]->Dst[0], Src[1]->Dst[1]
+                            srcIdx = k;
+                            dstIdx = k;
+                        }
+
+                        // 建立連接
+                        const srcMeta = { linkId: srcLink.id, laneIndex: srcIdx, portType: 'end' };
+                        const dstMeta = { linkId: dstLink.id, laneIndex: dstIdx, portType: 'start' };
+
+                        const newConn = handleConnection(srcMeta, dstMeta);
+                        if (newConn) {
+                            newIds.push(newConn.id);
+                            connectionCount++;
+                        }
+                    }
+
+                    // 4. 建立 Connection Group 視覺效果 (綠色粗線)
+                    if (newIds.length > 0) {
+                        // 取得共用的 Node ID (這些連接應該會匯聚到同一個 Node)
+                        // 我們取最後一條建立的連接來查詢 Node ID
+                        const lastConnId = newIds[newIds.length - 1];
+                        const lastConn = network.connections[lastConnId];
+                        const commonNodeId = lastConn ? lastConn.nodeId : null;
+
+                        if (commonNodeId) {
+                            drawConnectionGroupVisual(srcLink, dstLink, newIds, commonNodeId);
+                        }
+                    }
+                }
+            });
+        });
+
+        if (connectionCount > 0) {
+            // 簡單提示
+            // alert(`Auto-connected ${connectionCount} lanes.`);
+            console.log(`Auto-connected ${connectionCount} lanes.`);
+        }
+    }
+
+
+    // --- [輔助] 繪製/更新群組視覺物件 ---
+    function drawConnectionGroupVisual(srcLink, dstLink, newIds, commonNodeId) {
+        const p1 = srcLink.waypoints[srcLink.waypoints.length - 1];
+        const p4 = dstLink.waypoints[0];
+
+        // 檢查是否已經有這組 Link 對的視覺線條
+        const existingVisual = layer.find('.group-connection-visual').find(shape => {
+            const meta = shape.getAttr('meta');
+            return meta && meta.sourceLinkId === srcLink.id && meta.destLinkId === dstLink.id;
+        });
+
+        if (!existingVisual) {
+            // 建立新的視覺線條
+            const groupLine = new Konva.Line({
+                points: [p1.x, p1.y, p4.x, p4.y],
+                stroke: 'darkgreen',
+                strokeWidth: 2,
+                hitStrokeWidth: 20, // 增加點擊範圍
+                name: 'group-connection-visual',
+                listening: true,
+            });
+
+            const newMeta = {
+                type: 'ConnectionGroup',
+                connectionIds: newIds,
+                nodeId: commonNodeId,
+                sourceLinkId: srcLink.id,
+                destLinkId: dstLink.id
+            };
+            groupLine.setAttr('meta', newMeta);
+            layer.add(groupLine);
+            groupLine.moveToBottom();
+
+            // 確保 Node 在線條之上
+            if (network.nodes[commonNodeId]) {
+                network.nodes[commonNodeId].konvaShape.moveToTop();
+            }
+        } else {
+            // 更新現有線條的 connectionIds
+            const meta = existingVisual.getAttr('meta');
+            // 合併並去重 ID
+            const updatedIds = [...new Set([...meta.connectionIds, ...newIds])];
+            meta.connectionIds = updatedIds;
+            existingVisual.setAttr('meta', meta);
+        }
+    }
+
     function handleConnection(sourceMeta, destMeta, color = 'rgba(0, 255, 0, 0.7)') {
         const sourceLink = network.links[sourceMeta.linkId];
         const destLink = network.links[destMeta.linkId];
@@ -3701,10 +3982,48 @@ document.addEventListener('DOMContentLoaded', () => {
     // 完整替換 updatePropertiesPanel 函數
     function updatePropertiesPanel(obj) {
         propertiesContent.innerHTML = '';
-        if (!obj) {
-            propertiesContent.innerHTML = '<p>Select an element on the canvas to see its properties.</p>';
+
+        // --- [新增] 針對 Connect 工具的面板顯示 ---
+        if (activeTool === 'connect-lanes' && !obj) {
+            propertiesContent.innerHTML = `
+                <div class="prop-section-header">Connection Tool Mode</div>
+                <div class="prop-group">
+                    <label style="display:flex; align-items:center; gap:8px; margin-bottom:8px; cursor:pointer;">
+                        <input type="radio" name="connMode" value="manual" ${connectMode === 'manual' ? 'checked' : ''}>
+                        <span><i class="fa-solid fa-hand-pointer"></i> Manual (Drag Ports)</span>
+                    </label>
+                    <div class="prop-hint">Drag from Red port to Blue port.</div>
+                    
+                    <label style="display:flex; align-items:center; gap:8px; margin-top:12px; cursor:pointer;">
+                        <input type="radio" name="connMode" value="box" ${connectMode === 'box' ? 'checked' : ''}>
+                        <span><i class="fa-regular fa-square-check"></i> Box Selection (Auto)</span>
+                    </label>
+                    <div class="prop-hint">Draw a box to connect all matching links inside.</div>
+                </div>
+                <hr>
+                <div class="prop-section-header">Instructions</div>
+                <p style="font-size:0.85rem; color:var(--text-muted);">
+                    <strong>Box Mode:</strong> Draws a rectangle. Any "Link End" and "Link Start" within the box that are close to each other will be automatically connected.
+                </p>
+            `;
+
+            // 綁定切換事件
+            document.querySelectorAll('input[name="connMode"]').forEach(radio => {
+                radio.addEventListener('change', (e) => {
+                    connectMode = e.target.value;
+                    // 切換游標樣式以提示使用者
+                    stage.container().style.cursor = connectMode === 'box' ? 'crosshair' : 'default';
+                });
+            });
             return;
         }
+        // --- [新增結束] ---
+
+        if (!obj) {
+            propertiesContent.innerHTML = '<p>Select an element to edit</p>';
+            return;
+        }
+
 
         // 檢查是否需要顯示「返回節點」按鈕 (用於在編輯連接線時快速跳回節點)
         let content = '';
@@ -3745,46 +4064,50 @@ document.addEventListener('DOMContentLoaded', () => {
 
         switch (obj.type) {
             case 'Link':
-                // --- SECTION: GENERAL ---
-                content += `<div class="prop-section-header">General</div>`;
+                // 定義分頁按鈕 HTML
+                const getLinkTabClass = (tabName) => lastActiveLinkTab === tabName ? 'active' : '';
+                const getLinkContentClass = (tabName) => lastActiveLinkTab === tabName ? 'active' : '';
 
-                // Name
+                content += `
+                <div class="prop-tab-header">
+                    <button class="prop-tab-btn ${getLinkTabClass('tab-link-general')}" data-target="tab-link-general">
+                        <i class="fa-solid fa-road"></i> General
+                    </button>
+                    <button class="prop-tab-btn ${getLinkTabClass('tab-link-conns')}" data-target="tab-link-conns">
+                        <i class="fa-solid fa-link"></i> Connections
+                    </button>
+                </div>`;
+
+                // --- TAB 1: GENERAL (原有的屬性設定) ---
+                content += `<div id="tab-link-general" class="prop-tab-content ${getLinkContentClass('tab-link-general')}">`;
+
+                // ... (原有的 General 內容) ...
+                content += `<div class="prop-section-header">General</div>`;
                 content += `<div class="prop-row">
                                 <span class="prop-label">Name</span>
                                 <input type="text" id="prop-link-name" class="prop-input" value="${obj.name || obj.id}">
                             </div>`;
-
-                // ID (Read-only)
                 content += `<div class="prop-row">
                                 <span class="prop-label">ID</span>
                                 <input type="text" class="prop-input" value="${obj.id}" disabled>
                             </div>`;
 
-                // --- SECTION: GEOMETRY ---
                 content += `<div class="prop-section-header">Geometry</div>`;
-
-                // Length (Read-only)
                 content += `<div class="prop-row">
                                 <span class="prop-label">Length</span>
                                 <span class="prop-value-text">${getPolylineLength(obj.waypoints).toFixed(2)} m</span>
                             </div>`;
-
-                // Total Width (Read-only)
                 content += `<div class="prop-row">
                                 <span class="prop-label">Total Width</span>
                                 <span class="prop-value-text">${getLinkTotalWidth(obj).toFixed(2)} m</span>
                             </div>`;
 
-                // --- SECTION: LANES ---
                 content += `<div class="prop-section-header">Lanes Configuration</div>`;
-
-                // Lane Count
                 content += `<div class="prop-row">
                                 <span class="prop-label">Count</span>
                                 <input type="number" id="prop-lanes" class="prop-input" value="${obj.lanes.length}" min="1" max="10">
                             </div>`;
 
-                // Lane Widths Grid
                 content += `<label class="prop-label" style="font-size:0.75rem; margin-top:8px; display:block;">Individual Widths (m)</label>`;
                 content += `<div class="prop-grid-container" id="lane-widths-container">`;
                 obj.lanes.forEach((lane, index) => {
@@ -3795,11 +4118,54 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
                 content += `</div>`;
 
-                // Hint
                 content += `<div class="prop-hint">
                                 <i class="fa-solid fa-circle-info"></i> 
                                 <strong>Tip:</strong> Alt + Left Click on the road to add a shaping point.
                             </div>`;
+
+                content += `</div>`; // End Tab 1
+
+
+                // --- TAB 2: CONNECTIONS (連結清單) ---
+                content += `<div id="tab-link-conns" class="prop-tab-content ${getLinkContentClass('tab-link-conns')}">`;
+                content += `<div class="prop-section-header">Outgoing Connections</div>`;
+
+                // 搜尋所有以此 Link 為起點的連接
+                const outgoingConns = Object.values(network.connections)
+                    .filter(c => c.sourceLinkId === obj.id)
+                    .sort((a, b) => a.sourceLaneIndex - b.sourceLaneIndex || a.destLaneIndex - b.destLaneIndex);
+
+                if (outgoingConns.length > 0) {
+                    content += `<div class="conn-list-container" style="display:flex; flex-direction:column; gap:8px;">`;
+                    outgoingConns.forEach(conn => {
+                        const destLink = network.links[conn.destLinkId];
+                        const destName = destLink ? (destLink.name || destLink.id) : conn.destLinkId;
+
+                        // [修正] 加入 class "conn-list-item" 與 data-conn-id，用於滑鼠移入高亮
+                        content += `
+                        <div class="prop-card conn-list-item" data-conn-id="${conn.id}" style="padding: 8px; border-left: 3px solid #3b82f6; cursor:default;">
+                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                                <div style="font-size:0.85rem; color:var(--text-main);">
+                                    <span style="font-weight:bold; color:#2563eb;">Lane ${conn.sourceLaneIndex + 1}</span>
+                                    <i class="fa-solid fa-arrow-right" style="margin:0 6px; color:#94a3b8; font-size:0.75rem;"></i>
+                                    <span>${destName}</span>
+                                    <span style="font-size:0.75rem; color:#64748b; background:#f1f5f9; padding:1px 4px; border-radius:3px;">L${conn.destLaneIndex + 1}</span>
+                                </div>
+                                <button class="btn-mini btn-del-single-conn" data-id="${conn.id}" title="Remove Connection" style="color:#ef4444; border:1px solid #fecaca; background:#fff;">
+                                    <i class="fa-solid fa-xmark"></i>
+                                </button>
+                            </div>
+                        </div>`;
+                    });
+                    content += `</div>`;
+                } else {
+                    content += `<div class="prop-hint" style="text-align:center; padding:20px 0;">
+                                    <i class="fa-solid fa-link-slash" style="font-size:1.5rem; color:#cbd5e1; margin-bottom:8px;"></i><br>
+                                    No outgoing connections.
+                                </div>`;
+                }
+
+                content += `</div>`; // End Tab 2
                 break;
 
             case 'Node':
@@ -4098,13 +4464,13 @@ document.addEventListener('DOMContentLoaded', () => {
             case 'RoadSign':
                 // --- SECTION: GENERAL ---
                 content += `<div class="prop-section-header">General</div>`;
-                
+
                 // ID (唯讀)
                 content += `<div class="prop-row">
                                 <span class="prop-label">ID</span>
                                 <input type="text" class="prop-input" value="${obj.id}" disabled>
                             </div>`;
-                
+
                 // Link ID (唯讀)
                 content += `<div class="prop-row">
                                 <span class="prop-label">Parent Link</span>
@@ -5221,6 +5587,148 @@ document.addEventListener('DOMContentLoaded', () => {
                         layer.batchDraw();
                         updatePropertiesPanel(obj);
                     }
+                });
+            });
+
+            // 1. [新增] 分頁切換邏輯
+            const tabBtns = document.querySelectorAll('.prop-tab-btn');
+            const tabContents = document.querySelectorAll('.prop-tab-content');
+
+            tabBtns.forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    // 移除所有 active
+                    tabBtns.forEach(b => b.classList.remove('active'));
+                    tabContents.forEach(c => c.classList.remove('active'));
+
+                    // 啟用當前
+                    const targetId = btn.dataset.target;
+                    btn.classList.add('active');
+                    const targetContent = document.getElementById(targetId);
+                    if (targetContent) targetContent.classList.add('active');
+
+                    // 記憶狀態
+                    lastActiveLinkTab = targetId;
+                });
+            });
+
+            // 2. [新增] 刪除單一連接線的按鈕
+            document.querySelectorAll('.btn-del-single-conn').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const connId = btn.dataset.id;
+                    const conn = network.connections[connId];
+
+                    if (conn) {
+                        deleteConnection(connId);
+                        layer.batchDraw();
+                        updatePropertiesPanel(obj);
+                    }
+                });
+            });
+
+            // --- [新增] 車道高亮輔助函數 ---
+            function clearLaneHighlights() {
+                layer.find('.lane-highlight').forEach(shape => shape.destroy());
+                layer.batchDraw();
+            }
+
+            function highlightLane(link, laneIndex) {
+                if (!link || !link.waypoints || link.waypoints.length < 2) return;
+
+                // 1. 計算該車道的左右邊界偏移量
+                const totalWidth = getLinkTotalWidth(link);
+                let cumulativeWidth = 0;
+                for (let i = 0; i < laneIndex; i++) {
+                    cumulativeWidth += link.lanes[i].width;
+                }
+                const currentLaneWidth = link.lanes[laneIndex].width;
+
+                // 計算相對於路中心的偏移 (Normal 指向左側，負值為右側)
+                // Left Boundary (Lane Outer edge)
+                const offsetLeft = (cumulativeWidth + currentLaneWidth) - totalWidth / 2;
+                // Right Boundary (Lane Inner edge)
+                const offsetRight = cumulativeWidth - totalWidth / 2;
+
+                const waypoints = link.waypoints;
+                const polyPointsLeft = [];
+                const polyPointsRight = [];
+
+                // 2. 遍歷路徑點生成幾何形狀
+                for (let i = 0; i < waypoints.length; i++) {
+                    const p_curr = waypoints[i];
+                    let normal;
+
+                    if (i === 0) {
+                        const p_next = waypoints[i + 1];
+                        normal = getNormal(normalize(getVector(p_curr, p_next)));
+                    } else if (i === waypoints.length - 1) {
+                        const p_prev = waypoints[i - 1];
+                        normal = getNormal(normalize(getVector(p_prev, p_curr)));
+                    } else {
+                        const p_prev = waypoints[i - 1];
+                        const p_next = waypoints[i + 1];
+                        normal = getMiterNormal(p_prev, p_curr, p_next);
+                    }
+
+                    polyPointsLeft.push(add(p_curr, scale(normal, offsetLeft)));
+                    polyPointsRight.push(add(p_curr, scale(normal, offsetRight)));
+                }
+
+                // 3. 繪製紅色高亮區域
+                const laneShape = new Konva.Shape({
+                    sceneFunc: (ctx, shape) => {
+                        ctx.beginPath();
+                        if (polyPointsLeft.length < 2) return;
+
+                        // 順向繪製左邊界
+                        ctx.moveTo(polyPointsLeft[0].x, polyPointsLeft[0].y);
+                        for (let i = 1; i < polyPointsLeft.length; i++) {
+                            ctx.lineTo(polyPointsLeft[i].x, polyPointsLeft[i].y);
+                        }
+                        // 逆向繪製右邊界以閉合多邊形
+                        for (let i = polyPointsRight.length - 1; i >= 0; i--) {
+                            ctx.lineTo(polyPointsRight[i].x, polyPointsRight[i].y);
+                        }
+                        ctx.closePath();
+                        ctx.fillStrokeShape(shape);
+                    },
+                    fill: 'rgba(255, 0, 43, 0.67)', // 與 Node 高亮一致的紅色
+                    name: 'lane-highlight',
+                    listening: false
+                });
+
+                layer.add(laneShape);
+                laneShape.moveToTop(); // 確保蓋在路面上
+            }
+
+            // --- [新增] 清單滑鼠懸停事件 ---
+            document.querySelectorAll('.conn-list-item').forEach(item => {
+                item.addEventListener('mouseenter', (e) => {
+                    // 防止冒泡
+                    e.stopPropagation();
+
+                    const connId = item.dataset.connId;
+                    const conn = network.connections[connId];
+                    if (conn) {
+                        const srcLink = network.links[conn.sourceLinkId];
+                        const dstLink = network.links[conn.destLinkId];
+
+                        clearLaneHighlights(); // 清除舊的
+
+                        // 高亮來源車道
+                        if (srcLink) highlightLane(srcLink, conn.sourceLaneIndex);
+                        // 高亮目標車道
+                        if (dstLink) highlightLane(dstLink, conn.destLaneIndex);
+
+                        layer.batchDraw();
+
+                        // 視覺回饋：讓卡片背景變深
+                        item.style.backgroundColor = '#eef2ff';
+                    }
+                });
+
+                item.addEventListener('mouseleave', (e) => {
+                    clearLaneHighlights();
+                    item.style.backgroundColor = ''; // 恢復背景
                 });
             });
         }
@@ -7220,7 +7728,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             // --- 修正開始：RoadSigns 讀取邏輯 ---
-            
+
             // 1. 嘗試從 Segments -> 第一個 Segment 中尋找 RoadSigns (符合目前的 Export 結構)
             let signsContainer = null;
             const segsContainer = getChildrenByLocalName(linkEl, "Segments")[0];
@@ -7244,7 +7752,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (signNode.nodeType !== 1) return;
 
                     const pos = parseFloat(getChildValue(signNode, "position"));
-                    
+
                     // 建立物件
                     const newSign = createRoadSign(newLink, pos);
                     // 雖然 XML 沒存 ID，但 createRoadSign 會自動產 ID，這裡確保計數器同步
@@ -7260,7 +7768,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     } else if (tagName === 'NoSpeedLimitSign') {
                         newSign.signType = 'end';
                     }
-                    
+
                     // 確保視覺位置正確
                     drawRoadSign(newSign);
                 });
