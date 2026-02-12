@@ -35,6 +35,13 @@ document.addEventListener('DOMContentLoaded', () => {
         parkingGates: {}, // <--- 新增此行
         roadMarkings: {}, // <--- 請務必在全域變數這裡加入這一行
     };
+    // --- 新增：Link 建立設定 ---
+    let linkCreationSettings = {
+        isTwoWay: false,       // 是否為雙向
+        drivingSide: 'right',  // 'right' (RHT) | 'left' (LHT)
+        lanesPerDir: 2,        // 單向車道數
+        medianWidth: 2.0       // [新增] 分隔島寬度 (預設 2.0 米)
+    };
     let idCounter = 0;
     let selectedObject = null;
     let currentModalOrigin = null;
@@ -497,6 +504,38 @@ document.addEventListener('DOMContentLoaded', () => {
         return destination;
     }
     // --- GEOMETRY & DRAWING HELPERS ---
+    /**
+     * 根據中心線產生偏移後的平行線座標
+     * @param {Array<{x, y}>} points - 原始中心線座標
+     * @param {number} offset - 偏移量 (+ 為法向量方向, - 為反向)
+     * @returns {Array<{x, y}>} - 偏移後的座標陣列
+     */
+    function getOffsetPolyline(points, offset) {
+        if (points.length < 2) return [];
+
+        const newPoints = [];
+        for (let i = 0; i < points.length; i++) {
+            const p_curr = points[i];
+            let normal;
+
+            // 計算頂點法向量 (與 drawLink 中的邏輯一致)
+            if (i === 0) {
+                const p_next = points[i + 1];
+                normal = getNormal(normalize(getVector(p_curr, p_next)));
+            } else if (i === points.length - 1) {
+                const p_prev = points[i - 1];
+                normal = getNormal(normalize(getVector(p_prev, p_curr)));
+            } else {
+                const p_prev = points[i - 1];
+                const p_next = points[i + 1];
+                normal = getMiterNormal(p_prev, p_curr, p_next);
+            }
+
+            // 根據法向量與偏移量計算新座標
+            newPoints.push(add(p_curr, scale(normal, offset)));
+        }
+        return newPoints;
+    }
 
     function getVector(p1, p2) { return { x: p2.x - p1.x, y: p2.y - p1.y }; }
     function vecLen(v) { return Math.sqrt(v.x * v.x + v.y * v.y); }
@@ -1832,14 +1871,68 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 if (activeTool === 'add-link') {
                     if (finalPoints.length > 1) {
-                        const newLink = createLink(finalPoints);
-                        selectObject(newLink);
-                        updateAllOverpasses(); // <--- 新增呼叫
+
+                        // --- [修改] 雙向道路生成邏輯 (含顯式記憶) ---
+                        if (linkCreationSettings.isTwoWay) {
+                            const lanes = linkCreationSettings.lanesPerDir;
+                            const roadWidth = lanes * LANE_WIDTH;
+                            const median = linkCreationSettings.medianWidth;
+
+                            // 計算從中心線偏移的距離：(單邊路寬一半) + (分隔島一半)
+                            const offsetDist = (roadWidth / 2) + (median / 2);
+
+                            let forwardOffset, backwardOffset;
+
+                            if (linkCreationSettings.drivingSide === 'right') {
+                                forwardOffset = offsetDist;
+                                backwardOffset = -offsetDist;
+                            } else {
+                                forwardOffset = -offsetDist;
+                                backwardOffset = offsetDist;
+                            }
+
+                            // 1. 建立順向 Link
+                            const forwardPoints = getOffsetPolyline(finalPoints, forwardOffset);
+                            const linkF = createLink(forwardPoints, lanes);
+                            linkF.name = `Link_${idCounter} (F)`;
+
+                            // 2. 建立反向 Link (需反轉座標)
+                            let backwardPoints = getOffsetPolyline(finalPoints, backwardOffset);
+                            backwardPoints.reverse();
+                            const linkB = createLink(backwardPoints, lanes);
+                            linkB.name = `Link_${idCounter} (B)`;
+
+                            // --- [關鍵] 顯式記憶：將配對關係與分隔島寬度寫入物件 ---
+                            // 我們新增一個自定義屬性 pairInfo 來儲存這些資訊
+                            linkF.pairInfo = {
+                                pairId: linkB.id,
+                                type: 'forward',
+                                medianWidth: median
+                            };
+
+                            linkB.pairInfo = {
+                                pairId: linkF.id,
+                                type: 'backward',
+                                medianWidth: median
+                            };
+
+                            selectObject(linkF);
+
+                        } else {
+                            // 單向模式
+                            const newLink = createLink(finalPoints, linkCreationSettings.lanesPerDir);
+                            selectObject(newLink);
+                        }
+                        // --- [修改結束] ---
+
+                        updateAllOverpasses();
                     }
                     if (tempShape) tempShape.destroy();
                     tempShape = null;
                     setTool('select');
+
                 } else if (activeTool === 'measure') {
+                    // ... (保持不變)
                     if (finalPoints.length > 1) {
                         const newMeasurement = createMeasurement(finalPoints);
                         selectObject(newMeasurement);
@@ -4018,7 +4111,111 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         // --- [新增結束] ---
+        // --- [新增] 針對 Add Link 工具的面板顯示 ---
+        if (activeTool === 'add-link' && !obj) {
+            // 控制分隔島輸入框顯示的 CSS display
+            const twoWayDisplay = linkCreationSettings.isTwoWay ? 'block' : 'none';
 
+            propertiesContent.innerHTML = `
+            <div class="prop-section-header">Link Tool Settings</div>
+            
+            <!-- 1. Road Type -->
+            <div class="prop-group">
+                <label class="prop-label">Directionality</label>
+                <div style="display:flex; gap:10px; margin-top:5px;">
+                    <label style="cursor:pointer; display:flex; align-items:center; gap:5px;">
+                        <input type="radio" name="linkType" value="one-way" ${!linkCreationSettings.isTwoWay ? 'checked' : ''}>
+                        One-way
+                    </label>
+                    <label style="cursor:pointer; display:flex; align-items:center; gap:5px;">
+                        <input type="radio" name="linkType" value="two-way" ${linkCreationSettings.isTwoWay ? 'checked' : ''}>
+                        Two-way
+                    </label>
+                </div>
+            </div>
+
+            <!-- 2. Driving Side (僅在雙向模式顯示) -->
+            <div class="prop-group" id="driving-side-group" style="display: ${twoWayDisplay};">
+                <label class="prop-label">Driving Side</label>
+                <div style="display:flex; gap:10px; margin-top:5px;">
+                    <label style="cursor:pointer; display:flex; align-items:center; gap:5px;">
+                        <input type="radio" name="driveSide" value="right" ${linkCreationSettings.drivingSide === 'right' ? 'checked' : ''}>
+                        Right-Hand (RHT)
+                    </label>
+                    <label style="cursor:pointer; display:flex; align-items:center; gap:5px;">
+                        <input type="radio" name="driveSide" value="left" ${linkCreationSettings.drivingSide === 'left' ? 'checked' : ''}>
+                        Left-Hand (LHT)
+                    </label>
+                </div>
+            </div>
+
+            <!-- 3. Median Width (僅在雙向模式顯示) -->
+            <div class="prop-group" id="median-width-group" style="display: ${twoWayDisplay};">
+                <label class="prop-label">Median Width (m)</label>
+                <input type="number" id="creation-median" class="prop-input" value="${linkCreationSettings.medianWidth}" min="0" step="0.5">
+            </div>
+
+            <hr>
+
+            <!-- 4. Lanes Config -->
+            <div class="prop-group">
+                <label class="prop-label">Lanes per Direction</label>
+                <input type="number" id="creation-lanes" class="prop-input" value="${linkCreationSettings.lanesPerDir}" min="1" max="10">
+            </div>
+
+            <div class="prop-hint">
+                <i class="fa-solid fa-circle-info"></i> 
+                <strong>Two-way Mode:</strong> Creates two linked roads separated by the median width.
+            </div>
+        `;
+
+            // --- 綁定事件 ---
+
+            // 監聽單/雙向切換
+            document.querySelectorAll('input[name="linkType"]').forEach(radio => {
+                radio.addEventListener('change', (e) => {
+                    linkCreationSettings.isTwoWay = (e.target.value === 'two-way');
+                    const display = linkCreationSettings.isTwoWay ? 'block' : 'none';
+
+                    // 控制 Driving Side 與 Median Width 的顯示
+                    const sideGroup = document.getElementById('driving-side-group');
+                    const medianGroup = document.getElementById('median-width-group');
+                    if (sideGroup) sideGroup.style.display = display;
+                    if (medianGroup) medianGroup.style.display = display;
+                });
+            });
+
+            // 監聽靠左/靠右
+            document.querySelectorAll('input[name="driveSide"]').forEach(radio => {
+                radio.addEventListener('change', (e) => {
+                    linkCreationSettings.drivingSide = e.target.value;
+                });
+            });
+
+            // [新增] 監聽分隔島寬度
+            const medianInput = document.getElementById('creation-median');
+            if (medianInput) {
+                medianInput.addEventListener('change', (e) => {
+                    let val = parseFloat(e.target.value);
+                    if (isNaN(val) || val < 0) val = 0;
+                    linkCreationSettings.medianWidth = val;
+                    e.target.value = val;
+                });
+            }
+
+            // 監聽車道數
+            const laneInput = document.getElementById('creation-lanes');
+            if (laneInput) {
+                laneInput.addEventListener('change', (e) => {
+                    let val = parseInt(e.target.value) || 1;
+                    if (val < 1) val = 1;
+                    linkCreationSettings.lanesPerDir = val;
+                    e.target.value = val;
+                });
+            }
+
+            return;
+        }
         if (!obj) {
             propertiesContent.innerHTML = '<p>Select an element to edit</p>';
             return;
@@ -4078,10 +4275,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     </button>
                 </div>`;
 
-                // --- TAB 1: GENERAL (原有的屬性設定) ---
+                // --- TAB 1: GENERAL ---
+                // [注意] 這裡是 content 字串的開始
                 content += `<div id="tab-link-general" class="prop-tab-content ${getLinkContentClass('tab-link-general')}">`;
 
-                // ... (原有的 General 內容) ...
+                // 1. 基本資訊 (Name/ID)
                 content += `<div class="prop-section-header">General</div>`;
                 content += `<div class="prop-row">
                                 <span class="prop-label">Name</span>
@@ -4092,6 +4290,38 @@ document.addEventListener('DOMContentLoaded', () => {
                                 <input type="text" class="prop-input" value="${obj.id}" disabled>
                             </div>`;
 
+                // ============================================================
+                // ★★★ [修正重點] Two-way Settings 必須插在這裡 (TAB 內容內部) ★★★
+                // ============================================================
+                if (obj.pairInfo && obj.pairInfo.pairId) {
+                    const pairLink = network.links[obj.pairInfo.pairId];
+                    if (pairLink) {
+                        content += `<div class="prop-section-header" style="color:#2563eb; margin-top:10px;">Two-way Settings</div>`;
+                        
+                        content += `<div class="prop-row">
+                                        <span class="prop-label">Paired with</span>
+                                        <span style="font-size:0.8rem; color:#64748b;">${pairLink.name || pairLink.id}</span>
+                                    </div>`;
+
+                        content += `<div class="prop-row">
+                                        <span class="prop-label">Median (m)</span>
+                                        <input type="number" id="prop-edit-median" class="prop-input" 
+                                               value="${obj.pairInfo.medianWidth}" step="0.5" min="0">
+                                    </div>`;
+                        
+                        content += `<div class="prop-hint">
+                                        Adjusting median width moves both roads.
+                                    </div>`;
+                    } else {
+                         // 如果配對的路找不到 (可能被刪除)
+                        content += `<div class="prop-hint" style="color:orange; margin-top:10px;">
+                                        <i class="fa-solid fa-link-slash"></i> Paired link missing.
+                                    </div>`;
+                    }
+                }
+                // ============================================================
+
+                // 2. 幾何資訊 (Geometry)
                 content += `<div class="prop-section-header">Geometry</div>`;
                 content += `<div class="prop-row">
                                 <span class="prop-label">Length</span>
@@ -4102,6 +4332,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 <span class="prop-value-text">${getLinkTotalWidth(obj).toFixed(2)} m</span>
                             </div>`;
 
+                // 3. 車道配置
                 content += `<div class="prop-section-header">Lanes Configuration</div>`;
                 content += `<div class="prop-row">
                                 <span class="prop-label">Count</span>
@@ -4118,12 +4349,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
                 content += `</div>`;
 
-                content += `<div class="prop-hint">
-                                <i class="fa-solid fa-circle-info"></i> 
-                                <strong>Tip:</strong> Alt + Left Click on the road to add a shaping point.
-                            </div>`;
-
-                content += `</div>`; // End Tab 1
+                content += `</div>`; // [注意] 這是 id="tab-link-general" 的結束標籤
 
 
                 // --- TAB 2: CONNECTIONS (連結清單) ---
@@ -4825,6 +5051,36 @@ document.addEventListener('DOMContentLoaded', () => {
                                 </select>
                             </div>`;
 
+                // --- [新增] 雙向道路設定 (若存在配對資訊) ---
+                if (obj.pairInfo && obj.pairInfo.pairId) {
+                    const pairLink = network.links[obj.pairInfo.pairId];
+                    if (pairLink) {
+                        content += `<div class="prop-section-header">Two-way Settings</div>`;
+
+                        // 顯示配對狀態
+                        content += `<div class="prop-row">
+                                    <span class="prop-label">Paired Link</span>
+                                    <input type="text" class="prop-input" value="${pairLink.name || pairLink.id}" disabled style="color:#666;">
+                                </div>`;
+
+                        // 分隔島寬度輸入框
+                        content += `<div class="prop-row">
+                                    <span class="prop-label">Median Width (m)</span>
+                                    <input type="number" id="prop-edit-median" class="prop-input" 
+                                           value="${obj.pairInfo.medianWidth}" step="0.5" min="0">
+                                </div>`;
+
+                        content += `<div class="prop-hint">
+                                    Changing this will move both roads relative to their center axis.
+                                </div>`;
+                    } else {
+                        // 若配對的路被刪除了，顯示警告
+                        content += `<div class="prop-hint" style="color:orange;">
+                                    <i class="fa-solid fa-link-slash"></i> Paired link not found (Broken Link).
+                                </div>`;
+                    }
+                }
+                // --- [新增結束] ---
                 // --- SECTION: GEOMETRY ---
                 content += `<div class="prop-section-header">Geometry</div>`;
 
@@ -5624,6 +5880,18 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 });
             });
+
+            // --- [新增] 監聽分隔島寬度修改 ---
+            const medianInput = document.getElementById('prop-edit-median');
+            if (medianInput) {
+                medianInput.addEventListener('change', (e) => {
+                    const newMedianWidth = parseFloat(e.target.value);
+                    if (isNaN(newMedianWidth) || newMedianWidth < 0) return;
+
+                    // 呼叫幾何更新函數
+                    updatePairedLinksGeometry(obj, newMedianWidth);
+                });
+            }
 
             // --- [新增] 車道高亮輔助函數 ---
             function clearLaneHighlights() {
@@ -7647,6 +7915,7 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         const xmlLinkIdMap = new Map();
+        const pendingPairs = new Map();
         const xmlNodeIdMap = new Map();
         const xmlConnIdMap = new Map();
         const xmlNodeDataMap = new Map();
@@ -7727,6 +7996,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 newLink.name = xmlName;
             }
 
+            const pairXmlId = getChildValue(linkEl, "pairLinkId");
+            const medianWidthStr = getChildValue(linkEl, "medianWidth");
+
+            if (pairXmlId && medianWidthStr) {
+                pendingPairs.set(newLink.id, {
+                    pairXmlId: pairXmlId,
+                    medianWidth: parseFloat(medianWidthStr)
+                });
+            }
+
             // --- 修正開始：RoadSigns 讀取邏輯 ---
 
             // 1. 嘗試從 Segments -> 第一個 Segment 中尋找 RoadSigns (符合目前的 Export 結構)
@@ -7774,6 +8053,19 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             }
             // --- 修正結束 ---
+        });
+
+        pendingPairs.forEach((data, currentLinkId) => {
+            const currentLink = network.links[currentLinkId];
+            const pairInternalId = xmlLinkIdMap.get(data.pairXmlId);
+
+            if (currentLink && pairInternalId && network.links[pairInternalId]) {
+                currentLink.pairInfo = {
+                    pairId: pairInternalId,
+                    medianWidth: data.medianWidth,
+                    type: 'linked'
+                };
+            }
         });
 
         // --- 2. Nodes ---
@@ -8591,6 +8883,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
             xml += '        <tm:Waypoints>\n';
             link.waypoints.forEach((wp, index) => { xml += `          <tm:Waypoint><tm:id>${index}</tm:id><tm:x>${wp.x.toFixed(4)}</tm:x><tm:y>${(wp.y * C_SYSTEM_Y_INVERT).toFixed(4)}</tm:y></tm:Waypoint>\n`; });
+            if (link.pairInfo) {
+                const pairXmlId = linkIdMap.get(link.pairInfo.pairId);
+                if (pairXmlId !== undefined) {
+                    xml += `        <tm:pairLinkId>${pairXmlId}</tm:pairLinkId>\n`;
+                    xml += `        <tm:medianWidth>${link.pairInfo.medianWidth}</tm:medianWidth>\n`;
+                }
+            }
+
             xml += '        </tm:Waypoints>\n      </tm:Link>\n';
         }
         xml += '    </tm:Links>\n';
@@ -9359,6 +9659,104 @@ document.addEventListener('DOMContentLoaded', () => {
         delete network.pushpins[id];
     }
 
+
+    /**
+     * 更新雙向道路的幾何位置以符合新的分隔島寬度
+     * @param {Object} linkA - 當前選取的 Link 物件
+     * @param {number} newMedianWidth - 新的分隔島寬度
+     */
+    function updatePairedLinksGeometry(linkA, newMedianWidth) {
+        if (!linkA.pairInfo || !linkA.pairInfo.pairId) return;
+
+        const linkB = network.links[linkA.pairInfo.pairId];
+        if (!linkB) return; // 配對路段已遺失
+
+        // 1. 驗證節點數量是否一致 (防止使用者手動刪減過節點導致無法配對)
+        if (linkA.waypoints.length !== linkB.waypoints.length) {
+            alert("Cannot update geometry: The two links have different number of waypoints (likely edited manually).");
+            return;
+        }
+
+        // 2. 計算目前的「虛擬中心線 (Center Line)」
+        // 邏輯：取 A 的點 和 B (反轉後) 的點的平均值
+        const centerLinePoints = [];
+        const pointsA = linkA.waypoints;
+        const pointsB = [...linkB.waypoints].reverse(); // B 是反向的，需轉正來對齊 A
+
+        for (let i = 0; i < pointsA.length; i++) {
+            const pA = pointsA[i];
+            const pB = pointsB[i];
+            centerLinePoints.push({
+                x: (pA.x + pB.x) / 2,
+                y: (pA.y + pB.y) / 2
+            });
+        }
+
+        // 3. 計算新的偏移量
+        // 假設兩條路寬度可能不同，我們取各自的寬度
+        const widthA = getLinkTotalWidth(linkA);
+        const widthB = getLinkTotalWidth(linkB);
+
+        // 我們需要判斷 Link A 是在中心線的左邊還是右邊
+        // 簡單方法：取第一個點的法向量，看 A 在中心的哪一側
+        // 但更穩健的方法是讀取我們 creation 時可能有存的 side，或者直接用向量判斷。
+        // 這裡使用動態判斷：計算 A 到 Center 的向量，與 Center 的法向量做點積
+
+        // 取得中心線第一個路段的法向量 (指向右側)
+        if (centerLinePoints.length < 2) return;
+        const vecCenter = normalize(getVector(centerLinePoints[0], centerLinePoints[1]));
+        const normalCenter = getNormal(vecCenter); // 指向右側
+
+        // 向量 Center -> A
+        const vecToA = getVector(centerLinePoints[0], pointsA[0]);
+
+        // 點積 > 0 表示 A 在右側， < 0 表示 A 在左側
+        const dotProd = vecToA.x * normalCenter.x + vecToA.y * normalCenter.y;
+        const isARight = dotProd > 0;
+
+        // 計算偏移距離 (半路寬 + 半分隔島)
+        const distA = (widthA / 2) + (newMedianWidth / 2);
+        const distB = (widthB / 2) + (newMedianWidth / 2);
+
+        let offsetA = isARight ? distA : -distA;
+        let offsetB = isARight ? -distB : distB; // B 在 A 的對面
+
+        // 4. 生成新座標
+        const newPointsA = getOffsetPolyline(centerLinePoints, offsetA);
+        let newPointsB = getOffsetPolyline(centerLinePoints, offsetB);
+
+        // B 的座標需要再次反轉回反向
+        newPointsB.reverse();
+
+        // 5. 套用更新
+        linkA.waypoints = newPointsA;
+        linkB.waypoints = newPointsB;
+
+        // 6. 更新雙方的 metadata
+        linkA.pairInfo.medianWidth = newMedianWidth;
+        linkB.pairInfo.medianWidth = newMedianWidth;
+
+        // 7. 重繪與連動更新
+        drawLink(linkA);
+        drawLink(linkB);
+
+        // 更新連接線、偵測器、控制點等
+        [linkA, linkB].forEach(l => {
+            updateConnectionEndpoints(l.id);
+            updateAllDetectorsOnLink(l.id);
+            updateFlowPointsOnLink(l.id);
+            updateRoadSignsOnLink(l.id);
+        });
+
+        updateAllOverpasses();
+
+        // 如果目前有點選物件，重繪控制點
+        if (selectedObject && (selectedObject.id === linkA.id || selectedObject.id === linkB.id)) {
+            drawWaypointHandles(selectedObject);
+        }
+
+        layer.batchDraw();
+    }
 
     // --- START: NEW OVERPASS MANAGEMENT FUNCTIONS ---
 
