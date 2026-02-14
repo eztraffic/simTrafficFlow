@@ -2417,6 +2417,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // 4. 執行初次翻譯
         I18N.setLang(initLang);
+
+        // [新增] 綁定 OSM Import 按鈕
+        const osmBtn = document.getElementById('osmImportBtn'); // 需在 main.html 增加此按鈕
+        if (osmBtn) {
+            osmBtn.addEventListener('click', () => {
+                // 檢查 OSMImporter 是否已載入
+                if (typeof OSMImporter !== 'undefined') {
+                    OSMImporter.open();
+                } else {
+                    alert("OSM Importer module not found. Please check script tags.");
+                }
+            });
+        }
     }
 
     // --- END OF CORRECTED `init` FUNCTION ---
@@ -4297,7 +4310,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     const pairLink = network.links[obj.pairInfo.pairId];
                     if (pairLink) {
                         content += `<div class="prop-section-header" style="color:#2563eb; margin-top:10px;">Two-way Settings</div>`;
-                        
+
                         content += `<div class="prop-row">
                                         <span class="prop-label">Paired with</span>
                                         <span style="font-size:0.8rem; color:#64748b;">${pairLink.name || pairLink.id}</span>
@@ -4308,12 +4321,12 @@ document.addEventListener('DOMContentLoaded', () => {
                                         <input type="number" id="prop-edit-median" class="prop-input" 
                                                value="${obj.pairInfo.medianWidth}" step="0.5" min="0">
                                     </div>`;
-                        
+
                         content += `<div class="prop-hint">
                                         Adjusting median width moves both roads.
                                     </div>`;
                     } else {
-                         // 如果配對的路找不到 (可能被刪除)
+                        // 如果配對的路找不到 (可能被刪除)
                         content += `<div class="prop-hint" style="color:orange; margin-top:10px;">
                                         <i class="fa-solid fa-link-slash"></i> Paired link missing.
                                     </div>`;
@@ -10056,4 +10069,116 @@ document.addEventListener('DOMContentLoaded', () => {
         enumerable: true,
         configurable: true
     });
+
+    // ---------------------------------------------------------
+    // [新增] OSM 匯入回調處理
+    // 這是 osm_importer.js 執行完成後呼叫的函數
+    // ---------------------------------------------------------
+    window.handleOSMImportCallback = function (data) {
+        const { imageData, widthMeters, heightMeters, bounds } = data;
+
+        // 1. 如果已有背景，先刪除舊的
+        if (network.background) {
+            if (!confirm(I18N.t("Current background will be replaced. Continue?"))) return;
+            deleteBackground();
+        }
+
+        // 2. 建立 Background 物件
+        // 關鍵：將圖片放置在以原點 (0,0) 為中心的位置，方便編輯
+        // 注意：這裡的 widthMeters 和 heightMeters 是真實世界的距離
+        // 當我們將此圖片設為背景並設定其寬高為 meter 值時，畫布比例尺即自動校正為 1 unit = 1 meter
+        const startX = -widthMeters / 2;
+        const startY = -heightMeters / 2;
+
+        const id = 'background_osm';
+
+        // 建立資料模型
+        const bgObject = {
+            id: id,
+            type: 'Background',
+            x: startX,
+            y: startY,
+            width: widthMeters,
+            height: heightMeters,
+            scale: 1.0,           // 比例尺為 1 (因為我們直接用公尺定義大小)
+            opacity: 100,         // 預設不透明
+            locked: true,         // 預設鎖定，避免誤操作
+            imageDataUrl: imageData, // [重點] 這裡儲存了 Base64，exportXML 會自動讀取此屬性並儲存
+            imageType: 'PNG',
+            konvaGroup: null,
+            konvaImage: null,
+            konvaBorder: null
+        };
+
+        // 3. 建立 Konva 視覺物件
+        const group = new Konva.Group({
+            id: id,
+            x: bgObject.x,
+            y: bgObject.y,
+            width: bgObject.width,
+            height: bgObject.height,
+            draggable: false, // 鎖定狀態
+            name: 'background-group'
+        });
+
+        const imageObj = new Image();
+        imageObj.onload = function () {
+            const kImage = new Konva.Image({
+                x: 0,
+                y: 0,
+                image: imageObj,
+                width: bgObject.width,
+                height: bgObject.height,
+                opacity: 1
+            });
+
+            // 增加一個透明的點擊區域 (方便選取)
+            const hitArea = new Konva.Rect({
+                x: 0, y: 0, width: bgObject.width, height: bgObject.height,
+                fill: 'transparent', listening: true
+            });
+
+            // 增加虛線邊框
+            const border = new Konva.Rect({
+                x: 0, y: 0, width: bgObject.width, height: bgObject.height,
+                stroke: '#007bff', strokeWidth: 2 / stage.scaleX(), dash: [10, 10],
+                listening: false
+            });
+
+            group.add(kImage, hitArea, border);
+            layer.add(group);
+            group.moveToBottom();
+
+            // 綁定 Konva 參照
+            bgObject.konvaGroup = group;
+            bgObject.konvaImage = kImage;
+            bgObject.konvaHitArea = hitArea; // 用於後續可能的鎖定控制
+            bgObject.konvaBorder = border;
+
+            network.background = bgObject;
+
+            // 4. 更新 UI 狀態
+            updateBackgroundLockState(); // 顯示鎖定按鈕
+            layer.batchDraw();
+
+            // 5. 自動設定 GeoAnchors (Pushpins)
+            // 這一步確保了地理資訊也被儲存到 .sim 檔中
+
+            // 清除舊的錨點
+            Object.keys(network.pushpins).forEach(pid => deletePushpin(pid));
+
+            // 左上角錨點 (North-West)
+            const pinNW = createPushpin({ x: startX, y: startY }, bounds.getNorth(), bounds.getWest());
+
+            // 右下角錨點 (South-East)
+            const pinSE = createPushpin({ x: startX + widthMeters, y: startY + heightMeters }, bounds.getSouth(), bounds.getEast());
+
+            // 鎖定錨點，避免誤移
+            if (pinNW) pinNW.konvaGroup.draggable(false);
+            if (pinSE) pinSE.konvaGroup.draggable(false);
+
+            alert(I18N.t(`Map Imported Successfully!\nDimensions: ${widthMeters.toFixed(1)}m x ${heightMeters.toFixed(1)}m\nScale auto-calibrated to 1:1.`));
+        };
+        imageObj.src = imageData;
+    };
 });
