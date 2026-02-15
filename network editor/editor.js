@@ -10676,12 +10676,11 @@ document.addEventListener('DOMContentLoaded', () => {
             drawLink(link);
         });
 
+        // --- 這裡呼叫修正後的函數 ---
         autoConnectNode(newNode);
 
-        // --- [關鍵修正]：強制更新立體交叉檢查 ---
-        // 這會清除因為舊路段刪除而殘留的紅色方框，並確保新連接的路段不會被誤判
+        // 強制更新立體交叉檢查，避免殘留紅框
         updateAllOverpasses();
-        // ------------------------------------
 
         layer.batchDraw();
         updatePropertiesPanel(newNode);
@@ -10722,50 +10721,61 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     /**
-     * 針對單一節點執行最大化自動連接
+     * 針對單一節點執行自動連接，邏輯與 Box Selection (autoConnectLanesInSelection) 一致
+     * @param {Object} node - 要處理的節點物件
      */
     function autoConnectNode(node) {
+        // 1. 取得該節點的所有進入與離開 Link
         const inLinks = [...node.incomingLinkIds].map(id => network.links[id]).filter(Boolean);
         const outLinks = [...node.outgoingLinkIds].map(id => network.links[id]).filter(Boolean);
 
         inLinks.forEach(srcLink => {
             outLinks.forEach(dstLink => {
-                // 判斷轉向 (利用既有的數學函數，如果 MathLib 不可見，需複製一份)
-                // 這裡使用簡單的角度判斷
-                const pSrc = srcLink.waypoints[srcLink.waypoints.length - 2];
-                const pSrcEnd = srcLink.waypoints[srcLink.waypoints.length - 1];
-                const pDstStart = dstLink.waypoints[0];
-                const pDst = dstLink.waypoints[1];
+                // 防止自我連接
+                if (srcLink.id === dstLink.id) return;
 
-                const angleIn = Math.atan2(pSrcEnd.y - pSrc.y, pSrcEnd.x - pSrc.x) * 180 / Math.PI;
-                const angleOut = Math.atan2(pDst.y - pDstStart.y, pDst.x - pDstStart.x) * 180 / Math.PI;
+                // 2. 使用與 Box Selection 相同的轉向判斷 (直行/左轉/右轉/迴轉)
+                const turnDir = getTurnDirection(srcLink, dstLink);
 
-                let diff = angleOut - angleIn;
-                while (diff <= -180) diff += 360;
-                while (diff > 180) diff -= 360;
-
-                // 判斷是否為 U-Turn (大於 135 度) -> 忽略
-                if (Math.abs(diff) > 135) return;
-
-                // 最大化連接邏輯 (Min(N, M))
+                // 3. 計算可連接的車道數 (取兩者最小值)
                 const srcLanes = srcLink.lanes.length;
                 const dstLanes = dstLink.lanes.length;
-                const count = Math.min(srcLanes, dstLanes);
+                const laneCount = Math.min(srcLanes, dstLanes);
 
-                let srcStart = 0, dstStart = 0;
+                const newIds = [];
 
-                // 策略：直行靠內，右轉靠外，左轉靠內
-                // diff > 45 (右轉), diff < -45 (左轉)
-                if (diff > 45) { // 右轉 (Right Turn)
-                    // 靠外對齊 (索引大)
-                    for (let k = 0; k < count; k++) {
-                        createConnection(srcLink, srcLanes - 1 - k, dstLink, dstLanes - 1 - k, node, calculateBezier(srcLink, srcLanes - 1 - k, dstLink, dstLanes - 1 - k, true));
+                for (let k = 0; k < laneCount; k++) {
+                    let srcIdx, dstIdx;
+
+                    // 4. 套用與 Box Selection 相同的車道映射策略
+                    if (turnDir === 'right') {
+                        // [右轉]: 靠右對齊 (Right-Align)
+                        // 邏輯：從最外側(最大index)開始配對
+                        srcIdx = srcLanes - 1 - k;
+                        dstIdx = dstLanes - 1 - k;
+                    } else {
+                        // [直行 / 左轉 / 迴轉]: 靠左對齊 (Left-Align)
+                        // 邏輯：從最內側(最小index)開始配對
+                        srcIdx = k;
+                        dstIdx = k;
                     }
-                } else { // 直行或左轉 (Straight / Left)
-                    // 靠內對齊 (索引 0)
-                    for (let k = 0; k < count; k++) {
-                        createConnection(srcLink, k, dstLink, k, node, calculateBezier(srcLink, k, dstLink, k, Math.abs(diff) > 20));
+
+                    // 5. 建立連接
+                    // 使用 handleConnection 以確保資料結構正確並處理重複檢查
+                    const srcMeta = { linkId: srcLink.id, laneIndex: srcIdx, portType: 'end' };
+                    const dstMeta = { linkId: dstLink.id, laneIndex: dstIdx, portType: 'start' };
+
+                    const newConn = handleConnection(srcMeta, dstMeta);
+
+                    if (newConn) {
+                        newIds.push(newConn.id);
                     }
+                }
+
+                // 6. 建立 Connection Group 視覺效果 (綠色粗線)
+                // 這是讓使用者能透過屬性面板一次管理整組連接的關鍵
+                if (newIds.length > 0) {
+                    drawConnectionGroupVisual(srcLink, dstLink, newIds, node.id);
                 }
             });
         });
