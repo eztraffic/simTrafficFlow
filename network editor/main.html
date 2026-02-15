@@ -42,13 +42,21 @@
 
             <!-- 檔案操作 -->
             <div class="control-group file-inputs">
+                <!-- [新增] Undo/Redo 按鈕 -->
+                <button id="undoBtn" class="btn-input secondary" title="Undo" disabled>
+                    <i class="fa-solid fa-rotate-left"></i>
+                </button>
+                <button id="redoBtn" class="btn-input secondary" title="Redo" disabled>
+                    <i class="fa-solid fa-rotate-right"></i>
+                </button>
+                <!-- [原有按鈕] -->
                 <button id="importXmlBtn" class="btn-input secondary" title="Import from .sim">
                     <i class="fa-regular fa-folder-open"></i>
                     <span>Import</span>
                 </button>
                 <button id="osmImportBtn" class="btn-input secondary" title="Import Map Background">
                     <i class="fa-solid fa-map-location-dot"></i>
-                    <span>Map BG</span>
+                    <span>OSM Map</span>
                 </button>
                 <button id="exportXmlBtn" class="btn-input primary" title="Export network to .sim file">
                     <i class="fa-solid fa-floppy-disk"></i>
@@ -323,7 +331,7 @@
                     <div class="input-group">
                         <label>Search Location</label>
                         <div style="display:flex; gap:5px;">
-                            <input type="text" id="osm-search-input" placeholder="e.g. Taipei" style="flex:1;">
+                            <input type="text" id="osm-search-input" placeholder="e.g. 台中市" style="flex:1;">
                             <button id="osm-search-btn" class="btn-secondary"><i
                                     class="fa-solid fa-magnifying-glass"></i></button>
                         </div>

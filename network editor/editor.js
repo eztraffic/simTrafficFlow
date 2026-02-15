@@ -50,6 +50,137 @@ document.addEventListener('DOMContentLoaded', () => {
     let trafficLightIcons = []; // <--- 【請新增此行】用於儲存號誌圖示
     let nodeSettingsIcons = []; // <--- 【請新增此行】用於儲存路口設定圖示
 
+    // --- [新增] Undo/Redo 狀態變數 ---
+    const MAX_HISTORY = 15;
+    let undoStack = [];
+    let redoStack = [];
+    let isRestoringState = false; // 防止復原過程中觸發儲存
+
+    // --- [新增] 狀態管理核心函數 ---
+
+    /**
+     * 產生當前路網的 XML 字串 (從原 exportXML 邏輯抽離)
+     */
+    function generateXMLString() {
+        // 這裡我們直接呼叫修改後的 exportXML 邏輯
+        // 請參閱下方步驟 3 對 exportXML 的修改
+        // 這裡回傳的是 XML string
+        return serializeNetworkToXML();
+    }
+
+    /**
+     * 儲存當前狀態到 Undo Stack
+     * 應在任何會改變路網的操作「之後」呼叫
+     */
+    function saveState() {
+        if (isRestoringState) return;
+
+        const currentState = {
+            xml: serializeNetworkToXML(),
+            view: {
+                x: stage.x(),
+                y: stage.y(),
+                scale: stage.scaleX()
+            }
+        };
+
+        // 如果堆疊頂端狀態與當前相同，則不重複儲存 (簡單防抖)
+        if (undoStack.length > 0) {
+            const lastState = undoStack[undoStack.length - 1];
+            if (lastState.xml === currentState.xml) return;
+        }
+
+        undoStack.push(currentState);
+
+        // 限制步數
+        if (undoStack.length > MAX_HISTORY + 1) { // +1 是因為包含當前狀態
+            undoStack.shift();
+        }
+
+        // 新的動作發生時，清空 Redo
+        redoStack = [];
+        updateUndoRedoButtons();
+    }
+
+    /**
+     * 執行復原
+     */
+    function performUndo() {
+        if (undoStack.length <= 1) return; // 至少要保留初始狀態
+
+        isRestoringState = true;
+
+        // 1. 將當前狀態移入 Redo
+        const currentState = undoStack.pop();
+        redoStack.push(currentState);
+
+        // 2. 取出上一個狀態
+        const prevState = undoStack[undoStack.length - 1];
+
+        // 3. 載入狀態
+        restoreStateFromSnapshot(prevState);
+
+        isRestoringState = false;
+        updateUndoRedoButtons();
+    }
+
+    /**
+     * 執行重做
+     */
+    function performRedo() {
+        if (redoStack.length === 0) return;
+
+        isRestoringState = true;
+
+        // 1. 取出 Redo 狀態
+        const nextState = redoStack.pop();
+
+        // 2. 存回 Undo
+        undoStack.push(nextState);
+
+        // 3. 載入狀態
+        restoreStateFromSnapshot(nextState);
+
+        isRestoringState = false;
+        updateUndoRedoButtons();
+    }
+
+    /**
+     * 輔助：從快照恢復路網與視角
+     */
+    function restoreStateFromSnapshot(state) {
+        if (!state) return;
+
+        try {
+            // 使用現有的 XML 載入函數
+            createAndLoadNetworkFromXML(state.xml);
+
+            // 恢復視角
+            stage.position({ x: state.view.x, y: state.view.y });
+            stage.scale({ x: state.view.scale, y: state.view.scale });
+
+            // 重新繪製 grid 與更新 UI
+            drawGrid();
+
+            // 確保比例尺相關的 UI (如 ports) 大小正確
+            const newPortScale = 1 / state.view.scale;
+            layer.find('.lane-port, .group-connect-port, .control-point, .waypoint-handle, .measurement-handle').forEach(p => {
+                p.scale({ x: newPortScale, y: newPortScale });
+            });
+            layer.batchDraw();
+
+        } catch (e) {
+            console.error("Undo/Redo failed:", e);
+        }
+    }
+
+    function updateUndoRedoButtons() {
+        const undoBtn = document.getElementById('undoBtn');
+        const redoBtn = document.getElementById('redoBtn');
+        if (undoBtn) undoBtn.disabled = undoStack.length <= 1;
+        if (redoBtn) redoBtn.disabled = redoStack.length === 0;
+    }
+
     // --- DOM ELEMENTS ---
     const canvasContainer = document.getElementById('canvas-container');
     const propertiesContent = document.getElementById('properties-content');
@@ -1877,6 +2008,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 // 2. 執行核心邏輯：切割 Link 並建立 Node
                 processManualIntersection(polyPoints);
+                saveState(); // [新增]
+
 
                 // 3. 清理
                 tempShape.destroy();
@@ -1951,7 +2084,9 @@ document.addEventListener('DOMContentLoaded', () => {
                             // 單向模式
                             const newLink = createLink(finalPoints, linkCreationSettings.lanesPerDir);
                             selectObject(newLink);
+                            saveState(); // [新增]
                         }
+
                         // --- [修改結束] ---
 
                         updateAllOverpasses();
@@ -1965,6 +2100,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (finalPoints.length > 1) {
                         const newMeasurement = createMeasurement(finalPoints);
                         selectObject(newMeasurement);
+                        saveState(); // [新增]
                     }
                     if (tempShape) tempShape.destroy();
                     if (tempMeasureText) tempMeasureText.destroy();
@@ -2125,6 +2261,21 @@ document.addEventListener('DOMContentLoaded', () => {
                 setTool(btn.dataset.tool);
             }
         });
+
+        document.getElementById('toolbar').addEventListener('click', (e) => {
+            // [修正] 使用 closest 以支援 FontAwesome 圖示點擊
+            const btn = e.target.closest('.tool-btn');
+            if (btn) {
+                setTool(btn.dataset.tool);
+            }
+        });
+
+        // --- [新增] 綁定 Undo/Redo 按鈕 ---
+        const undoBtn = document.getElementById('undoBtn');
+        const redoBtn = document.getElementById('redoBtn');
+
+        if (undoBtn) undoBtn.addEventListener('click', performUndo);
+        if (redoBtn) redoBtn.addEventListener('click', performRedo);
 
         document.getElementById('exportXmlBtn').addEventListener('click', exportXML);
 
@@ -2470,12 +2621,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
 
                 const confirmed = confirm(
-                    "Generate Roads from OSM?\n\n" +
-                    "[Features]\n" +
-                    "1. Geometry & Lanes\n" +
-                    "2. Force Intersect Crossing Roads (New!)\n" + // 提示新功能
-                    "3. Auto-Connection\n" +
-                    "4. Traffic Signals"
+                    "Generate Roads from OSM?\n\n"
                 );
 
                 if (confirmed) {
@@ -2513,6 +2659,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
         }
+
+        // --- [新增] 初始化初始狀態 ---
+        // 延遲一點執行確保所有圖層初始化完畢
+        setTimeout(() => {
+            saveState(); // 儲存空白或初始狀態作為起點
+        }, 100);
     }
 
     // --- END OF CORRECTED `init` FUNCTION ---
@@ -2828,6 +2980,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const newBg = createBackground(pos);
             if (newBg) {
                 selectObject(newBg);
+                saveState();
             }
             setTool('select');
         }
@@ -2849,6 +3002,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     drawDetector(newDet);
                 }
                 selectObject(newDet);
+                saveState();
                 setTool('select');
             }
         } else if (activeTool === 'add-road-sign') {
@@ -2858,6 +3012,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 let { dist } = projectPointOnPolyline(pos, link.waypoints);
                 const newSign = createRoadSign(link, dist);
                 selectObject(newSign);
+                saveState();
                 setTool('select');
             }
         } else if (activeTool === 'add-flow') {
@@ -2874,12 +3029,14 @@ document.addEventListener('DOMContentLoaded', () => {
                     const originPosition = Math.min(5, linkLength * 0.1);
                     const newOrigin = createOrigin(link, originPosition);
                     selectObject(newOrigin);
+                    saveState();
                 }
                 else {
                     if (hasDestination) { alert(I18N.t(`Link ${link.id} already has a Destination.`)); return; }
                     const destPosition = Math.max(linkLength - 5, linkLength * 0.9);
                     const newDestination = createDestination(link, destPosition);
                     selectObject(newDestination);
+                    saveState();
                 }
                 setTool('select');
             }
@@ -2907,6 +3064,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const newPin = createPushpin(pos);
             if (newPin) {
                 selectObject(newPin);
+                saveState();
                 setTool('select'); // 放完一個自動切回選取模式
             }
         } else if (activeTool === 'add-parking-lot') {
@@ -2960,12 +3118,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 const { dist } = projectPointOnPolyline(pos, targetLink.waypoints);
                 const mk = createRoadMarking('stop_line', targetLink, dist);
                 selectObject(mk);
+                saveState();
                 setTool('select');
             } else if (targetNode) {
                 // 在 Node 上新增，預設為兩段式左轉
                 // 使用 Node 中心或點擊位置
                 const mk = createRoadMarking('two_stage_box', targetNode, pos);
                 selectObject(mk);
+                saveState();
                 setTool('select');
             }
         }
@@ -3060,6 +3220,7 @@ document.addEventListener('DOMContentLoaded', () => {
         layer.add(parkingLot.konvaGroup);
 
         if (autoSelect) selectObject(parkingLot);
+        saveState();
         return parkingLot;
     }
 
@@ -5508,6 +5669,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                     // 儲存為 0.0 ~ 1.0 的小數
                     obj.turningRatios[fromId][toId] = val / 100.0;
+                    saveState();
                 });
             });
 
@@ -5553,6 +5715,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     // 步驟 C: 更新介面
                     updatePropertiesPanel(obj);
                     alert("轉向比例已根據偵測器流量自動更新。");
+                    saveState();
                 });
             }
 
@@ -5562,6 +5725,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             document.getElementById('prop-tfl-shift').addEventListener('change', (e) => {
                 network.trafficLights[obj.id].timeShift = parseInt(e.target.value, 10) || 0;
+                saveState();
             });
             document.getElementById('edit-tfl-btn').addEventListener('click', () => showTrafficLightEditor(obj));
 
@@ -5674,6 +5838,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (newGroupId && tfl.signalGroups[newGroupId]) {
                         tfl.signalGroups[newGroupId].connIds.push(...connIdsToUpdate);
                     }
+                    saveState();
                 });
             });
 
@@ -5722,6 +5887,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (targetGroupObj) {
                             deleteConnectionGroup(targetGroupObj);
                             updatePropertiesPanel(obj);
+                            saveState();
                         }
                     }
                 });
@@ -5806,6 +5972,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (flowInput) {
                 flowInput.addEventListener('change', (e) => {
                     obj.observedFlow = parseFloat(e.target.value) || 0;
+                    saveState();
                 });
             }
 
@@ -5814,6 +5981,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 sourceCheck.addEventListener('change', (e) => {
                     obj.isSource = e.target.checked;
                     updatePropertiesPanel(obj);
+                    saveState();
                 });
             }
 
@@ -5825,6 +5993,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (sel) {
                         sel.addEventListener('change', (e) => {
                             obj.spawnProfiles[idx].profileId = e.target.value;
+                            saveState();
                         });
                     }
                 });
@@ -5834,6 +6003,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     input.addEventListener('change', (e) => {
                         const idx = parseInt(e.target.dataset.index);
                         obj.spawnProfiles[idx].weight = parseFloat(e.target.value) || 1.0;
+                        saveState();
                     });
                 });
 
@@ -5843,6 +6013,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         const idx = parseInt(e.target.dataset.index);
                         obj.spawnProfiles.splice(idx, 1);
                         updatePropertiesPanel(obj);
+                        saveState();
                     });
                 });
 
@@ -5918,6 +6089,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                         // 重新整理屬性面板以更新下拉選單
                         updatePropertiesPanel(obj);
+                        saveState();
                     };
                 });
             }
@@ -5949,6 +6121,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     obj.length = newLen;
                     drawDetector(obj);
                     layer.batchDraw();
+                    saveState();
                 });
             }
         }
@@ -5984,6 +6157,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (activeTool === 'connect-lanes') { showLanePorts(); }
                 layer.batchDraw();
                 updatePropertiesPanel(obj);
+                saveState();
             });
 
             document.querySelectorAll('.prop-lane-width').forEach(input => {
@@ -6001,6 +6175,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (activeTool === 'connect-lanes') { showLanePorts(); }
                         layer.batchDraw();
                         updatePropertiesPanel(obj);
+                        saveState();
                     }
                 });
             });
@@ -6036,6 +6211,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         deleteConnection(connId);
                         layer.batchDraw();
                         updatePropertiesPanel(obj);
+                        saveState();
                     }
                 });
             });
@@ -6049,6 +6225,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                     // 呼叫幾何更新函數
                     updatePairedLinksGeometry(obj, newMedianWidth);
+                    saveState();
                 });
             }
 
@@ -8905,7 +9082,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // 完整替換此函數
     // 完整替換 exportXML 函數
-    function exportXML() {
+    // --- [修改] 重構 exportXML ---
+
+    // 1. 新增此函數 (內容是原本 exportXML 的邏輯，但最後改為 return xml)
+    function serializeNetworkToXML() {
         const tflGroupMappings = {};
         const linkIdMap = new Map(), regularNodeIdMap = new Map(), originNodeIdMap = new Map(),
             destinationNodeIdMap = new Map(), connIdMap = new Map(), detectorIdMap = new Map();
@@ -9522,6 +9702,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
         xml += '</tm:TrafficModel>';
 
+        return xml; // <--- 修改這裡：直接回傳字串
+    }
+
+    // 2. 覆蓋舊的 exportXML 函數 (用於按鈕點擊)
+    function exportXML() {
+        const xml = serializeNetworkToXML();
         const blob = new Blob([xml], { type: 'application/xml' });
         const link = document.createElement('a');
         link.href = URL.createObjectURL(blob);
@@ -9996,7 +10182,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (op.konvaRect) op.konvaRect.moveToTop();
         });
     }
-    
+
     /**
      * 遍歷所有 link，偵測交叉點並創建 Overpass 物件和其視覺表示。
      * [修正] 排除共用節點的 Link，避免在路口中心產生錯誤的紅色方框。
@@ -10075,7 +10261,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
         }
-        
+
         Object.values(network.overpasses).forEach(op => {
             if (op.konvaRect) op.konvaRect.moveToTop();
         });
@@ -10323,7 +10509,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // ----------------------------------------------------------------
         // 第一階段：決定「切割多邊形 (cuttingPolygon)」與「新節點中心 (cx, cy)」
         // ----------------------------------------------------------------
-        
+
         let cuttingPolygon = [];
         let cx = 0, cy = 0;
 
@@ -10342,7 +10528,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         for (let j = 0; j < polyPoints.length; j++) {
                             const v1 = polyPoints[j];
                             const v2 = polyPoints[(j + 1) % polyPoints.length];
-                            if (lineSegmentIntersection(link.waypoints[i], link.waypoints[i+1], v1, v2)) {
+                            if (lineSegmentIntersection(link.waypoints[i], link.waypoints[i + 1], v1, v2)) {
                                 linksToCheck.push(link);
                                 return;
                             }
@@ -10359,8 +10545,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     for (let a = 0; a < l1.waypoints.length - 1; a++) {
                         for (let b = 0; b < l2.waypoints.length - 1; b++) {
                             const pt = lineSegmentIntersection(
-                                l1.waypoints[a], l1.waypoints[a+1],
-                                l2.waypoints[b], l2.waypoints[b+1]
+                                l1.waypoints[a], l1.waypoints[a + 1],
+                                l2.waypoints[b], l2.waypoints[b + 1]
                             );
                             if (pt && isPointInPolygon(pt, polyPoints)) {
                                 internalIntersections.push(pt);

@@ -96,11 +96,11 @@ const OSMImporter = (() => {
     function initMap() {
         if (map) return;
 
-        // 預設位置 (台北車站)
+        // 預設位置 (台中車站)
         map = L.map('osm-map', {
             attributionControl: false,
             zoomControl: true
-        }).setView([25.0478, 121.5170], 17);
+        }).setView([24.1375386,120.684663], 17);
 
         // 使用 OpenStreetMap Tile
         mapLayer = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
