@@ -11,6 +11,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let stage, layer, gridLayer; // <-- MODIFIED: Removed measureGroup
     let activeTool = 'select';
     let connectMode = 'manual'; // 'manual' (拖曳) 或 'box' (框選)
+    let intersectionMode = 'zone'; // 'zone' (挖空) 或 'point' (中心聚合)
     let tempShape = null;
     let tempMeasureText = null;
     let isPanning = false;
@@ -1295,6 +1296,7 @@ document.addEventListener('DOMContentLoaded', () => {
             case 'measure':
             case 'add-background':
             case 'add-parking-lot':
+            case 'add-intersection':
                 stage.container().style.cursor = 'crosshair';
                 break;
 
@@ -1583,6 +1585,7 @@ document.addEventListener('DOMContentLoaded', () => {
             case 'select': text += " - Click to select. Drag a link's handles to edit path. Alt+Click on a link to add a handle. Press DEL to delete."; break;
             case 'add-pushpin': text += " - Click on the canvas to place a coordinate reference pin (Max 2)."; break;
             case 'add-parking-lot': text += " - Click to add polygon points. Double-click to finish."; break; // <--- Fix: status bar text
+            case 'add-intersection': text += " - Click to draw polygon points around the intersection area. Double-click to finish."; break;
             case 'add-parking-gate': text += " - Drag to create a rectangle representing an Entrance or Exit on a Parking Lot boundary."; break;
 
         }
@@ -1675,11 +1678,15 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             if (e.evt.button === 0 && e.target === stage) {
-                // [修改] 將 connect-lanes 加入不自動平移的清單，以便進行框選
-                if (activeTool !== 'add-link' && activeTool !== 'measure' &&
-                    !(activeTool === 'connect-lanes' && connectMode === 'box') && // <--- 新增此判斷
+                // [修正重點] 將 'add-intersection' 加入下方的排除清單中
+                if (activeTool !== 'add-link' &&
+                    activeTool !== 'measure' &&
+                    !(activeTool === 'connect-lanes' && connectMode === 'box') &&
                     activeTool !== 'add-background' &&
-                    activeTool !== 'add-pushpin' && activeTool !== 'add-parking-lot' && activeTool !== 'add-parking-gate') {
+                    activeTool !== 'add-pushpin' &&
+                    activeTool !== 'add-parking-lot' &&
+                    activeTool !== 'add-parking-gate' &&
+                    activeTool !== 'add-intersection') { // <--- 加入這一行
 
                     isPanning = true;
                     lastPointerPosition = stage.getPointerPosition();
@@ -1836,7 +1843,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 tempShape.height(pos.y - startPos.y);
                 layer.batchDraw();
             }
-            if ((activeTool === 'add-link' || activeTool === 'measure' || activeTool === 'add-parking-lot') && tempShape) {
+            if ((activeTool === 'add-link' || activeTool === 'measure' || activeTool === 'add-parking-lot' || activeTool === 'add-intersection') && tempShape) {
                 const pos = stage.getPointerPosition();
                 const points = tempShape.points();
                 const localPos = { x: (pos.x - stage.x()) / stage.scaleX(), y: (pos.y - stage.y()) / stage.scaleY(), };
@@ -1852,8 +1859,30 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         stage.on('dblclick', (e) => {
-            // Finalization logic is moved to the 'contextmenu' (right-click) handler.
-            // This handler is now empty for these tools.
+            if (activeTool === 'add-intersection' && tempShape) {
+                // 1. 取得多邊形頂點
+                const rawPoints = tempShape.points();
+                // 移除最後一個跟隨滑鼠的重複點
+                if (rawPoints.length >= 4) { rawPoints.pop(); rawPoints.pop(); }
+
+                // 轉換為點物件陣列 [{x,y}, ...]
+                const polyPoints = [];
+                for (let i = 0; i < rawPoints.length; i += 2) {
+                    polyPoints.push({ x: rawPoints[i], y: rawPoints[i + 1] });
+                }
+
+                if (polyPoints.length < 3) {
+                    tempShape.destroy(); tempShape = null; return;
+                }
+
+                // 2. 執行核心邏輯：切割 Link 並建立 Node
+                processManualIntersection(polyPoints);
+
+                // 3. 清理
+                tempShape.destroy();
+                tempShape = null;
+                setTool('select');
+            }
         });
 
         // Right-click handler to finalize drawing
@@ -2430,6 +2459,60 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
         }
+
+        // [新增] 綁定 "Generate Roads" 按鈕
+        const btnGen = document.getElementById('btn-osm-generate');
+        if (btnGen) {
+            btnGen.addEventListener('click', () => {
+                if (!network.background || !network.background.geoBounds) {
+                    alert("No geo-referenced background found. Please Import Map Background first.");
+                    return;
+                }
+
+                const confirmed = confirm(
+                    "Generate Roads from OSM?\n\n" +
+                    "[Features]\n" +
+                    "1. Geometry & Lanes\n" +
+                    "2. Force Intersect Crossing Roads (New!)\n" + // 提示新功能
+                    "3. Auto-Connection\n" +
+                    "4. Traffic Signals"
+                );
+
+                if (confirmed) {
+                    document.body.style.cursor = 'wait';
+
+                    OSMNetworkBuilder.generate(network.background, {
+                        autoConnect: true,
+                        autoSignal: true,
+                        forceIntersect: true // [新增] 啟用強制交叉檢測
+                    }, (result) => {
+                        // ... (後續處理邏輯保持不變) ...
+                        const { newLinks, newNodes, newConnections, newTFLs } = result;
+
+                        Object.assign(network.links, newLinks);
+                        Object.assign(network.nodes, newNodes);
+                        Object.assign(network.connections, newConnections);
+                        Object.assign(network.trafficLights, newTFLs);
+
+                        // 繪圖處理
+                        Object.values(newLinks).forEach(l => { layer.add(l.konvaGroup); drawLink(l); });
+                        Object.values(newNodes).forEach(n => { layer.add(n.konvaShape); n.konvaShape.clearCache(); });
+                        Object.values(newConnections).forEach(c => { layer.add(c.konvaBezier); c.konvaBezier.moveToBottom(); });
+
+                        drawGrid();
+                        Object.values(newLinks).forEach(l => l.konvaGroup.moveToBottom());
+                        Object.values(newConnections).forEach(c => c.konvaBezier.moveToBottom());
+                        if (network.background && network.background.konvaGroup) network.background.konvaGroup.moveToBottom();
+                        Object.values(newNodes).forEach(n => n.konvaShape.moveToTop());
+
+                        layer.batchDraw();
+                        document.body.style.cursor = 'default';
+                        updateStatusBar();
+                        alert(`Generation Complete!\nNodes: ${Object.keys(newNodes).length}\nLinks: ${Object.keys(newLinks).length}`);
+                    });
+                }
+            });
+        }
     }
 
     // --- END OF CORRECTED `init` FUNCTION ---
@@ -2795,11 +2878,30 @@ document.addEventListener('DOMContentLoaded', () => {
                 else {
                     if (hasDestination) { alert(I18N.t(`Link ${link.id} already has a Destination.`)); return; }
                     const destPosition = Math.max(linkLength - 5, linkLength * 0.9);
-                    const newDest = createDestination(link, destPosition);
-                    selectObject(newDest);
+                    const newDestination = createDestination(link, destPosition);
+                    selectObject(newDestination);
                 }
                 setTool('select');
             }
+        } else if (activeTool === 'add-intersection') {
+            if (!tempShape) {
+                // 開始繪製多邊形
+                tempShape = new Konva.Line({
+                    points: [pos.x, pos.y, pos.x, pos.y],
+                    stroke: '#ff0000', // 使用顯眼的紅色
+                    strokeWidth: 2,
+                    closed: true,
+                    fill: 'rgba(255, 0, 0, 0.2)',
+                    listening: false
+                });
+                layer.add(tempShape);
+            } else {
+                // 增加點
+                const currentPoints = tempShape.points();
+                currentPoints.splice(currentPoints.length - 2, 2, pos.x, pos.y, pos.x, pos.y);
+                tempShape.points(currentPoints);
+            }
+            layer.batchDraw();
         } else if (activeTool === 'add-pushpin') {
             if (e.target !== stage) return; // 避免點到其他物件
             const newPin = createPushpin(pos);
@@ -4229,6 +4331,50 @@ document.addEventListener('DOMContentLoaded', () => {
 
             return;
         }
+        // [新增] 針對 Add Intersection 工具的面板顯示
+        if (activeTool === 'add-intersection' && !obj) {
+            propertiesContent.innerHTML = `
+                <div class="prop-section-header">Intersection Tool Settings</div>
+                
+                <div class="prop-group">
+                    <label class="prop-label">Creation Mode</label>
+                    
+                    <label style="display:flex; align-items:start; gap:8px; margin-bottom:12px; cursor:pointer;">
+                        <input type="radio" name="intMode" value="zone" ${intersectionMode === 'zone' ? 'checked' : ''}>
+                        <div>
+                            <span style="font-weight:600;">Zone Mode (Clip)</span>
+                            <div style="font-size:0.75rem; color:var(--text-muted);">
+                                Removes road segments inside the polygon. Creates a visual "plaza".
+                            </div>
+                        </div>
+                    </label>
+
+                    <label style="display:flex; align-items:start; gap:8px; margin-bottom:8px; cursor:pointer;">
+                        <input type="radio" name="intMode" value="point" ${intersectionMode === 'point' ? 'checked' : ''}>
+                        <div>
+                            <span style="font-weight:600;">Point Mode (Snap)</span>
+                            <div style="font-size:0.75rem; color:var(--text-muted);">
+                                Links converge to the center. Only overlaps are removed.
+                            </div>
+                        </div>
+                    </label>
+                </div>
+
+                <div class="prop-hint">
+                    <i class="fa-solid fa-pen-nib"></i> 
+                    Click to draw outline, Double-Click to finish.
+                </div>
+            `;
+
+            // 綁定事件
+            document.querySelectorAll('input[name="intMode"]').forEach(radio => {
+                radio.addEventListener('change', (e) => {
+                    intersectionMode = e.target.value;
+                });
+            });
+            return;
+        }
+
         if (!obj) {
             propertiesContent.innerHTML = '<p>Select an element to edit</p>';
             return;
@@ -9850,19 +9996,19 @@ document.addEventListener('DOMContentLoaded', () => {
             if (op.konvaRect) op.konvaRect.moveToTop();
         });
     }
+    
     /**
      * 遍歷所有 link，偵測交叉點並創建 Overpass 物件和其視覺表示。
+     * [修正] 排除共用節點的 Link，避免在路口中心產生錯誤的紅色方框。
      */
-    // 完整替換此函數
     function updateAllOverpasses() {
-        // 1. 清理舊的 overpass 物件和 Konva 圖形
+        // 1. 清理舊的 Overpass (這會清除所有畫面上的紅框)
         Object.values(network.overpasses).forEach(op => {
             if (op.konvaRect) op.konvaRect.destroy();
         });
         network.overpasses = {};
 
         const linkIds = Object.keys(network.links);
-        const checkedPairs = new Set(); // 避免重複檢查
 
         // 2. 遍歷所有 Link 對
         for (let i = 0; i < linkIds.length; i++) {
@@ -9870,91 +10016,69 @@ document.addEventListener('DOMContentLoaded', () => {
                 const link1 = network.links[linkIds[i]];
                 const link2 = network.links[linkIds[j]];
 
-                // --- 廣泛階段：快速篩選 ---
-                // 如果外包圍盒不重疊，則直接跳過，節省效能
+                if (!link1 || !link2) continue;
+
+                // --- [關鍵]：如果兩條路共用節點（相連），則跳過檢查 ---
+                // 這能防止路口中心點被誤判為立體交叉（紅色方框）
+                if (link1.startNodeId && (link1.startNodeId === link2.startNodeId || link1.startNodeId === link2.endNodeId)) continue;
+                if (link1.endNodeId && (link1.endNodeId === link2.startNodeId || link1.endNodeId === link2.endNodeId)) continue;
+                // -------------------------------------------------------
+
+                // (後續的幾何檢測代碼保持不變...)
                 if (!Konva.Util.haveIntersection(link1.konvaGroup.getClientRect(), link2.konvaGroup.getClientRect())) {
                     continue;
                 }
 
-                // --- 精確階段：多邊形交叉檢測 ---
                 const traps1 = getLinkTrapeziums(link1);
                 const traps2 = getLinkTrapeziums(link2);
                 const allIntersectionPoints = [];
 
-                // 遍歷兩個 Link 的所有梯形路段組合
                 for (const trap1 of traps1) {
                     for (const trap2 of traps2) {
-
-                        // 檢查 trap1 的邊是否與 trap2 的邊相交
                         for (let k = 0; k < 4; k++) {
                             for (let l = 0; l < 4; l++) {
                                 const intersection = lineSegmentIntersection(
                                     trap1[k], trap1[(k + 1) % 4],
                                     trap2[l], trap2[(l + 1) % 4]
                                 );
-                                if (intersection) {
-                                    allIntersectionPoints.push(intersection);
-                                }
+                                if (intersection) allIntersectionPoints.push(intersection);
                             }
                         }
-
-                        // 檢查 trap1 的頂點是否在 trap2 內部
                         for (const vertex of trap1) {
-                            if (isPointInPolygon(vertex, trap2)) {
-                                allIntersectionPoints.push(vertex);
-                            }
+                            if (isPointInPolygon(vertex, trap2)) allIntersectionPoints.push(vertex);
                         }
-
-                        // 檢查 trap2 的頂點是否在 trap1 內部
                         for (const vertex of trap2) {
-                            if (isPointInPolygon(vertex, trap1)) {
-                                allIntersectionPoints.push(vertex);
-                            }
+                            if (isPointInPolygon(vertex, trap1)) allIntersectionPoints.push(vertex);
                         }
                     }
                 }
 
-                // 3. 如果找到了任何交叉點/包含點，則創建 Overpass 物件
                 if (allIntersectionPoints.length > 0) {
-                    // 計算所有交點的最小外包圍盒，這就是精確的紅色框範圍
                     const intersectionBox = getBoundingBoxOfPoints(allIntersectionPoints);
-
                     const id = `overpass_${link1.id}_${link2.id}`;
-
                     const rect = new Konva.Rect({
                         id: id,
-                        x: intersectionBox.x,
-                        y: intersectionBox.y,
-                        width: intersectionBox.width,
-                        height: intersectionBox.height,
-                        stroke: 'red',
-                        strokeWidth: 2 / stage.scaleX(), // 讓框線寬度在縮放時保持一致
-                        fill: 'rgba(255, 0, 0, 0.1)',
-                        listening: true,
+                        x: intersectionBox.x, y: intersectionBox.y,
+                        width: intersectionBox.width, height: intersectionBox.height,
+                        stroke: 'red', strokeWidth: 2 / stage.scaleX(),
+                        fill: 'rgba(255, 0, 0, 0.1)', listening: true,
                     });
                     layer.add(rect);
-
                     const overpass = {
-                        id: id,
-                        type: 'Overpass',
-                        linkId1: link1.id,
-                        linkId2: link2.id,
-                        // 尋找已存在的 Overpass 資訊來決定 topLinkId，否則使用預設值
+                        id: id, type: 'Overpass',
+                        linkId1: link1.id, linkId2: link2.id,
                         topLinkId: network.overpasses[id]?.topLinkId || link2.id,
                         konvaRect: rect,
                     };
-
                     network.overpasses[id] = overpass;
                     applyOverpassOrder(overpass);
                 }
             }
         }
-
-        // 確保所有 Overpass 框都在其對應的 Link 之上，以便點擊
+        
         Object.values(network.overpasses).forEach(op => {
             if (op.konvaRect) op.konvaRect.moveToTop();
         });
-
         layer.batchDraw();
     }
     // --- START: NEW GEOMETRY HELPERS FOR PRECISE INTERSECTION ---
@@ -10105,6 +10229,15 @@ document.addEventListener('DOMContentLoaded', () => {
             locked: true,         // 預設鎖定，避免誤操作
             imageDataUrl: imageData, // [重點] 這裡儲存了 Base64，exportXML 會自動讀取此屬性並儲存
             imageType: 'PNG',
+
+            // [新增] 儲存地理邊界資訊，這是 Phase 2 的關鍵輸入
+            geoBounds: {
+                north: bounds.getNorth(),
+                south: bounds.getSouth(),
+                east: bounds.getEast(),
+                west: bounds.getWest()
+            },
+
             konvaGroup: null,
             konvaImage: null,
             konvaBorder: null
@@ -10181,4 +10314,316 @@ document.addEventListener('DOMContentLoaded', () => {
         };
         imageObj.src = imageData;
     };
+
+    /**
+     * 處理手動框選路口的核心邏輯 (修正版：Point Mode 自動計算交叉範圍 + 強制更新 Overpass)
+     * @param {Array<{x, y}>} polyPoints - 使用者手繪的多邊形頂點陣列
+     */
+    function processManualIntersection(polyPoints) {
+        // ----------------------------------------------------------------
+        // 第一階段：決定「切割多邊形 (cuttingPolygon)」與「新節點中心 (cx, cy)」
+        // ----------------------------------------------------------------
+        
+        let cuttingPolygon = [];
+        let cx = 0, cy = 0;
+
+        if (intersectionMode === 'point') {
+            const internalIntersections = [];
+            const linksToCheck = [];
+
+            // 1. 篩選相關 Link
+            Object.values(network.links).forEach(link => {
+                const startInside = isPointInPolygon(link.waypoints[0], polyPoints);
+                const endInside = isPointInPolygon(link.waypoints[link.waypoints.length - 1], polyPoints);
+                if (startInside || endInside) {
+                    linksToCheck.push(link);
+                } else {
+                    for (let i = 0; i < link.waypoints.length - 1; i++) {
+                        for (let j = 0; j < polyPoints.length; j++) {
+                            const v1 = polyPoints[j];
+                            const v2 = polyPoints[(j + 1) % polyPoints.length];
+                            if (lineSegmentIntersection(link.waypoints[i], link.waypoints[i+1], v1, v2)) {
+                                linksToCheck.push(link);
+                                return;
+                            }
+                        }
+                    }
+                }
+            });
+
+            // 2. 計算交叉點
+            for (let i = 0; i < linksToCheck.length; i++) {
+                for (let j = i + 1; j < linksToCheck.length; j++) {
+                    const l1 = linksToCheck[i];
+                    const l2 = linksToCheck[j];
+                    for (let a = 0; a < l1.waypoints.length - 1; a++) {
+                        for (let b = 0; b < l2.waypoints.length - 1; b++) {
+                            const pt = lineSegmentIntersection(
+                                l1.waypoints[a], l1.waypoints[a+1],
+                                l2.waypoints[b], l2.waypoints[b+1]
+                            );
+                            if (pt && isPointInPolygon(pt, polyPoints)) {
+                                internalIntersections.push(pt);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (internalIntersections.length > 0) {
+                // 3. 計算包圍盒
+                let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                internalIntersections.forEach(p => {
+                    if (p.x < minX) minX = p.x;
+                    if (p.x > maxX) maxX = p.x;
+                    if (p.y < minY) minY = p.y;
+                    if (p.y > maxY) maxY = p.y;
+                });
+
+                // 4. 加上緩衝
+                const padding = 5;
+                minX -= padding; maxX += padding;
+                minY -= padding; maxY += padding;
+
+                cuttingPolygon = [
+                    { x: minX, y: minY }, { x: maxX, y: minY },
+                    { x: maxX, y: maxY }, { x: minX, y: maxY }
+                ];
+                cx = (minX + maxX) / 2;
+                cy = (minY + maxY) / 2;
+            } else {
+                // Fallback
+                let tx = 0, ty = 0;
+                polyPoints.forEach(p => { tx += p.x; ty += p.y; });
+                cx = tx / polyPoints.length;
+                cy = ty / polyPoints.length;
+                const fallbackSize = 2;
+                cuttingPolygon = [
+                    { x: cx - fallbackSize, y: cy - fallbackSize }, { x: cx + fallbackSize, y: cy - fallbackSize },
+                    { x: cx + fallbackSize, y: cy + fallbackSize }, { x: cx - fallbackSize, y: cy + fallbackSize }
+                ];
+            }
+        } else {
+            // Zone Mode
+            cuttingPolygon = polyPoints;
+            let tx = 0, ty = 0;
+            polyPoints.forEach(p => { tx += p.x; ty += p.y; });
+            cx = tx / polyPoints.length;
+            cy = ty / polyPoints.length;
+        }
+
+        // ----------------------------------------------------------------
+        // 第二階段：執行切割與連接
+        // ----------------------------------------------------------------
+
+        const newNode = createNode(cx, cy);
+        const linksToRemove = [];
+        const linksToAdd = [];
+
+        Object.values(network.links).forEach(link => {
+            const intersections = [];
+            const isPointInside = (pt) => isPointInPolygon(pt, cuttingPolygon);
+            const startInside = isPointInside(link.waypoints[0]);
+            const endInside = isPointInside(link.waypoints[link.waypoints.length - 1]);
+
+            if (!startInside && !endInside) {
+                let intersectFound = false;
+                for (let i = 0; i < link.waypoints.length - 1; i++) {
+                    const p1 = link.waypoints[i];
+                    const p2 = link.waypoints[i + 1];
+                    for (let j = 0; j < cuttingPolygon.length; j++) {
+                        const v1 = cuttingPolygon[j];
+                        const v2 = cuttingPolygon[(j + 1) % cuttingPolygon.length];
+                        if (lineSegmentIntersection(p1, p2, v1, v2)) {
+                            intersectFound = true; break;
+                        }
+                    }
+                    if (intersectFound) break;
+                }
+                if (!intersectFound) return;
+            }
+
+            for (let i = 0; i < link.waypoints.length - 1; i++) {
+                const p1 = link.waypoints[i];
+                const p2 = link.waypoints[i + 1];
+                for (let j = 0; j < cuttingPolygon.length; j++) {
+                    const v1 = cuttingPolygon[j];
+                    const v2 = cuttingPolygon[(j + 1) % cuttingPolygon.length];
+                    const intersect = lineSegmentIntersection(p1, p2, v1, v2);
+                    if (intersect) {
+                        intersections.push({ point: intersect, segIndex: i, dist: vecLen(getVector(p1, intersect)) });
+                    }
+                }
+            }
+            intersections.sort((a, b) => (a.segIndex - b.segIndex) || (a.dist - b.dist));
+
+            if (intersections.length === 0) {
+                if (startInside && endInside) linksToRemove.push(link.id);
+            } else {
+                if (!startInside && !endInside && intersections.length >= 2) {
+                    const entry = intersections[0];
+                    const exit = intersections[intersections.length - 1];
+                    const p1 = [...link.waypoints.slice(0, entry.segIndex + 1), entry.point];
+                    linksToAdd.push(createSubLink(link, p1, link.startNodeId, newNode.id, "_In"));
+                    const p2 = [exit.point, ...link.waypoints.slice(exit.segIndex + 1)];
+                    linksToAdd.push(createSubLink(link, p2, newNode.id, link.endNodeId, "_Out"));
+                    linksToRemove.push(link.id);
+                }
+                else if (!startInside && endInside) {
+                    const entry = intersections[0];
+                    const p = [...link.waypoints.slice(0, entry.segIndex + 1), entry.point];
+                    linksToAdd.push(createSubLink(link, p, link.startNodeId, newNode.id, "_In"));
+                    linksToRemove.push(link.id);
+                }
+                else if (startInside && !endInside) {
+                    const exit = intersections[intersections.length - 1];
+                    const p = [exit.point, ...link.waypoints.slice(exit.segIndex + 1)];
+                    linksToAdd.push(createSubLink(link, p, newNode.id, link.endNodeId, "_Out"));
+                    linksToRemove.push(link.id);
+                }
+            }
+        });
+
+        linksToRemove.forEach(id => deleteLink(id));
+        linksToAdd.forEach(link => {
+            layer.add(link.konvaGroup);
+            drawLink(link);
+        });
+
+        autoConnectNode(newNode);
+
+        // --- [關鍵修正]：強制更新立體交叉檢查 ---
+        // 這會清除因為舊路段刪除而殘留的紅色方框，並確保新連接的路段不會被誤判
+        updateAllOverpasses();
+        // ------------------------------------
+
+        layer.batchDraw();
+        updatePropertiesPanel(newNode);
+
+        const modeName = intersectionMode === 'zone' ? 'Zone' : 'Point';
+        console.log(`Created intersection (${modeName} Mode) with ${linksToAdd.length} links.`);
+    }
+
+    /**
+     * 輔助：建立分割後的子路段
+     */
+    function createSubLink(parentLink, waypoints, startNodeId, endNodeId, suffix) {
+        // 複製屬性
+        const newId = `${parentLink.id}${suffix}_${++idCounter}`; // 確保 ID 唯一
+
+        // 複製車道設定 (深拷貝)
+        const newLanes = JSON.parse(JSON.stringify(parentLink.lanes));
+
+        const link = {
+            id: newId,
+            name: (parentLink.name || parentLink.id) + suffix,
+            type: 'Link',
+            waypoints: waypoints,
+            lanes: newLanes,
+            startNodeId: startNodeId,
+            endNodeId: endNodeId,
+            konvaGroup: new Konva.Group({ id: newId, draggable: false }),
+            konvaHandles: [],
+        };
+
+        network.links[newId] = link;
+
+        // 更新 Node 參照
+        if (network.nodes[startNodeId]) network.nodes[startNodeId].outgoingLinkIds.add(newId);
+        if (network.nodes[endNodeId]) network.nodes[endNodeId].incomingLinkIds.add(newId);
+
+        return link;
+    }
+
+    /**
+     * 針對單一節點執行最大化自動連接
+     */
+    function autoConnectNode(node) {
+        const inLinks = [...node.incomingLinkIds].map(id => network.links[id]).filter(Boolean);
+        const outLinks = [...node.outgoingLinkIds].map(id => network.links[id]).filter(Boolean);
+
+        inLinks.forEach(srcLink => {
+            outLinks.forEach(dstLink => {
+                // 判斷轉向 (利用既有的數學函數，如果 MathLib 不可見，需複製一份)
+                // 這裡使用簡單的角度判斷
+                const pSrc = srcLink.waypoints[srcLink.waypoints.length - 2];
+                const pSrcEnd = srcLink.waypoints[srcLink.waypoints.length - 1];
+                const pDstStart = dstLink.waypoints[0];
+                const pDst = dstLink.waypoints[1];
+
+                const angleIn = Math.atan2(pSrcEnd.y - pSrc.y, pSrcEnd.x - pSrc.x) * 180 / Math.PI;
+                const angleOut = Math.atan2(pDst.y - pDstStart.y, pDst.x - pDstStart.x) * 180 / Math.PI;
+
+                let diff = angleOut - angleIn;
+                while (diff <= -180) diff += 360;
+                while (diff > 180) diff -= 360;
+
+                // 判斷是否為 U-Turn (大於 135 度) -> 忽略
+                if (Math.abs(diff) > 135) return;
+
+                // 最大化連接邏輯 (Min(N, M))
+                const srcLanes = srcLink.lanes.length;
+                const dstLanes = dstLink.lanes.length;
+                const count = Math.min(srcLanes, dstLanes);
+
+                let srcStart = 0, dstStart = 0;
+
+                // 策略：直行靠內，右轉靠外，左轉靠內
+                // diff > 45 (右轉), diff < -45 (左轉)
+                if (diff > 45) { // 右轉 (Right Turn)
+                    // 靠外對齊 (索引大)
+                    for (let k = 0; k < count; k++) {
+                        createConnection(srcLink, srcLanes - 1 - k, dstLink, dstLanes - 1 - k, node, calculateBezier(srcLink, srcLanes - 1 - k, dstLink, dstLanes - 1 - k, true));
+                    }
+                } else { // 直行或左轉 (Straight / Left)
+                    // 靠內對齊 (索引 0)
+                    for (let k = 0; k < count; k++) {
+                        createConnection(srcLink, k, dstLink, k, node, calculateBezier(srcLink, k, dstLink, k, Math.abs(diff) > 20));
+                    }
+                }
+            });
+        });
+    }
+
+    // 簡易 Bezier 計算 (給上述 autoConnectNode 使用)
+    function calculateBezier(srcLink, srcIdx, dstLink, dstIdx, isTurn) {
+        const pStart = getLaneEndpoint(srcLink, srcIdx, false);
+        const pEnd = getLaneEndpoint(dstLink, dstIdx, true);
+
+        // 如果不是轉彎，直接直線
+        if (!isTurn) return [pStart, pEnd];
+
+        // 簡單控制點
+        const tension = 0.5;
+        const srcV = normalize(getVector(srcLink.waypoints[srcLink.waypoints.length - 2], srcLink.waypoints[srcLink.waypoints.length - 1]));
+        const dstV = normalize(getVector(dstLink.waypoints[0], dstLink.waypoints[1])); // 注意方向
+
+        // 控制點邏輯：Start + Vec * dist * 0.5
+        const dist = vecLen(getVector(pStart, pEnd));
+        const c1 = add(pStart, scale(srcV, dist * tension));
+        const c2 = add(pEnd, scale(dstV, -dist * tension)); // 反向延伸
+
+        return [pStart, c1, c2, pEnd];
+    }
+
+    // 取得車道端點 (輔助)
+    function getLaneEndpoint(link, laneIdx, isStart) {
+        const totalW = getLinkTotalWidth(link);
+        let cum = 0;
+        for (let i = 0; i < laneIdx; i++) cum += link.lanes[i].width;
+        cum += link.lanes[laneIdx].width / 2;
+        const offset = cum - totalW / 2;
+
+        const pts = link.waypoints;
+        let p1, p2;
+        if (isStart) { p1 = pts[0]; p2 = pts[1]; }
+        else { p1 = pts[pts.length - 2]; p2 = pts[pts.length - 1]; } // End
+
+        const v = normalize(getVector(p1, p2));
+        const n = getNormal(v);
+
+        // 若是 Start，點是 p1 偏移；若是 End，點是 p2 偏移
+        const targetP = isStart ? p1 : p2;
+        return add(targetP, scale(n, offset));
+    }
 });

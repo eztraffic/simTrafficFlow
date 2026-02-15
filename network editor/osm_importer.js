@@ -164,9 +164,13 @@ const OSMImporter = (() => {
     }
 
     // 截圖核心邏輯：手動繪製 Tile 到 Canvas
+    // --- [修正] 截圖核心邏輯：使用 getBoundingClientRect 確保精確對齊 ---
     async function captureMapImage() {
         return new Promise((resolve, reject) => {
             const mapContainer = document.getElementById('osm-map');
+            // 取得地圖容器在視窗中的絕對位置
+            const mapRect = mapContainer.getBoundingClientRect();
+            
             const width = mapContainer.clientWidth;
             const height = mapContainer.clientHeight;
             
@@ -176,26 +180,13 @@ const OSMImporter = (() => {
             canvas.height = height;
             const ctx = canvas.getContext('2d');
 
-            // 填滿背景色 (避免透明)
+            // 填滿背景色 (避免透明區域)
             ctx.fillStyle = '#e5e5e5';
             ctx.fillRect(0, 0, width, height);
 
-            // 獲取 Leaflet 的 Tile 容器
-            const tilePane = map.getPane('tilePane');
-            const transformStyle = tilePane.style.transform;
-            
-            // 解析 pane 的位移 (translate3d)
-            let paneX = 0, paneY = 0;
-            if (transformStyle) {
-                const match = transformStyle.match(/translate3d\(([^,]+)px,\s*([^,]+)px/);
-                if (match) {
-                    paneX = parseFloat(match[1]);
-                    paneY = parseFloat(match[2]);
-                }
-            }
-
-            // 獲取所有圖片 Tile
-            const tiles = tilePane.querySelectorAll('img');
+            // 獲取 Leaflet 的 Tile 容器內的圖片
+            // 修正：直接抓取所有 .leaflet-tile 類別的圖片，這包含了目前顯示的所有圖層
+            const tiles = mapContainer.querySelectorAll('.leaflet-tile');
             const totalTiles = tiles.length;
             let loadedCount = 0;
 
@@ -207,39 +198,34 @@ const OSMImporter = (() => {
             // 繪製函數
             const drawTiles = () => {
                 Array.from(tiles).forEach(img => {
-                    // Leaflet 的 Tile 是透過 CSS transform 定位的
-                    const imgTransform = img.style.transform;
-                    let imgX = 0, imgY = 0;
-                    if (imgTransform) {
-                        const match = imgTransform.match(/translate3d\(([^,]+)px,\s*([^,]+)px/);
-                        if (match) {
-                            imgX = parseFloat(match[1]);
-                            imgY = parseFloat(match[2]);
-                        }
-                    }
+                    // [修正重點]：不解析 transform，直接計算相對位置
+                    // 1. 取得圖磚在螢幕上的絕對位置
+                    const imgRect = img.getBoundingClientRect();
 
-                    // 計算在 Canvas 上的絕對位置
-                    // Tile 座標 = Pane 位移 + Tile 相對位移
-                    const drawX = paneX + imgX;
-                    const drawY = paneY + imgY;
-                    const drawW = parseInt(img.style.width) || 256;
-                    const drawH = parseInt(img.style.height) || 256;
+                    // 2. 計算圖磚相對於地圖容器左上角的偏移量 (x, y)
+                    const x = imgRect.left - mapRect.left;
+                    const y = imgRect.top - mapRect.top;
+                    
+                    const drawW = imgRect.width;
+                    const drawH = imgRect.height;
 
-                    // 確保圖片已載入
-                    if (img.complete) {
-                        try {
-                            ctx.drawImage(img, drawX, drawY, drawW, drawH);
-                        } catch (e) {
-                            console.warn("Tile draw error (CORS?):", e);
+                    // 3. 只有當圖片與畫布有交集時才繪製 (優化效能，並防止邊緣殘影)
+                    if (x + drawW > 0 && y + drawH > 0 && x < width && y < height) {
+                        if (img.complete) {
+                            try {
+                                ctx.drawImage(img, x, y, drawW, drawH);
+                            } catch (e) {
+                                console.warn("Tile draw error (CORS?):", e);
+                            }
                         }
                     }
                 });
-                // 輸出為 Data URL (使用 PNG 以確保清晰度，或 JPEG 壓縮體積)
+                // 輸出為 Data URL
                 resolve(canvas.toDataURL('image/png'));
             };
 
-            // 簡單延遲確保渲染完成 (Leaflet 有時會非同步載入圖片)
-            setTimeout(drawTiles, 200);
+            // 簡單延遲確保 Leaflet DOM 更新完成
+            setTimeout(drawTiles, 100);
         });
     }
 
