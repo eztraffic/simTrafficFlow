@@ -5417,8 +5417,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 // 第二階段：偵測機車停等區，並大幅修正一般車輛的停止線
                 network.roadMarkings.forEach(mark => {
-                    // 假設非 'stop_line' 且有車道索引的標線為機車停等區
-                    if (mark.type !== 'stop_line' && mark.linkId && mark.laneIndices) {
+                    // [修正] 排除 'two_stage_box' (待轉區)，只針對 'waiting_area' (停等區) 計算
+                    if (mark.type !== 'stop_line' && mark.type !== 'two_stage_box' && mark.linkId && mark.laneIndices) {
                         if (!this.stopLineMap[mark.linkId]) this.stopLineMap[mark.linkId] = {};
 
                         // [關鍵修正] 計算汽車應停止的虛擬位置
@@ -5938,18 +5938,23 @@ document.addEventListener('DOMContentLoaded', () => {
             // ==========================================
             // [修正優化版] Step 4: 兩段式左轉狀態機更新
             // ==========================================
+            // ==========================================
+            // [修正優化版] Step 4: 兩段式左轉狀態機更新
+            // ==========================================
             if (this.state === 'inIntersection' && this.twoStageState && this.twoStageState !== 'none') {
 
-                // --- 狀態 1: 正前往待轉區 (Phase 1) ---
+                // --- 狀態 1: 正前往待轉區 (Moving) ---
                 if (this.twoStageState === 'moving_to_box') {
-                    // 放寬到達判定
-                    if (this.distanceOnPath >= this.currentPathLength - 2.0) {
+                    // [修正] 到達判定：距離終點非常近時
+                    if (this.distanceOnPath >= this.currentPathLength - 0.5) { // 縮小容許值，確保停在格子裡
 
+                        // 強制狀態切換
                         this.twoStageState = 'waiting';
-                        this.speed = 0;
-                        this.distanceOnPath = this.currentPathLength;
+                        this.speed = 0; // 強制煞停
+                        this.accel = 0;
+                        this.distanceOnPath = this.currentPathLength; // 釘在終點
 
-                        // 強制轉向
+                        // 調整車頭朝向：轉向目標道路 (Next Link)
                         const nextLinkId = this.route[this.currentLinkIndex + 1];
                         const nextLink = network.links[nextLinkId];
                         if (nextLink) {
@@ -5961,107 +5966,98 @@ document.addEventListener('DOMContentLoaded', () => {
                             }
                         }
 
-                        // [修改後] 依照「排隊位置」計算延遲
-                        // 我們需要重新計算 row (排數) 來決定延遲時間
-                        // 假設待轉格寬度約 4.0m，機車寬 0.9m，一行約可排 4 台
+                        // 計算起步延遲 (模擬反應時間 + 排隊順序)
+                        const estimatedIdx = this.waitingBox ? Math.max(0, this.waitingBox.waitingCount - 1) : 0;
                         const capacityPerRow = 4;
-                        // 從 waitingBox 取出目前的排隊數，反推我是第幾排
-                        // 這裡用一個估算值，假設你是第 N 個進入的
-                        const estimatedIdx = this.waitingBox ? this.waitingBox.waitingCount : 0;
                         const row = Math.floor(estimatedIdx / capacityPerRow);
 
-                        // 基礎反應時間 + (排數 * 0.4秒) + 隨機微調
-                        // 這樣第一排 (row=0) 會立刻走，第二排 (row=1) 會等 0.4秒...
-                        this.startUpDelay = (Math.random() * 0.2) + (row * 0.4);
-
-                        // 如果是第一排，給予「衝鋒組」的極快反應特權
-                        if (row === 0 && Math.random() < 0.3) {
-                            this.startUpDelay = 0.0;
-                        }
+                        // 第一排反應快，後面反應慢
+                        this.startUpDelay = 0.5 + (row * 0.3) + (Math.random() * 0.5);
                     }
                 }
 
                 // --- 狀態 2: 在待轉區停等 (Waiting) ---
                 else if (this.twoStageState === 'waiting') {
+                    // [重要] 強制鎖定位置與速度，防止滑動
                     this.speed = 0;
+                    this.accel = 0;
+
+                    // 檢查號誌：只有目標方向綠燈才能走
                     const canGo = this.checkTwoStageSignal(network);
 
                     if (canGo) {
+                        // 處理反應時間延遲
                         if (this.startUpDelay > 0) {
                             this.startUpDelay -= dt;
-                            return;
+                            return; // 繼續等
                         }
 
+                        // 綠燈且反應時間到 -> 出發
                         this.twoStageState = 'leaving_box';
+
+                        // 減少待轉區計數
                         if (this.waitingBox && this.waitingBox.waitingCount > 0) {
                             this.waitingBox.waitingCount--;
                         }
 
+                        // [路徑生成] 準備離開格子進入目標車道
+                        // (這裡保持原有的 intelligent lane selection 邏輯，不做大幅變動，確保相容性)
                         const nextLinkId = this.route[this.currentLinkIndex + 1];
                         const nextLink = network.links[nextLinkId];
                         const allLaneIndices = Object.keys(nextLink.lanes).map(Number).sort((a, b) => a - b);
 
-                        // === 【修改點 1：智能選擇最近車道】 ===
-                        // 不再強制去最右邊，而是找距離目前位置 (this.x, this.y) 最近的車道
+                        // 找最近的車道
                         let targetLaneIdx = allLaneIndices[0];
                         let minDistSq = Infinity;
                         allLaneIndices.forEach(idx => {
                             const laneStart = nextLink.lanes[idx].path[0];
                             const d2 = (this.x - laneStart.x) ** 2 + (this.y - laneStart.y) ** 2;
-                            if (d2 < minDistSq) {
-                                minDistSq = d2;
-                                targetLaneIdx = idx;
-                            }
+                            if (d2 < minDistSq) { minDistSq = d2; targetLaneIdx = idx; }
                         });
 
                         const targetLane = nextLink.lanes[targetLaneIdx];
                         this.pendingLaneIndex = targetLaneIdx;
 
-                        // === 【修改點 2：計算保持直線所需的偏移量】 ===
-                        // 算出目前位置相對於目標車道中心的「橫向距離」，並將其設為 pendingLateralOffset
+                        // 計算切入偏移量
                         const p1_next = targetLane.path[0];
                         const p2_next = targetLane.path[1];
                         const angle_next = Math.atan2(p2_next.y - p1_next.y, p2_next.x - p1_next.x);
-
-                        // 向量：車道前進方向 (fwd) 與 垂直方向 (right)
                         const cosN = Math.cos(angle_next);
                         const sinN = Math.sin(angle_next);
-                        const nx = -sinN; // 垂直車道向左
+                        const nx = -sinN;
                         const ny = cosN;
-
-                        // 計算目前點到車道中心線的投影距離 (橫向偏移)
                         const dx = this.x - p1_next.x;
                         const dy = this.y - p1_next.y;
-                        // 點積公式：(dx, dy) 點乘 (nx, ny) 得到點在法向量上的投影長度
                         const currentLateralOffset = dx * nx + dy * ny;
-
-                        // 限制偏移量不要超過車道邊界 (避免騎到路溝)
                         const maxSafe = (targetLane.width / 2) - (this.width / 2) - 0.1;
                         this.pendingLateralOffset = Math.max(-maxSafe, Math.min(maxSafe, currentLateralOffset));
 
-                        // === 【修改點 3：修正貝茲曲線終點，使其包含偏移】 ===
+                        // 設定路徑 (直線加速)
                         const startPos = { x: this.x, y: this.y };
-                        // 終點不再是中心點，而是「中心點 + 偏移量」，這樣路徑才會是直線
                         const endPos = {
                             x: p1_next.x + nx * this.pendingLateralOffset,
                             y: p1_next.y + ny * this.pendingLateralOffset
                         };
 
-                        // 設定起步物理參數（調整為更合理的數值）
-                        this.swarmTimer = 3.0;  // 縮短起步模式時間
-                        this.minGap = 0.2;      // 機車最小間距 0.2m（較小但安全）
-                        this.headwayTime = 0.3; // 較短的車頭時距
-                        this.maxAccel = Math.min(4.5, (this.originalMaxAccel || 3.5) * 1.3);
-                        this.speed = 2.0 + Math.random() * 2.0;
+                        // 設定起步參數
+                        this.speed = 1.5; // 給予初速防止停滯
+                        this.accel = 2.0;
+                        this.swarmTimer = 3.0; // 啟動群體模式
 
-                        // 建立貝茲曲線控制點 (P1, P2) 讓轉彎圓滑但終點精準
+                        // 建立離開路徑
                         const distDirect = Math.hypot(endPos.x - startPos.x, endPos.y - startPos.y);
-                        const controlLen = distDirect * 0.4;
-                        const p1 = { x: startPos.x + Math.cos(this.angle) * controlLen, y: startPos.y + Math.sin(this.angle) * controlLen };
-                        const p2 = { x: endPos.x - cosN * controlLen, y: endPos.y - sinN * controlLen };
+                        // 如果距離很短，直接用直線；距離長用貝茲
+                        if (distDirect < 5.0) {
+                            this.currentPath = [startPos, endPos];
+                            this.currentPathLength = distDirect;
+                        } else {
+                            const controlLen = distDirect * 0.3;
+                            const p1 = { x: startPos.x + Math.cos(this.angle) * controlLen, y: startPos.y + Math.sin(this.angle) * controlLen };
+                            const p2 = { x: endPos.x - cosN * controlLen, y: endPos.y - sinN * controlLen };
+                            this.currentPath = [startPos, p1, p2, endPos];
+                            this.currentPathLength = Geom.Bezier.getLength(startPos, p1, p2, endPos);
+                        }
 
-                        this.currentPath = [startPos, p1, p2, endPos];
-                        this.currentPathLength = Geom.Bezier.getLength(startPos, p1, p2, endPos);
                         this.distanceOnPath = 0;
                         this.waitingBox = null;
                     }
@@ -6631,6 +6627,23 @@ document.addEventListener('DOMContentLoaded', () => {
             this.laneChangeGoal = null;
             this.laneChangeCooldown = 0;
 
+            // =========================================================
+            // [修正重點 1] 狀態攔截：防止待轉過程中的誤切換
+            // =========================================================
+            if (this.twoStageState === 'waiting') {
+                // 正在等待綠燈，絕對不能切換路段
+                this.distanceOnPath = this.currentPathLength; // 釘在原地
+                this.speed = 0;
+                return;
+            }
+
+            if (this.twoStageState === 'moving_to_box') {
+                // 剛抵達待轉格，由 update() 函數處理煞停與轉向
+                // 這裡只需攔截，不讓它執行下方的 switchToNextLink
+                return;
+            }
+            // =========================================================
+
             if (this.state === 'onLink') {
                 const nextLinkIndex = this.currentLinkIndex + 1;
                 if (nextLinkIndex >= this.route.length) {
@@ -6643,159 +6656,89 @@ document.addEventListener('DOMContentLoaded', () => {
                 const destNodeId = currentLink.destination;
                 const destNode = network.nodes[destNodeId];
 
-                // ==========================================
-                // [優先修正] 兩段式左轉邏輯 (機車專用) - 移至最上方
-                // ==========================================
-                // 必須優先於一般 Transition 檢查，因為從外側車道左轉通常沒有直接路徑
+                // --- 兩段式左轉判定 (機車專用) ---
                 if (this.isMotorcycle) {
-                    const isLeftTurn = this.checkIsLeftTurn(network, currentLink, network.links[nextLinkId]);
-                    const boxes = network.twoStageBoxMap ? network.twoStageBoxMap[destNodeId] : null;
+                    const nextLinkObj = network.links[nextLinkId];
+                    const isLeftTurn = this.checkIsLeftTurn(network, currentLink, nextLinkObj);
 
-                    if (isLeftTurn && boxes && boxes.length > 0) {
-                        const targetBox = this.findBestBox(boxes, currentLink);
+                    if (isLeftTurn) {
+                        const boxes = network.twoStageBoxMap ? network.twoStageBoxMap[destNodeId] : null;
 
-                        if (targetBox) {
-                            this.state = 'inIntersection';
-                            this.twoStageState = 'moving_to_box';
-                            this.waitingBox = targetBox;
-                            this.currentTransition = null;
+                        if (boxes && boxes.length > 0) {
+                            const targetBox = this.findBestBox(boxes, currentLink);
 
-                            // 1. [起點] 強制視覺連續 (上次討論的修正)
-                            const startPos = { x: this.x, y: this.y };
+                            if (targetBox) {
+                                // --- 設定進入待轉區的路徑 ---
+                                this.state = 'inIntersection';
+                                this.twoStageState = 'moving_to_box';
+                                this.waitingBox = targetBox;
+                                this.currentTransition = null;
 
-                            // 重置偏移
-                            this.lateralOffset = 0;
-                            this.targetLateralOffset = 0;
+                                // 排隊計數
+                                if (typeof targetBox.waitingCount === 'undefined') targetBox.waitingCount = 0;
+                                const idx = targetBox.waitingCount;
+                                targetBox.waitingCount++;
 
+                                // --- 計算排隊座標 (Grid Layout) ---
+                                const bikeW = 0.8;
+                                const bikeL = 2.0;
+                                const padding = 0.5;
+                                const boxW = Math.max(parseFloat(targetBox.width) || 4.0, 2.0);
+                                const boxL = Math.max(parseFloat(targetBox.length) || 2.5, 2.0);
+                                const capacityPerRow = Math.max(1, Math.floor((boxW - padding) / bikeW));
+                                const col = idx % capacityPerRow;
+                                const row = Math.floor(idx / capacityPerRow);
 
-                            // =====================================================================
-                            // [新增] 計算待轉區內的目標點 (包含微小間距)
-                            // =====================================================================
-
-                            // 初始化排隊計數
-                            if (typeof targetBox.waitingCount === 'undefined') targetBox.waitingCount = 0;
-                            const idx = targetBox.waitingCount;
-                            targetBox.waitingCount++;
-
-                            // 參數設定
-                            const bikeW = 0.9;  // 機車寬度佔用
-                            const bikeL = 2.0;  // 機車長度佔用
-                            const padding = 0.4; // 邊距
-
-                            // 取得格子尺寸
-                            const boxW = Math.max(parseFloat(targetBox.width) || 0, 4.0);
-                            const boxL = Math.max(parseFloat(targetBox.length) || 0, 2.5);
-
-                            // 計算行列 (由右至左，由前至後)
-                            const validWidth = Math.max(0.1, boxW - (padding * 2));
-                            const capacityPerRow = Math.max(1, Math.floor(validWidth / bikeW));
-
-                            const col = idx % capacityPerRow;
-                            const row = Math.floor(idx / capacityPerRow);
-
-                            // 計算下一條路的方向 (Aim Angle) -> 這也是車輛停好後的朝向
-                            let aimAngle = targetBox.rotation || 0;
-                            const nextLinkId = this.route[this.currentLinkIndex + 1];
-                            const nextLink = network.links[nextLinkId];
-                            if (nextLink) {
-                                const lanes = Object.values(nextLink.lanes);
-                                if (lanes.length > 0 && lanes[0].path.length > 1) {
-                                    const p1 = lanes[0].path[0];
-                                    const p2 = lanes[0].path[1];
+                                // 計算目標朝向
+                                let aimAngle = targetBox.rotation || 0;
+                                if (nextLinkObj && nextLinkObj.lanes[0]) {
+                                    const p1 = nextLinkObj.lanes[0].path[0];
+                                    const p2 = nextLinkObj.lanes[0].path[1];
                                     aimAngle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
                                 }
+
+                                const cos = Math.cos(aimAngle);
+                                const sin = Math.sin(aimAngle);
+                                const vecFwd = { x: cos, y: sin };
+                                const vecRight = { x: -sin, y: cos };
+
+                                // 計算終點
+                                const cornerFR_x = targetBox.x + (vecFwd.x * boxL / 2) + (vecRight.x * boxW / 2);
+                                const cornerFR_y = targetBox.y + (vecFwd.y * boxL / 2) + (vecRight.y * boxW / 2);
+                                const moveLeft = padding + (col * bikeW) + (bikeW / 2);
+                                const moveBack = padding + (row * bikeL) + (bikeL / 2);
+
+                                const endPos = {
+                                    x: cornerFR_x - (vecRight.x * moveLeft) - (vecFwd.x * moveBack),
+                                    y: cornerFR_y - (vecRight.y * moveLeft) - (vecFwd.y * moveBack)
+                                };
+
+                                // 建立貝茲曲線 (Hook Turn)
+                                const startPos = { x: this.x, y: this.y };
+                                const distDirect = Math.hypot(endPos.x - startPos.x, endPos.y - startPos.y);
+                                const controlLen = distDirect * 0.5;
+
+                                const p1 = {
+                                    x: startPos.x + Math.cos(this.angle) * controlLen,
+                                    y: startPos.y + Math.sin(this.angle) * controlLen
+                                };
+                                const p2 = {
+                                    x: endPos.x - (vecFwd.x * controlLen * 0.5),
+                                    y: endPos.y - (vecFwd.y * controlLen * 0.5)
+                                };
+
+                                this.currentPath = [startPos, p1, p2, endPos];
+                                this.currentPathLength = Geom.Bezier.getLength(startPos, p1, p2, endPos);
+                                this.distanceOnPath = 0;
+                                this.lateralOffset = 0;
+                                this.targetLateralOffset = 0;
+
+                                return; // 結束，開始前往待轉區
                             }
-
-                            // 向量計算
-                            const cos = Math.cos(aimAngle);
-                            const sin = Math.sin(aimAngle);
-                            const vecFwd = { x: cos, y: sin };      // 車頭朝向
-                            const vecRight = { x: -sin, y: cos };   // 車身右側
-
-                            // 基礎角落 (右前角)
-                            const halfL = boxL / 2;
-                            const halfW = boxW / 2;
-                            const cornerFR_x = targetBox.x + (vecFwd.x * halfL) + (vecRight.x * halfW);
-                            const cornerFR_y = targetBox.y + (vecFwd.y * halfL) + (vecRight.y * halfW);
-
-                            // ★★★ [微小間距隨機化] ★★★
-                            // 在標準行列位置上，增加 ±0.15m 的隨機抖動，讓車子不要排得像機器人
-                            const jitterX = (Math.random() - 0.5) * 0.1;
-                            const jitterY = (Math.random() - 0.5) * 0.1;
-
-                            const moveLeft = padding + (col * bikeW) + (bikeW / 2) + jitterX;
-                            const moveBack = padding + (row * bikeL) + (bikeL / 2) + jitterY;
-
-                            // 3. [終點] 計算出的最終停等位置
-                            const endPos = {
-                                x: cornerFR_x - (vecRight.x * moveLeft) - (vecFwd.x * moveBack),
-                                y: cornerFR_y - (vecRight.y * moveLeft) - (vecFwd.y * moveBack)
-                            };
-
-
-                            // =====================================================================
-                            // [新增] 產生「繞行進入」的貝茲曲線 (Hook Turn Trajectory)
-                            // =====================================================================
-
-                            // 算出起點與終點的直線距離
-                            // =====================================================================
-                            // [修正] 產生「繞行進入」的貝茲曲線 (避免穿越前排機車)
-                            // =====================================================================
-
-                            // 算出起點與終點的直線距離
-                            const distDirect = Math.hypot(endPos.x - startPos.x, endPos.y - startPos.y);
-
-                            // 基礎延伸長度
-                            const baseControlLen = distDirect * 0.5;
-
-                            // ★★★ [關鍵修正] 動態調整控制臂長度 ★★★
-                            // row 是排數索引 (0:第一排, 1:第二排...)
-                            // 排數越後面，我們給予額外的延伸量 (Extra Extension)
-
-                            // P1 延伸：每多一排，往路口中心多衝 1.0 公尺
-                            // 這讓車子不會太早轉彎，避開前排的外角
-                            const p1Extension = baseControlLen + (row * 1.0);
-
-                            // P2 延伸：每多一排，往後方多延伸 2.5 公尺 (約一台車長)
-                            // 這會強制曲線在進入格子前，有更長一段是「正對著格子」的
-                            // 效果就是讓路徑形成一個更寬的 "U" 字型，繞過前排屁股
-                            const p2Extension = baseControlLen + (row * 2.5);
-
-                            // P1 (控制點1)：從起點，沿著「目前行駛方向」延伸
-                            // ★ 修正：加入微小的角度隨機偏轉 (±5度)，讓車流出發時稍微散開
-                            const currAngle = this.angle;
-                            //const angleJitter = (Math.random() - 0.5) * 0.2; // 約 ±0.1 rad
-                            //const p1Angle = currAngle + angleJitter;
-                            // 建議修改（改為 0，確保沿著路徑方向出發）
-                            const p1Angle = currAngle;
-
-                            const p1 = {
-                                x: startPos.x + Math.cos(p1Angle) * p1Extension,
-                                y: startPos.y + Math.sin(p1Angle) * p1Extension
-                            };
-
-                            // P2 (控制點2)：從終點，沿著「目標朝向的反方向」延伸
-                            // 注意這裡改用 p2Extension
-                            const p2 = {
-                                x: endPos.x - vecFwd.x * p2Extension,
-                                y: endPos.y - vecFwd.y * p2Extension
-                            };
-
-                            // 設定貝茲曲線路徑 (4點)
-                            this.currentPath = [startPos, p1, p2, endPos];
-
-                            // 計算曲線長度
-                            this.currentPathLength = Geom.Bezier.getLength(startPos, p1, p2, endPos);
-                            this.distanceOnPath = 0;
-
-                            return;
-
                         }
                     }
                 }
-
-                // 2. 尋找一般的 Transition
-                // 2. 尋找一般的 Transition (或 Fallback 找到的內側路徑)
+                // ... 一般汽車與無需待轉的邏輯 (保持原樣) ...
                 let transition = destNode.transitions.find(t => t.sourceLinkId === this.currentLinkId && t.sourceLaneIndex === this.currentLaneIndex && t.destLinkId === nextLinkId);
                 if (!transition) {
                     transition = destNode.transitions.find(t => t.sourceLinkId === this.currentLinkId && t.destLinkId === nextLinkId);
@@ -6804,13 +6747,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 this.currentTransition = transition;
 
                 if (transition) {
-                    // [新增] 通知優化器進行流量計數
-                    // 只有當進入 Intersection 狀態時才計數
                     if (typeof optimizerController !== 'undefined' && transition.turnGroupId) {
-                        // 傳入所在路口 ID (destNodeId)、轉向群組 ID、以及是否為機車
                         optimizerController.registerVehiclePass(destNodeId, transition.turnGroupId, this.isMotorcycle);
-
-                        // ★ 新增：收集迭代用的流量數據
                         if (optimizerController.looper) {
                             optimizerController.looper.collectTurnData(destNodeId, transition.turnGroupId);
                         }
@@ -6818,207 +6756,183 @@ document.addEventListener('DOMContentLoaded', () => {
 
                     if (transition.bezier) {
                         this.state = 'inIntersection';
-
-                        // --- ★★★ [修正 C] 防止瞬移的保險機制 (Anti-Teleport) ★★★ ---
-
-                        // 1. 複製貝茲曲線的點 (以免修改到共用的原始資料)
-                        // 注意：必須深拷貝每個點，因為我們要修改 p0
+                        // 瞬移保護邏輯
                         const points = transition.bezier.points.map(p => ({ x: p.x, y: p.y }));
-                        const p0 = points[0]; // 標準路徑的起點 (通常在內側車道)
-
-                        // 2. 計算「我現在的位置」與「標準起點」的距離
-                        // 因為 this.x/y 包含了 lateralOffset，所以這是真實的視覺距離
+                        const p0 = points[0];
                         const distSq = (this.x - p0.x) ** 2 + (this.y - p0.y) ** 2;
 
-                        // 3. 設定閾值 (例如 2.25 = 1.5公尺的平方)
-                        // 如果距離大於此值，代表發生了「車道不匹配」導致的瞬移風險
                         if (distSq > 2.25) {
-                            // [修正動作]：將貝茲曲線的起點 (P0)，強行改為車輛當前位置
                             points[0] = { x: this.x, y: this.y };
-
-                            // [重要] 因為路徑已經「拉」到車輪下了，原本的橫向偏移 (lateralOffset) 必須歸零
-                            // 否則車輛會在新路徑上再疊加一次偏移，導致二次跳動
                             this.lateralOffset = 0;
                             this.targetLateralOffset = 0;
-
-                            // [重要] 因為起點變了，曲線總長度會改變，必須重新計算
-                            // 確保車速與進度計算正確
                             const [np0, np1, np2, np3] = points;
                             this.currentPathLength = Geom.Bezier.getLength(np0, np1, np2, np3);
-
-                            // 使用修改後的路徑
                             this.currentPath = points;
                         } else {
-                            // [正常情況] 距離很近，直接使用原始數據
-                            this.currentPath = points; // 這裡用複製的 points 也沒問題
+                            this.currentPath = points;
                             this.currentPathLength = transition.bezier.length;
                         }
-                        // -----------------------------------------------------------
-
                         this.distanceOnPath = leftoverDistance;
                     } else {
                         this.finished = true;
                     }
                 }
             } else if (this.state === 'inIntersection') {
-                // [修正] 兩段式左轉完成後的切換邏輯
-                if (this.twoStageState !== 'none') {
-                    if (this.twoStageState !== 'leaving_box') {
-                        // 還在前往盒子或等待中，不應切換 Link
-                        return;
-                    }
-                    // 狀態是 leaving_box 且走完了路徑 -> 切換到 Next Link
-
-                    // 重置狀態
-                    // 1. 狀態清理
+                // =========================================================
+                // [修正重點 2] 只有在 "leaving_box" 結束時，才切換到 Next Link
+                // =========================================================
+                if (this.twoStageState === 'leaving_box') {
+                    // 清理狀態
                     this.twoStageState = 'none';
                     this.waitingBox = null;
 
-                    // 2. 執行切換 (這會將車輛邏輯掛載到下一條 Link，但預設會給予 Lane 0 或 Transition Lane)
+                    // 執行切換到下一條道路
                     this.switchToNextLink(leftoverDistance, network);
 
-                    // =========================================================================
-                    // [修改 Step 2] 落實預計算的「車道」與「偏移」，防止重疊
-                    // =========================================================================
-
-                    // 3. 應用車道分流 (Override Lane)
+                    // 重新應用偏移與車道 (防止重疊)
                     if (this.pendingLaneIndex !== undefined) {
-                        // 確保目標車道存在 (防呆)
                         const link = network.links[this.currentLinkId];
                         if (link && link.lanes[this.pendingLaneIndex]) {
-                            // 強制指定為我們剛剛算好的外側或次外側車道
                             this.currentLaneIndex = this.pendingLaneIndex;
-
-                            // ★ 重要：必須重新載入該車道的路徑數據 ★
-                            // 因為 switchToNextLink 可能載入了錯誤車道(如內側)的路徑
                             const lane = link.lanes[this.currentLaneIndex];
                             this.currentPath = lane.path;
                             this.currentPathLength = lane.length;
                         }
-                        // 清除標記
                         this.pendingLaneIndex = undefined;
                     }
-
-                    // 4. 應用橫向偏移 (Apply Lateral Offset)
                     if (this.pendingLateralOffset !== undefined) {
-                        // A. 設定物理偏移
-                        // 這是最關鍵的一行！直接告訴系統：這台車現在就在車道中心偏左/右的位置
-                        // 這樣渲染出來時，車子就會分開，不會疊在中間
                         this.lateralOffset = this.pendingLateralOffset;
-
-                        // B. 設定目標偏移 (慣性保持)
-                        // 告訴 updateMotorcycleDynamics：我的目標就是騎在這裡，不要立刻把我拉回 0
                         this.targetLateralOffset = this.pendingLateralOffset;
-
-                        // C. 設定 AI 偏好 (行為層)
-                        // 如果是機車，設定它的「騎乘習慣」。例如剛剛隨機分到右邊的車，之後也會傾向靠右騎
                         if (this.isMotorcycle) {
                             const link = network.links[this.currentLinkId];
                             const laneWidth = link.lanes[this.currentLaneIndex]?.width || 3.5;
-
-                            // 將偏移量 (例如 1.2m) 轉換為偏好值 (-1.0 ~ 1.0)
-                            // 限制範圍以防數值異常
                             this.preferredBias = Math.max(-0.9, Math.min(0.9, this.pendingLateralOffset / (laneWidth / 2)));
-
-                            // ★ 戰術鎖定：暫時凍結鑽車決策 (Decision Timer)
-                            // 設定 3~5 秒的冷卻時間。這段時間內，機車會乖乖保持在這個偏移位置直行，
-                            // 不會一出路口就開始亂鑽，這能讓車隊看起來整齊且穩定地發散出去
                             this.decisionTimer = 3.0 + Math.random() * 2.0;
                         }
-
-                        // 清除標記
                         this.pendingLateralOffset = undefined;
                     }
-
-                    // 5. (選擇性) 這裡不需要再做瞬移保護
-                    // 因為我們直接修改了 lateralOffset，車輛是相對於新車道中心偏移的，
-                    // 視覺位置會剛好接上從待轉區出來的位置。
-
-                    return; // 結束，不再執行後續的標準 Transition 邏輯
+                    return;
                 }
 
-                // 原本的一般切換邏輯
+                // 一般轉彎結束
                 this.switchToNextLink(leftoverDistance, network);
             }
         }
 
         /**
-    * 檢查兩段式左轉的等待號誌
-    * 邏輯：檢查「目標道路」的入口是否有綠燈流動
-    */
+         * [修正版] 檢查兩段式左轉的等待號誌
+         * 邏輯：只參考「橫向直行」的綠燈，嚴格排除轉彎信號
+         */
         checkTwoStageSignal(network) {
-
             // 1. 取得我們要去的下一條路 (Next Link)
             const nextLinkId = this.route[this.currentLinkIndex + 1];
-            if (!nextLinkId) return true; // 沒有下一條路，視為可通行
+            if (!nextLinkId) return true;
 
             // 2. 取得所在路口與號誌控制器
             const currentLink = network.links[this.currentLinkId];
             if (!currentLink) return true;
 
-            const nodeId = currentLink.destination; // 這是我們目前所在的路口
+            const nodeId = currentLink.destination;
             const tfl = network.trafficLights.find(t => t.nodeId === nodeId);
 
-            // 如果該路口沒有號誌機，視為綠燈，直接走
+            // 無號誌，直接走
             if (!tfl) return true;
-
-            // 3. 尋找「參考路徑」(Reference Transition)
-            // 我們要看的是：有沒有車流正在「直行進入」下一條路？
-            // 條件 A: 目的地是 nextLinkId
-            // 條件 B: 來源不是我們原本的路 (this.currentLinkId) -> 代表這是橫向車流
 
             const node = network.nodes[nodeId];
             if (!node) return true;
 
-            // 篩選出所有「匯入目標道路」且「來自其他方向」的路徑
-            const greenSignalTransitions = [];
+            // --- 內部輔助：計算道路角度 ---
+            const getLinkAngle = (l, isStart) => {
+                if (!l) return 0;
+                const lanes = Object.values(l.lanes);
+                if (lanes.length === 0) return 0;
+                const path = lanes[0].path;
+                if (path.length < 2) return 0;
+                // 取頭尾向量
+                const p1 = isStart ? path[0] : path[path.length - 2];
+                const p2 = isStart ? path[1] : path[path.length - 1];
+                return Math.atan2(p2.y - p1.y, p2.x - p1.x);
+            };
 
-            node.transitions.forEach(t => {
-                if (t.destLinkId === nextLinkId && t.sourceLinkId !== this.currentLinkId) {
-                    // 這條路徑代表橫向車流
+            // 目標道路的角度 (出射角)
+            const nextLinkObj = network.links[nextLinkId];
+            const targetOutAngle = getLinkAngle(nextLinkObj, true);
 
-                    // 檢查該路徑的號誌狀態
+            // 3. 遍歷所有「進入目標道路」的路徑
+            const targetTransitions = node.transitions.filter(t => t.destLinkId === nextLinkId);
+
+            let hasStraightGreen = false;
+
+            for (const t of targetTransitions) {
+                // 排除來自「我原本道路」的信號 (避免看到自己的左轉燈就衝出去)
+                if (t.sourceLinkId === this.currentLinkId) continue;
+
+                // 取得這條路徑來源道路的角度
+                const srcLink = network.links[t.sourceLinkId];
+                const srcInAngle = getLinkAngle(srcLink, false);
+
+                // 計算角度差 (Diff)
+                let diff = targetOutAngle - srcInAngle;
+                while (diff <= -Math.PI) diff += Math.PI * 2;
+                while (diff > Math.PI) diff -= Math.PI * 2;
+
+                // --- [關鍵] 判斷是否為「直行」車流 ---
+                // 直行的角度差應該接近 0 (允許誤差 ±0.6 rad，約 35度)
+                // Canvas 座標系下，直行 diff ≈ 0
+                const isStraightFlow = Math.abs(diff) < 0.6;
+
+                if (isStraightFlow) {
+                    // 只有當這條是「直行」路徑時，才檢查它的燈號
+                    let signal = 'Green'; // 預設無管制為綠燈
                     if (t.turnGroupId) {
-                        const signal = tfl.getSignalForTurnGroup(t.turnGroupId);
-                        // 只有綠燈才算數 (黃燈通常不建議起步)
-                        if (signal === 'Green') {
-                            greenSignalTransitions.push(t);
-                        }
-                    } else {
-                        // 如果這條路徑沒有綁定號誌群組 (不受控)，視為綠燈
-                        greenSignalTransitions.push(t);
+                        signal = tfl.getSignalForTurnGroup(t.turnGroupId);
+                    }
+
+                    // 必須是嚴格的綠燈 (Green)
+                    if (signal === 'Green') {
+                        hasStraightGreen = true;
+                        break; // 找到一個直行綠燈即可放行
                     }
                 }
-            });
+            }
 
-            // 4. 判定結果
-            // 只要有一條橫向路徑是綠燈（通常是直行），我們就可以跟著走
-            return greenSignalTransitions.length > 0;
+            // 如果找不到直行綠燈 (代表全紅 或 只有對向左轉/右轉燈亮)，則保持紅燈等待
+            return hasStraightGreen;
         }
         // ==========================================================
 
         // 輔助函式：判斷是否左轉 (利用向量外積或角度差)
         checkIsLeftTurn(network, linkIn, linkOut) {
             if (!linkIn || !linkOut) return false;
+
+            // 取得道路角度的輔助函式
             const getAngle = (l, isStart) => {
                 const lanes = Object.values(l.lanes);
                 if (lanes.length === 0) return 0;
+                // 取第一條車道做代表
                 const path = lanes[0].path;
                 if (path.length < 2) return 0;
+
                 const p1 = isStart ? path[0] : path[path.length - 2];
                 const p2 = isStart ? path[1] : path[path.length - 1];
                 return Math.atan2(p2.y - p1.y, p2.x - p1.x);
             };
-            const a1 = getAngle(linkIn, false); // 入射角
-            const a2 = getAngle(linkOut, true); // 出射角
+
+            const a1 = getAngle(linkIn, false); // 進入路口的道路角度
+            const a2 = getAngle(linkOut, true); // 離開路口的道路角度 (目標路段)
 
             let diff = a2 - a1;
+            // 正規化角度差至 -PI ~ +PI
             while (diff <= -Math.PI) diff += Math.PI * 2;
             while (diff > Math.PI) diff -= Math.PI * 2;
 
-            // [修正] 放寬判定範圍：
-            // 只要大於 0.15 (約 8.5度) 就視為左轉，涵蓋淺角度路口
-            return Math.abs(diff) > 0.08 && Math.abs(diff) < 2.8;
+            // Canvas座標系(Y-Down)特性：
+            // 左轉是 負角度 (例如 0 -> -1.57)
+            // 右轉是 正角度 (例如 0 -> +1.57)
+
+            // 判定為左轉的條件：角度差在 -0.2 (約-11度) 到 -2.8 (約-160度) 之間
+            // 這排除了直行 (接近 0) 和 右轉 (正值) 以及 迴轉 (接近 +/- 3.14)
+            return (diff < -0.2 && diff > -2.8);
         }
 
         // --- [新增] 輔助：判斷是否準備進行兩段式左轉 ---
@@ -7047,11 +6961,66 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // 輔助函式：找待轉格 (通常在車輛右前方)
         findBestBox(boxes, currentLink) {
-            // 實作策略：找一個座標在「右側」的 Box
-            // 簡單版：直接回傳 boxes[0] 即可，通常 XML 只有一個
-            return boxes[0];
-        }
+            if (!boxes || boxes.length === 0) return null;
+            if (!currentLink) return null;
 
+            // 1. 計算目前道路的行駛方向 (Forward Vector)
+            const lanes = Object.values(currentLink.lanes);
+            if (lanes.length === 0) return null;
+
+            // 取最外側車道的末端向量
+            const path = lanes[lanes.length - 1].path;
+            if (path.length < 2) return null;
+
+            const pEnd = path[path.length - 1];
+            const pPrev = path[path.length - 2];
+
+            // 計算單位向量 (Forward)
+            const dx = pEnd.x - pPrev.x;
+            const dy = pEnd.y - pPrev.y;
+            const len = Math.hypot(dx, dy);
+            const fx = dx / len; // Forward X
+            const fy = dy / len; // Forward Y
+
+            // 計算右側向量 (Right Vector): (dy, -dx) 在 Canvas Y-Down 座標系
+            // Canvas座標: X向右, Y向下. 
+            // 若前進(1,0)東, 右側應為(0,1)南. -> (dy, -dx) => (0, -1) 錯了
+            // 若前進(1,0)東, 右側應為(0,1)南. 
+            // 向量旋轉 90度順時針: (x, y) -> (-y, x)
+            const rx = -fy;
+            const ry = fx;
+
+            let bestBox = null;
+            let maxScore = -Infinity;
+
+            // 2. 評分所有格子
+            for (const box of boxes) {
+                // 計算 車道末端 到 格子 的向量
+                const vx = box.x - pEnd.x;
+                const vy = box.y - pEnd.y;
+
+                // 投影量 (Dot Product)
+                const forwardProj = vx * fx + vy * fy; // 在前進方向的距離
+                const rightProj = vx * rx + vy * ry;   // 在右側方向的距離
+
+                // 條件 A: 格子必須在路口內 (前進方向 > 0)
+                // 條件 B: 格子必須在右側 (右側方向 > 0，允許稍微偏左一點點的寬容度 > -2.0)
+                if (forwardProj > 0 && rightProj > -2.0) {
+
+                    // 評分公式：我們偏好「右前方」最遠的那個角落
+                    // 權重：越靠前越好 (穿過路口)，越靠右越好
+                    const score = forwardProj + rightProj;
+
+                    if (score > maxScore) {
+                        maxScore = score;
+                        bestBox = box;
+                    }
+                }
+            }
+
+            // 如果找不到符合「右前方」條件的格子，回傳 null (觸發直接左轉 fallback)
+            return bestBox;
+        }
         // 在 Vehicle 類別中新增此方法
         checkGreenLightLaunch(network) {
             // 1. 取得當前路段與下一路段資訊
