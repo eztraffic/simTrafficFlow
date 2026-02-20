@@ -2328,8 +2328,34 @@ document.addEventListener('DOMContentLoaded', () => {
         ctx2D.fillStyle = isChaseVehicle ? 'rgba(255, 0, 0, 1.0)' : 'rgba(10, 238, 254, 1.0)';
         ctx2D.strokeStyle = '#FFFFFF';
         ctx2D.lineWidth = (isChaseVehicle ? 1.2 : 0.5) / scale;
-        ctx2D.beginPath(); ctx2D.rect(-v.length / 2, -v.width / 2, v.length, v.width);
-        ctx2D.fill(); ctx2D.stroke(); ctx2D.restore();
+        ctx2D.beginPath();
+        ctx2D.rect(-v.length / 2, -v.width / 2, v.length, v.width);
+        ctx2D.fill();
+        ctx2D.stroke();
+
+        // =========================================================
+        // 2D 方向燈閃爍邏輯
+        // =========================================================
+        if (v.blinker !== 'none' && typeof simulation !== 'undefined') {
+            const isBlinkOn = (simulation.time % 0.8) < 0.4;
+            if (isBlinkOn) {
+                ctx2D.fillStyle = '#ffaa00'; // 亮橘色
+                const indSize = Math.max(0.4, 1.5 / scale); // 隨縮放比例動態調整大小
+                const halfL = v.length / 2;
+                const halfW = v.width / 2;
+
+                // 注意：在 Canvas Y-Down 座標系中，通常 -Y 是左，+Y 是右 (視您的角度定)
+                // 若閃爍方向顛倒，可將 'left' 與 'right' 的 Y 座標正負互換
+                if (v.blinker === 'left') {
+                    ctx2D.fillRect(halfL - indSize, -halfW, indSize, indSize); // 左前
+                    ctx2D.fillRect(-halfL, -halfW, indSize, indSize);          // 左後
+                } else if (v.blinker === 'right') {
+                    ctx2D.fillRect(halfL - indSize, halfW - indSize, indSize, indSize); // 右前
+                    ctx2D.fillRect(-halfL, halfW - indSize, indSize, indSize);          // 右後
+                }
+            }
+        }
+        ctx2D.restore();
     }
 
 
@@ -2661,7 +2687,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 // 第三面：朝左 (-X 方向)
                 const pedGroupSide1 = PedestrianManager.createMesh();
                 pedGroupSide1.position.set(-0.25, 2.5, 0);
-                pedGroupSide1.rotation.y = -Math.PI / 2; 
+                pedGroupSide1.rotation.y = -Math.PI / 2;
                 group.add(pedGroupSide1);
                 pedestrianMeshes.push({ type: 'pedestrian', mesh: pedGroupSide1, nodeId: nodeId, linkId: transverseLinkId });
 
@@ -3276,7 +3302,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     const nearRightPos = to3D(nrX, nrY, 0);
 
                     // Dual face logic check
-// Dual face logic check
+                    // Dual face logic check
                     let oppositeLinkId = null;
                     let transverseLinkId = null; // ★ 1. 確保這裡有宣告
 
@@ -3286,7 +3312,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         const oLanes = Object.values(otherLink.lanes);
                         if (oLanes.length === 0) continue;
                         const oPath = oLanes[0].path;
-                        if (oPath.length < 2) continue;
+                        if (oPath.length < 2) return;
                         const oP1 = oPath[oPath.length - 2], oP2 = oPath[oPath.length - 1];
                         const oAngle = Math.atan2(oP2.y - oP1.y, oP2.x - oP1.x);
                         let diff = Math.abs(angle - oAngle);
@@ -3294,7 +3320,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                         if (Math.abs(Math.abs(diff) - Math.PI) < 0.7) {
                             oppositeLinkId = otherId;
-                        } 
+                        }
                         else if (Math.abs(Math.abs(diff) - Math.PI / 2) < 0.7) {
                             transverseLinkId = otherId; // ★ 2. 找到橫向道路時賦值
                         }
@@ -3868,6 +3894,48 @@ document.addEventListener('DOMContentLoaded', () => {
         br.position.set(-lightX, lightY, -lightZ);
         carGroup.add(br);
 
+        // --- 5. 方向燈 (Indicators) ---
+                // --- 5. 方向燈 (Indicators) [修正版] ---
+        const indGeo = new THREE.BoxGeometry(0.15, 0.25, 0.15);
+        
+        // [修正] 使用 Standard 材質以支援自發光 (Emissive)
+        // 預設顏色為暗色，emissive 為黑色(不發光)
+        const indMatBase = new THREE.MeshStandardMaterial({ 
+            color: 0x331100,
+            emissive: 0x000000,
+            roughness: 0.2,
+            metalness: 0.5
+        });
+
+        // 稍微往外推一點 (+0.08)，避免被車體遮住
+        const indX = length / 2;
+        const indZ = (width / 2) + 0.08; 
+
+        // 左前 (Front Left)
+        const indFL = new THREE.Mesh(indGeo, indMatBase.clone());
+        indFL.position.set(indX, lightY, -indZ); 
+        carGroup.add(indFL);
+
+        // 右前 (Front Right)
+        const indFR = new THREE.Mesh(indGeo, indMatBase.clone());
+        indFR.position.set(indX, lightY, indZ);
+        carGroup.add(indFR);
+
+        // 左後 (Back Left)
+        const indBL = new THREE.Mesh(indGeo, indMatBase.clone());
+        indBL.position.set(-indX, lightY, -indZ); 
+        carGroup.add(indBL);
+
+        // 右後 (Back Right)
+        const indBR = new THREE.Mesh(indGeo, indMatBase.clone());
+        indBR.position.set(-indX, lightY, indZ);
+        carGroup.add(indBR);
+
+        carGroup.userData.indicators = {
+            left: [indFL, indBL],
+            right: [indFR, indBR]
+        };
+
         return carGroup;
     }
 
@@ -3957,10 +4025,48 @@ document.addEventListener('DOMContentLoaded', () => {
         riderGroup.rotation.z = 0.2;
         bikeGroup.add(riderGroup);
 
+        // ★★★ 補上缺失的車燈幾何體定義 ★★★
         const lightGeo = new THREE.BoxGeometry(0.1, 0.15, 0.15);
+
         const headLight = new THREE.Mesh(lightGeo, new THREE.MeshBasicMaterial({ color: 0xFFFFCC }));
         headLight.position.set(length * 0.3, wheelRadius + 0.45, 0);
         bikeGroup.add(headLight);
+
+// --- 方向燈 (Indicators) ---
+                // --- 方向燈 (Indicators) [修正版] ---
+        const indGeo = new THREE.BoxGeometry(0.08, 0.08, 0.08);
+        
+        // [修正] 同樣改用自發光材質
+        const indMatBase = new THREE.MeshStandardMaterial({ 
+            color: 0x331100,
+            emissive: 0x000000,
+            roughness: 0.2
+        });
+
+        // 左前
+        const indFL = new THREE.Mesh(indGeo, indMatBase.clone());
+        indFL.position.set(length * 0.3, wheelRadius + 0.45, -0.18); // 稍微加寬
+        bikeGroup.add(indFL);
+
+        // 右前
+        const indFR = new THREE.Mesh(indGeo, indMatBase.clone());
+        indFR.position.set(length * 0.3, wheelRadius + 0.45, 0.18);
+        bikeGroup.add(indFR);
+
+        // 左後
+        const indBL = new THREE.Mesh(indGeo, indMatBase.clone());
+        indBL.position.set(-length * 0.25, wheelRadius + 0.25, -0.18);
+        bikeGroup.add(indBL);
+
+        // 右後
+        const indBR = new THREE.Mesh(indGeo, indMatBase.clone());
+        indBR.position.set(-length * 0.25, wheelRadius + 0.25, 0.18);
+        bikeGroup.add(indBR);
+
+        bikeGroup.userData.indicators = {
+            left: [indFL, indBL],
+            right: [indFR, indBR]
+        };
 
         return bikeGroup;
     }
@@ -3999,6 +4105,33 @@ document.addEventListener('DOMContentLoaded', () => {
             // 更新位置與角度
             mesh.position.set(v.x, 0, v.y);
             mesh.rotation.y = -v.angle;
+
+            // =========================================================
+            // 3D 方向燈閃爍邏輯 (0.8 秒一個週期，亮暗各半) - [修正版]
+            // =========================================================
+            if (mesh.userData.indicators) {
+                // 模擬真實閃爍頻率
+                const isBlinkOn = (simulation.time % 0.8) < 0.4;
+
+                const updateInds = (inds, isActive) => {
+                    inds.forEach(ind => {
+                        if (isActive && isBlinkOn) {
+                            // 亮起：亮橘色 + 強烈自發光
+                            ind.material.color.setHex(0xffaa00); 
+                            ind.material.emissive.setHex(0xff6600); // 發光核心色
+                            ind.material.emissiveIntensity = 2.0;   // 強度
+                        } else {
+                            // 熄滅：暗褐色 + 無自發光
+                            ind.material.color.setHex(0x331100);
+                            ind.material.emissive.setHex(0x000000);
+                            ind.material.emissiveIntensity = 0;
+                        }
+                    });
+                };
+
+                updateInds(mesh.userData.indicators.left, v.blinker === 'left');
+                updateInds(mesh.userData.indicators.right, v.blinker === 'right');
+            }
         });
 
         // (後續移除消失車輛的代碼保持不變...)
@@ -5920,6 +6053,7 @@ document.addEventListener('DOMContentLoaded', () => {
             this.originalHeadway = this.headwayTime;
             this.originalMaxAccel = this.maxAccel;
             this.swarmTimer = 0; // 確保初始化
+            this.swarmTransitionDuration = 0; // 新增：蜂群模式過渡計時器
 
             // --- 橫向控制參數 ---
             this.lateralOffset = 0;       // 當前偏離車道中心的距離 (+左, -右)
@@ -5952,6 +6086,7 @@ document.addEventListener('DOMContentLoaded', () => {
             this.laneChangeState = null;
             this.laneChangeGoal = null;
             this.laneChangeCooldown = 0;
+            this.blinker = 'none'; // 'none', 'left', 'right'
 
             // --- 數據收集 ---
             this.sectionEntryData = {};
@@ -6041,6 +6176,50 @@ document.addEventListener('DOMContentLoaded', () => {
                     // 如果是剛起步，這會讓它多停留在原地一下
                 }
             }
+
+            // ==========================================
+            // 決定方向燈狀態 (Turn Signal Logic)
+            // ==========================================
+                        // ==========================================
+            // 決定方向燈狀態 (Turn Signal Logic) - [修正後代碼]
+            // ==========================================
+            this.blinker = 'none';
+
+            // 1. 兩段式左轉前往待轉區 (優先)
+            if (this.twoStageState === 'moving_to_box') {
+                this.blinker = 'right';
+            }
+            // 2. 變換車道 (執行中 或 意圖)
+            else if (this.laneChangeState) {
+                this.blinker = (this.laneChangeState.toLaneIndex > this.laneChangeState.fromLaneIndex) ? 'right' : 'left';
+            } else if (this.laneChangeGoal !== null && this.laneChangeGoal !== this.currentLaneIndex) {
+                this.blinker = (this.laneChangeGoal > this.currentLaneIndex) ? 'right' : 'left';
+            }
+            // 3. [新增] 一般路口轉彎判斷
+            else if (this.state === 'inIntersection' && this.currentTransition && this.currentTransition.bezier) {
+                // 透過貝茲曲線的起點與終點角度差來判斷轉向
+                const pts = this.currentTransition.bezier.points;
+                if (pts.length >= 4) {
+                    // 計算進入角度
+                    const angleStart = Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x);
+                    // 計算離開角度
+                    const angleEnd = Math.atan2(pts[3].y - pts[2].y, pts[3].x - pts[2].x);
+                    
+                    let diff = angleEnd - angleStart;
+                    // 角度正規化 (-PI ~ PI)
+                    while (diff <= -Math.PI) diff += Math.PI * 2;
+                    while (diff > Math.PI) diff -= Math.PI * 2;
+
+                    // 閾值判斷 (約 17度以上視為轉彎)
+                    // Canvas座標系(Y-Down): 順時針(右轉)為正，逆時針(左轉)為負
+                    if (diff > 0.3) {
+                        this.blinker = 'right';
+                    } else if (diff < -0.3) {
+                        this.blinker = 'left';
+                    }
+                }
+            }
+
 
             if (this.finished) return;
             const network = simulation.network;
@@ -6898,7 +7077,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
                         if (boxes && boxes.length > 0) {
                             const targetBox = this.findBestBox(boxes, currentLink);
-
                             if (targetBox) {
                                 // --- 設定進入待轉區的路徑 ---
                                 this.state = 'inIntersection';
@@ -6906,6 +7084,11 @@ document.addEventListener('DOMContentLoaded', () => {
                                 this.waitingBox = targetBox;
                                 this.currentTransition = null;
 
+                                // ★★★ [新增] 主動降低極速，模擬進站減速行為 ★★★
+                                // 設定為約 20 km/h (5.5 m/s)，確保它不會嘗試加速衝進格子
+                                this.maxSpeed = 20 / 3.6; 
+                                // 重置加速度，避免帶著上一幀的急加速衝進來
+                                this.accel = 0; 
                                 // 排隊計數
                                 if (typeof targetBox.waitingCount === 'undefined') targetBox.waitingCount = 0;
                                 const idx = targetBox.waitingCount;
@@ -7667,33 +7850,80 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
 
-                // IDM 標準跟車檢查
+                // =========================================================
+                // IDM 標準跟車檢查 + 協作讓道 (Cooperative Yielding)
+                // =========================================================
+                // =========================================================
+                // IDM 標準跟車檢查 + 協作讓道 (Cooperative Yielding) [修正版]
+                // =========================================================
                 let isSameContext = false;
-                if (this.state === 'onLink' && other.state === 'onLink' && this.currentLinkId === other.currentLinkId) {
-                    isSameContext = true;
-                } else if (this.state === 'inIntersection' && other.state === 'inIntersection' && this.currentTransition?.id === other.currentTransition?.id) {
-                    isSameContext = true;
+                let isMergingIntoMyLane = false; // 對方是否「企圖」切入我的車道
+
+                // 1. 判斷基本路段一致性
+                const onSameLink = (this.state === 'onLink' && other.state === 'onLink' && this.currentLinkId === other.currentLinkId);
+                const inSameIntersection = (this.state === 'inIntersection' && other.state === 'inIntersection' && this.currentTransition?.id === other.currentTransition?.id);
+
+                if (onSameLink || inSameIntersection) {
+                    
+                    // 情況 A：實體已經在同一車道 (同車道 或 正在切入且物理上佔據)
+                    if (other.currentLaneIndex === this.currentLaneIndex ||
+                        (other.laneChangeState && other.laneChangeState.toLaneIndex === this.currentLaneIndex)) {
+                        isSameContext = true;
+                    }
+                    // 情況 B (協作讓道)：他還在隔壁車道，但在我前方，且有切入意圖
+                    else if (other.distanceOnPath > this.distanceOnPath) {
+                        
+                        // ★★★ [新增] 方向燈意圖判斷 (Visual Intent) ★★★
+                        // 判斷對方的燈號是否指向我的車道
+                        let visualIntentToMerge = false;
+                        
+                        // 假設 laneIndex 越大越靠右 (0:最左, N:最右)
+                        // 如果他在我左邊 (Lane - 1) 且打右燈 ('right') -> 想切進來
+                        if (other.currentLaneIndex === this.currentLaneIndex - 1 && other.blinker === 'right') {
+                            visualIntentToMerge = true;
+                        }
+                        // 如果他在我右邊 (Lane + 1) 且打左燈 ('left') -> 想切進來
+                        else if (other.currentLaneIndex === this.currentLaneIndex + 1 && other.blinker === 'left') {
+                            visualIntentToMerge = true;
+                        }
+
+                        // 判斷依據：原本的 AI Goal 或 視覺方向燈
+                        if (other.laneChangeGoal === this.currentLaneIndex || visualIntentToMerge) {
+                            isMergingIntoMyLane = true;
+                            isSameContext = true;
+                        }
+                    }
                 }
 
                 if (isSameContext) {
                     const distDiff = other.distanceOnPath - this.distanceOnPath;
                     if (distDiff > 0) {
-                        if (isBlocking(other)) {
-                            const currentGap = distDiff - (this.length / 2) - (other.length / 2);
+                        // 如果是物理上已經擋住我，或者是他正在打燈準備切進來
+                        if (isBlocking(other) || isMergingIntoMyLane) {
+                            let currentGap = distDiff - (this.length / 2) - (other.length / 2);
 
-                            // ============================================================
-                            // 機車跟車邏輯（修改版：回歸標準判定）
-                            // ============================================================
-                            // 移除針對機車扣除 0.3m 的邏輯，完全遵循 XML 的 minDistance
+                            // ★ 協作讓道魔法：欺騙 IDM 模型 ★
+                            if (isMergingIntoMyLane && !other.laneChangeState) {
+                                // 當偵測到對方打方向燈想切入時：
+                                // 我們「人為縮短」感知的距離。
+                                // IDM 算式會以為前車很近，進而鬆油門或煞車，製造出空隙讓對方切入。
+                                
+                                // 調整幅度：原本減 3.0，現在可以根據相對速度微調
+                                // 如果我比他快很多，要減更多 gap 來強迫煞車
+                                const speedRel = this.speed - other.speed;
+                                const penalty = (speedRel > 0) ? 5.0 : 3.0; // 如果我比較快，加大懲罰距離讓煞車更明顯
+
+                                currentGap = Math.max(1.0, currentGap - penalty);
+                            }
+
                             if (currentGap < gap) {
                                 gap = currentGap;
                                 leader = other;
                             }
-                            // ============================================================
-                            // ============================================================
                         }
                     }
                 }
+                // =========================================================
             }
             // --- B. [新增] 右轉禮讓直行邏輯 (Right Hook Protection) ---
             // 只有「汽車」且「正在路口或接近路口」時才檢查
