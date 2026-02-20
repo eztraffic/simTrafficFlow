@@ -1345,9 +1345,20 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- TOOL MANAGEMENT ---
     // --- TOOL MANAGEMENT ---
     // 完整替換此函數
+// 完整替換此函數
     function setTool(toolName) {
+        // --- [修正] 將 SubNetworkTool 的重置移到最上方 ---
+        // 必須先重置 SubNetworkTool，因為它的 reset() 會寫入 "Active..." 文字到面板。
+        // 我們希望隨後的 updatePropertiesPanel() 能覆蓋掉那些文字，顯示正確的工具選項。
+        if (toolName !== 'subnetwork' && window.SubNetworkTool) {
+            SubNetworkTool.reset();
+            if (SubNetworkTool.selectionGroup) SubNetworkTool.selectionGroup.destroy();
+        }
+        // ---------------------------------------------
+
         activeTool = toolName;
-        deselectAll(); // Reset selection and update properties panel
+        deselectAll(); // Reset selection and update properties panel (這裡會繪製正確的面板)
+
         document.querySelectorAll('.tool-btn').forEach(btn => {
             btn.classList.toggle('active', btn.dataset.tool === toolName);
         });
@@ -1379,12 +1390,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // 清除所有輔助圖示 (號誌編輯圖示 & 選取模式圖示)
         clearTrafficLightIcons();
-        clearNodeSettingsIcons(); // <--- 【新增】
+        clearNodeSettingsIcons();
 
         // 3. 根據工具啟用互動
         switch (toolName) {
             case 'select':
-                // 【新增】顯示路口設定圖示
+                // 顯示路口設定圖示
                 showNodeSettingsIcons();
 
                 // 為所有可選物件啟用監聽
@@ -1454,6 +1465,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 Object.values(network.links).forEach(l => l.konvaGroup.listening(true));
                 Object.values(network.nodes).forEach(n => n.konvaShape.listening(true));
                 stage.container().style.cursor = 'pointer';
+                break;
+
+            case 'subnetwork':
+                // 啟用 subnetwork 模式
+                if (window.SubNetworkTool) SubNetworkTool.isActive = true;
+                stage.container().style.cursor = 'crosshair';
+                // 讓所有物件不接收事件，由 subnetwork tool 處理座標判定
+                Object.values(network.links).forEach(l => l.konvaGroup.listening(false));
+                Object.values(network.nodes).forEach(n => n.konvaShape.listening(false));
+                // 背景保持可聽，以便點擊畫布
                 break;
 
             default:
@@ -1718,7 +1739,7 @@ document.addEventListener('DOMContentLoaded', () => {
             case 'add-parking-lot': text += " - Click to add polygon points. Double-click to finish."; break; // <--- Fix: status bar text
             case 'add-intersection': text += " - Click to draw polygon points around the intersection area. Double-click to finish."; break;
             case 'add-parking-gate': text += " - Drag to create a rectangle representing an Entrance or Exit on a Parking Lot boundary."; break;
-
+            case 'subnetwork': text += " - Click points to enclose area. Double-click to finish. Drag blue box to move."; break;
         }
         statusBar.textContent = I18N.t(text);
     }
@@ -1800,6 +1821,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         stage.on('mousedown', (e) => {
+            // 1. 滑鼠中鍵 (滾輪按下去) -> 強制拖曳畫布
             if (e.evt.button === 1) {
                 isPanning = true;
                 lastPointerPosition = stage.getPointerPosition();
@@ -1808,8 +1830,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
 
+            // 2. 滑鼠左鍵點擊在空白處 (Stage)
             if (e.evt.button === 0 && e.target === stage) {
-                // [修正重點] 將 'add-intersection' 加入下方的排除清單中
+                // 排除清單：如果不是這些工具，則視為拖曳畫布
                 if (activeTool !== 'add-link' &&
                     activeTool !== 'measure' &&
                     !(activeTool === 'connect-lanes' && connectMode === 'box') &&
@@ -1817,7 +1840,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     activeTool !== 'add-pushpin' &&
                     activeTool !== 'add-parking-lot' &&
                     activeTool !== 'add-parking-gate' &&
-                    activeTool !== 'add-intersection') { // <--- 加入這一行
+                    activeTool !== 'add-intersection' &&
+                    activeTool !== 'subnetwork') { // 確保 subnetwork 在此清單中
 
                     isPanning = true;
                     lastPointerPosition = stage.getPointerPosition();
@@ -1827,18 +1851,38 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
 
-            // --- [新增] Connect Box Mode 的開始繪製邏輯 ---
+            // -----------------------------------------------------------
+            // [修正重點] 使用 stage.getPointerPosition() 獲取精確的世界座標
+            // -----------------------------------------------------------
+            const pointer = stage.getPointerPosition();
+            if (!pointer) return; // 防呆
+
+            const worldPos = {
+                x: (pointer.x - stage.x()) / stage.scaleX(),
+                y: (pointer.y - stage.y()) / stage.scaleY(),
+            };
+
+            // --- SubNetwork Tool 邏輯 ---
+            if (activeTool === 'subnetwork') {
+                // 如果是在選取模式且點擊到物件(例如拖曳框)，讓 Konva 處理拖曳，不執行畫點
+                if (window.SubNetworkTool && window.SubNetworkTool.mode === 'selected' && e.target !== stage) {
+                    return;
+                }
+
+                if (window.SubNetworkTool) {
+                    window.SubNetworkTool.handleMouseDown(worldPos);
+                }
+                return;
+            }
+            // ---------------------------
+
+            // --- Connect Box Mode ---
             if (activeTool === 'connect-lanes' && connectMode === 'box') {
                 if (e.target !== stage) return;
 
-                const pos = {
-                    x: (e.evt.layerX - stage.x()) / stage.scaleX(),
-                    y: (e.evt.layerY - stage.y()) / stage.scaleY(),
-                };
-
                 tempShape = new Konva.Rect({
-                    x: pos.x,
-                    y: pos.y,
+                    x: worldPos.x,
+                    y: worldPos.y,
                     width: 0,
                     height: 0,
                     stroke: '#00D2FF',
@@ -1848,24 +1892,18 @@ document.addEventListener('DOMContentLoaded', () => {
                     name: 'selection-box'
                 });
                 layer.add(tempShape);
-                tempShape.setAttr('startPos', pos);
+                tempShape.setAttr('startPos', worldPos);
                 return;
             }
-            // --- [新增結束] ---
 
-            // 在 stage.on('mousedown') 內加入
+            // --- Parking Gate ---
             if (activeTool === 'add-parking-gate') {
-                if (e.target !== stage) return; // 避免點到其他物件
-                isPanning = false;
-                const pos = {
-                    x: (e.evt.layerX - stage.x()) / stage.scaleX(),
-                    y: (e.evt.layerY - stage.y()) / stage.scaleY(),
-                };
+                if (e.target !== stage) return;
+                isPanning = false; // 確保不觸發 Pan
 
-                // 開始繪製暫存矩形
                 tempShape = new Konva.Rect({
-                    x: pos.x,
-                    y: pos.y,
+                    x: worldPos.x,
+                    y: worldPos.y,
                     width: 0,
                     height: 0,
                     stroke: 'orange',
@@ -1873,12 +1911,80 @@ document.addEventListener('DOMContentLoaded', () => {
                     listening: false
                 });
                 layer.add(tempShape);
-                // 暫存起始點以便計算寬高
-                tempShape.setAttr('startPos', pos);
+                tempShape.setAttr('startPos', worldPos);
                 return;
             }
 
+            // 處理一般點擊 (Add Link, Select 等)
+            // 注意：handleStageClick 內部我們也建議檢查一下是否使用了正確的座標計算
             handleStageClick(e);
+        });
+
+        stage.on('mousemove', (e) => {
+            // 1. 拖曳畫布 (Panning)
+            if (isPanning) {
+                const newPointerPosition = stage.getPointerPosition();
+                const dx = newPointerPosition.x - lastPointerPosition.x;
+                const dy = newPointerPosition.y - lastPointerPosition.y;
+                stage.move({ x: dx, y: dy });
+                lastPointerPosition = newPointerPosition;
+                drawGrid();
+                e.evt.preventDefault();
+                return;
+            }
+
+            // -----------------------------------------------------------
+            // [修正重點] 使用 stage.getPointerPosition() 獲取精確的世界座標
+            // -----------------------------------------------------------
+            const pointer = stage.getPointerPosition();
+            if (!pointer) return;
+
+            const worldPos = {
+                x: (pointer.x - stage.x()) / stage.scaleX(),
+                y: (pointer.y - stage.y()) / stage.scaleY(),
+            };
+
+            // --- SubNetwork Tool 預覽線條 ---
+            if (activeTool === 'subnetwork') {
+                if (window.SubNetworkTool) {
+                    window.SubNetworkTool.handleMouseMove(worldPos);
+                }
+                // 不要 return，以免阻擋其他 hover 效果
+            }
+            // -------------------------------
+
+            // --- Connect Box Mode 拖曳範圍 ---
+            if (activeTool === 'connect-lanes' && connectMode === 'box' && tempShape) {
+                const startPos = tempShape.getAttr('startPos');
+                tempShape.x(Math.min(worldPos.x, startPos.x));
+                tempShape.y(Math.min(worldPos.y, startPos.y));
+                tempShape.width(Math.abs(worldPos.x - startPos.x));
+                tempShape.height(Math.abs(worldPos.y - startPos.y));
+                layer.batchDraw();
+                return;
+            }
+
+            // --- Parking Gate 拖曳範圍 ---
+            if (activeTool === 'add-parking-gate' && tempShape) {
+                const startPos = tempShape.getAttr('startPos');
+                tempShape.width(worldPos.x - startPos.x);
+                tempShape.height(worldPos.y - startPos.y);
+                layer.batchDraw();
+            }
+
+            // --- Add Link / Measure / Intersection 等工具的動態線條 ---
+            if ((activeTool === 'add-link' || activeTool === 'measure' || activeTool === 'add-parking-lot' || activeTool === 'add-intersection') && tempShape) {
+                const points = tempShape.points();
+                // 更新最後一個點為當前滑鼠位置
+                points[points.length - 2] = worldPos.x;
+                points[points.length - 1] = worldPos.y;
+                tempShape.points(points);
+
+                if (activeTool === 'measure') {
+                    updateMeasurementVisuals();
+                }
+                layer.batchDraw();
+            }
         });
 
         stage.on('mouseup', (e) => {
@@ -1987,6 +2093,19 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 layer.batchDraw(); // <--- Ensure we see the movement
             }
+
+
+            // --- 新增：SubNetworkTool 邏輯 ---
+            if (activeTool === 'subnetwork') {
+                const pos = {
+                    x: (e.evt.layerX - stage.x()) / stage.scaleX(),
+                    y: (e.evt.layerY - stage.y()) / stage.scaleY(),
+                };
+                SubNetworkTool.handleMouseMove(pos);
+                // 注意：不要 return，讓 Pan 邏輯也能運作 (如果有的話)
+            }
+            // -------------------------------
+
         });
 
         stage.on('dblclick', (e) => {
@@ -2016,6 +2135,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 tempShape = null;
                 setTool('select');
             }
+
+            // --- 新增：SubNetworkTool 邏輯 ---
+            if (activeTool === 'subnetwork') {
+                SubNetworkTool.handleDoubleClick();
+                return;
+            }
+            // -------------------------------
+
         });
 
         // Right-click handler to finalize drawing
@@ -2660,6 +2787,10 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
 
+        // 初始化 SubNetworkTool
+        if (window.SubNetworkTool) {
+            SubNetworkTool.init();
+        }
         // --- [新增] 初始化初始狀態 ---
         // 延遲一點執行確保所有圖層初始化完畢
         setTimeout(() => {
@@ -2933,12 +3064,15 @@ document.addEventListener('DOMContentLoaded', () => {
         if (e.evt.button !== 0) {
             return;
         }
-
-        const clickedShape = e.target;
+        // [修正] 改用 stage.getPointerPosition()
+        const pointer = stage.getPointerPosition();
         const pos = {
-            x: (e.evt.layerX - stage.x()) / stage.scaleX(),
-            y: (e.evt.layerY - stage.y()) / stage.scaleY(),
+            x: (pointer.x - stage.x()) / stage.scaleX(),
+            y: (pointer.y - stage.y()) / stage.scaleY(),
         };
+
+
+
 
         if (activeTool === 'add-link') {
             if (e.target !== stage) return;
@@ -4352,29 +4486,31 @@ document.addEventListener('DOMContentLoaded', () => {
     function updatePropertiesPanel(obj) {
         propertiesContent.innerHTML = '';
 
-        // --- [新增] 針對 Connect 工具的面板顯示 ---
+        // ============================================================
+        // [修復開始] 恢復 Connect 工具的面板顯示 (來自 editor_old.js)
+        // ============================================================
         if (activeTool === 'connect-lanes' && !obj) {
             propertiesContent.innerHTML = `
-                <div class="prop-section-header">Connection Tool Mode</div>
-                <div class="prop-group">
-                    <label style="display:flex; align-items:center; gap:8px; margin-bottom:8px; cursor:pointer;">
-                        <input type="radio" name="connMode" value="manual" ${connectMode === 'manual' ? 'checked' : ''}>
-                        <span><i class="fa-solid fa-hand-pointer"></i> Manual (Drag Ports)</span>
-                    </label>
-                    <div class="prop-hint">Drag from Red port to Blue port.</div>
-                    
-                    <label style="display:flex; align-items:center; gap:8px; margin-top:12px; cursor:pointer;">
-                        <input type="radio" name="connMode" value="box" ${connectMode === 'box' ? 'checked' : ''}>
-                        <span><i class="fa-regular fa-square-check"></i> Box Selection (Auto)</span>
-                    </label>
-                    <div class="prop-hint">Draw a box to connect all matching links inside.</div>
-                </div>
-                <hr>
-                <div class="prop-section-header">Instructions</div>
-                <p style="font-size:0.85rem; color:var(--text-muted);">
-                    <strong>Box Mode:</strong> Draws a rectangle. Any "Link End" and "Link Start" within the box that are close to each other will be automatically connected.
-                </p>
-            `;
+            <div class="prop-section-header">Connection Tool Mode</div>
+            <div class="prop-group">
+                <label style="display:flex; align-items:center; gap:8px; margin-bottom:8px; cursor:pointer;">
+                    <input type="radio" name="connMode" value="manual" ${connectMode === 'manual' ? 'checked' : ''}>
+                    <span><i class="fa-solid fa-hand-pointer"></i> Manual (Drag Ports)</span>
+                </label>
+                <div class="prop-hint">Drag from Red port to Blue port.</div>
+                
+                <label style="display:flex; align-items:center; gap:8px; margin-top:12px; cursor:pointer;">
+                    <input type="radio" name="connMode" value="box" ${connectMode === 'box' ? 'checked' : ''}>
+                    <span><i class="fa-regular fa-square-check"></i> Box Selection (Auto)</span>
+                </label>
+                <div class="prop-hint">Draw a box to connect all matching links inside.</div>
+            </div>
+            <hr>
+            <div class="prop-section-header">Instructions</div>
+            <p style="font-size:0.85rem; color:var(--text-muted);">
+                <strong>Box Mode:</strong> Draws a rectangle. Any "Link End" and "Link Start" within the box that are close to each other will be automatically connected.
+            </p>
+        `;
 
             // 綁定切換事件
             document.querySelectorAll('input[name="connMode"]').forEach(radio => {
@@ -4386,64 +4522,68 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             return;
         }
-        // --- [新增結束] ---
+        // ============================================================
+        // [修復結束]
+        // ============================================================
+
         // --- [新增] 針對 Add Link 工具的面板顯示 ---
         if (activeTool === 'add-link' && !obj) {
+            // ... (保留原本 add-link 的代碼) ...
             // 控制分隔島輸入框顯示的 CSS display
             const twoWayDisplay = linkCreationSettings.isTwoWay ? 'block' : 'none';
 
             propertiesContent.innerHTML = `
-            <div class="prop-section-header">Link Tool Settings</div>
-            
-            <!-- 1. Road Type -->
-            <div class="prop-group">
-                <label class="prop-label">Directionality</label>
-                <div style="display:flex; gap:10px; margin-top:5px;">
-                    <label style="cursor:pointer; display:flex; align-items:center; gap:5px;">
-                        <input type="radio" name="linkType" value="one-way" ${!linkCreationSettings.isTwoWay ? 'checked' : ''}>
-                        One-way
-                    </label>
-                    <label style="cursor:pointer; display:flex; align-items:center; gap:5px;">
-                        <input type="radio" name="linkType" value="two-way" ${linkCreationSettings.isTwoWay ? 'checked' : ''}>
-                        Two-way
-                    </label>
-                </div>
+        <div class="prop-section-header">Link Tool Settings</div>
+        
+        <!-- 1. Road Type -->
+        <div class="prop-group">
+            <label class="prop-label">Directionality</label>
+            <div style="display:flex; gap:10px; margin-top:5px;">
+                <label style="cursor:pointer; display:flex; align-items:center; gap:5px;">
+                    <input type="radio" name="linkType" value="one-way" ${!linkCreationSettings.isTwoWay ? 'checked' : ''}>
+                    One-way
+                </label>
+                <label style="cursor:pointer; display:flex; align-items:center; gap:5px;">
+                    <input type="radio" name="linkType" value="two-way" ${linkCreationSettings.isTwoWay ? 'checked' : ''}>
+                    Two-way
+                </label>
             </div>
+        </div>
 
-            <!-- 2. Driving Side (僅在雙向模式顯示) -->
-            <div class="prop-group" id="driving-side-group" style="display: ${twoWayDisplay};">
-                <label class="prop-label">Driving Side</label>
-                <div style="display:flex; gap:10px; margin-top:5px;">
-                    <label style="cursor:pointer; display:flex; align-items:center; gap:5px;">
-                        <input type="radio" name="driveSide" value="right" ${linkCreationSettings.drivingSide === 'right' ? 'checked' : ''}>
-                        Right-Hand (RHT)
-                    </label>
-                    <label style="cursor:pointer; display:flex; align-items:center; gap:5px;">
-                        <input type="radio" name="driveSide" value="left" ${linkCreationSettings.drivingSide === 'left' ? 'checked' : ''}>
-                        Left-Hand (LHT)
-                    </label>
-                </div>
+        <!-- 2. Driving Side (僅在雙向模式顯示) -->
+        <div class="prop-group" id="driving-side-group" style="display: ${twoWayDisplay};">
+            <label class="prop-label">Driving Side</label>
+            <div style="display:flex; gap:10px; margin-top:5px;">
+                <label style="cursor:pointer; display:flex; align-items:center; gap:5px;">
+                    <input type="radio" name="driveSide" value="right" ${linkCreationSettings.drivingSide === 'right' ? 'checked' : ''}>
+                    Right-Hand (RHT)
+                </label>
+                <label style="cursor:pointer; display:flex; align-items:center; gap:5px;">
+                    <input type="radio" name="driveSide" value="left" ${linkCreationSettings.drivingSide === 'left' ? 'checked' : ''}>
+                    Left-Hand (LHT)
+                </label>
             </div>
+        </div>
 
-            <!-- 3. Median Width (僅在雙向模式顯示) -->
-            <div class="prop-group" id="median-width-group" style="display: ${twoWayDisplay};">
-                <label class="prop-label">Median Width (m)</label>
-                <input type="number" id="creation-median" class="prop-input" value="${linkCreationSettings.medianWidth}" min="0" step="0.5">
-            </div>
+        <!-- 3. Median Width (僅在雙向模式顯示) -->
+        <div class="prop-group" id="median-width-group" style="display: ${twoWayDisplay};">
+            <label class="prop-label">Median Width (m)</label>
+            <input type="number" id="creation-median" class="prop-input" value="${linkCreationSettings.medianWidth}" min="0" step="0.5">
+        </div>
 
-            <hr>
+        <hr>
 
-            <!-- 4. Lanes Config -->
-            <div class="prop-group">
-                <label class="prop-label">Lanes per Direction</label>
-                <input type="number" id="creation-lanes" class="prop-input" value="${linkCreationSettings.lanesPerDir}" min="1" max="10">
-            </div>
+        <!-- 4. Lanes Config -->
+        <div class="prop-group">
+            <label class="prop-label">Lanes per Direction</label>
+            <input type="number" id="creation-lanes" class="prop-input" value="${linkCreationSettings.lanesPerDir}" min="1" max="10">
+        </div>
 
-            <div class="prop-hint">
-                <i class="fa-solid fa-circle-info"></i> 
-                <strong>Two-way Mode:</strong> Creates two linked roads separated by the median width.
-            </div>
-        `;
+        <div class="prop-hint">
+            <i class="fa-solid fa-circle-info"></i> 
+            <strong>Two-way Mode:</strong> Creates two linked roads separated by the median width.
+        </div>
+    `;
 
             // --- 綁定事件 ---
 
@@ -4492,40 +4632,41 @@ document.addEventListener('DOMContentLoaded', () => {
 
             return;
         }
+
         // [新增] 針對 Add Intersection 工具的面板顯示
         if (activeTool === 'add-intersection' && !obj) {
             propertiesContent.innerHTML = `
-                <div class="prop-section-header">Intersection Tool Settings</div>
+            <div class="prop-section-header">Intersection Tool Settings</div>
+            
+            <div class="prop-group">
+                <label class="prop-label">Creation Mode</label>
                 
-                <div class="prop-group">
-                    <label class="prop-label">Creation Mode</label>
-                    
-                    <label style="display:flex; align-items:start; gap:8px; margin-bottom:12px; cursor:pointer;">
-                        <input type="radio" name="intMode" value="zone" ${intersectionMode === 'zone' ? 'checked' : ''}>
-                        <div>
-                            <span style="font-weight:600;">Zone Mode (Clip)</span>
-                            <div style="font-size:0.75rem; color:var(--text-muted);">
-                                Removes road segments inside the polygon. Creates a visual "plaza".
-                            </div>
+                <label style="display:flex; align-items:start; gap:8px; margin-bottom:12px; cursor:pointer;">
+                    <input type="radio" name="intMode" value="zone" ${intersectionMode === 'zone' ? 'checked' : ''}>
+                    <div>
+                        <span style="font-weight:600;">Zone Mode (Clip)</span>
+                        <div style="font-size:0.75rem; color:var(--text-muted);">
+                            Removes road segments inside the polygon. Creates a visual "plaza".
                         </div>
-                    </label>
+                    </div>
+                </label>
 
-                    <label style="display:flex; align-items:start; gap:8px; margin-bottom:8px; cursor:pointer;">
-                        <input type="radio" name="intMode" value="point" ${intersectionMode === 'point' ? 'checked' : ''}>
-                        <div>
-                            <span style="font-weight:600;">Point Mode (Snap)</span>
-                            <div style="font-size:0.75rem; color:var(--text-muted);">
-                                Links converge to the center. Only overlaps are removed.
-                            </div>
+                <label style="display:flex; align-items:start; gap:8px; margin-bottom:8px; cursor:pointer;">
+                    <input type="radio" name="intMode" value="point" ${intersectionMode === 'point' ? 'checked' : ''}>
+                    <div>
+                        <span style="font-weight:600;">Point Mode (Snap)</span>
+                        <div style="font-size:0.75rem; color:var(--text-muted);">
+                            Links converge to the center. Only overlaps are removed.
                         </div>
-                    </label>
-                </div>
+                    </div>
+                </label>
+            </div>
 
-                <div class="prop-hint">
-                    <i class="fa-solid fa-pen-nib"></i> 
-                    Click to draw outline, Double-Click to finish.
-                </div>
-            `;
+            <div class="prop-hint">
+                <i class="fa-solid fa-pen-nib"></i> 
+                Click to draw outline, Double-Click to finish.
+            </div>
+        `;
 
             // 綁定事件
             document.querySelectorAll('input[name="intMode"]').forEach(radio => {
@@ -4536,20 +4677,28 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
+        // [新增] 針對 SubNetwork Tool 的面板顯示 (從 SubNetworkTool 物件取得)
+        if (activeTool === 'subnetwork' && !obj && window.SubNetworkTool) {
+            window.SubNetworkTool.updatePropertiesPanel();
+            return;
+        }
+
         if (!obj) {
             propertiesContent.innerHTML = '<p>Select an element to edit</p>';
             return;
         }
 
-
-        // 檢查是否需要顯示「返回節點」按鈕 (用於在編輯連接線時快速跳回節點)
+        // ... (以下維持原有的物件屬性編輯代碼，不需要更動) ...
+        // 檢查是否需要顯示「返回節點」按鈕...
         let content = '';
         if (lastSelectedNodeForProperties && (obj.type === 'Connection' || obj.type === 'ConnectionGroup')) {
             content += `<button id="back-to-node-btn" class="tool-btn-secondary">⬅️ Back to Node ${lastSelectedNodeForProperties.id}</button><hr>`;
         }
         content += `<h4>${obj.type}: ${obj.id}</h4>`;
 
-        // 針對連接線相關物件，顯示號誌群組選擇器
+        // ... (後續 switch case 代碼省略，請保持原樣) ...
+
+        // 這裡為了完整性，只顯示 switch 的開始，請保留您原本的 switch 結構
         if (obj.type === 'Connection' || obj.type === 'ConnectionGroup') {
             const nodeId = obj.nodeId;
             const tfl = network.trafficLights[nodeId];
@@ -4568,32 +4717,33 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
 
                 content += `<div class="prop-group">
-                            <label for="prop-tfl-group">🚦 Signal Group</label>
-                            <select id="prop-tfl-group">
-                                <option value="">None</option>
-                                ${Object.keys(tfl.signalGroups).map(id =>
+                        <label for="prop-tfl-group">🚦 Signal Group</label>
+                        <select id="prop-tfl-group">
+                            <option value="">None</option>
+                            ${Object.keys(tfl.signalGroups).map(id =>
                     `<option value="${id}" ${id === currentGroupId ? 'selected' : ''}>${id}</option>`
                 ).join('')}
-                            </select>
-                        </div>`;
+                        </select>
+                    </div>`;
             }
         }
 
         switch (obj.type) {
+            // ... (請保留您原本的 Link, Node, Detector 等 case) ...
             case 'Link':
                 // 定義分頁按鈕 HTML
                 const getLinkTabClass = (tabName) => lastActiveLinkTab === tabName ? 'active' : '';
                 const getLinkContentClass = (tabName) => lastActiveLinkTab === tabName ? 'active' : '';
 
                 content += `
-                <div class="prop-tab-header">
-                    <button class="prop-tab-btn ${getLinkTabClass('tab-link-general')}" data-target="tab-link-general">
-                        <i class="fa-solid fa-road"></i> General
-                    </button>
-                    <button class="prop-tab-btn ${getLinkTabClass('tab-link-conns')}" data-target="tab-link-conns">
-                        <i class="fa-solid fa-link"></i> Connections
-                    </button>
-                </div>`;
+             <div class="prop-tab-header">
+                 <button class="prop-tab-btn ${getLinkTabClass('tab-link-general')}" data-target="tab-link-general">
+                     <i class="fa-solid fa-road"></i> General
+                 </button>
+                 <button class="prop-tab-btn ${getLinkTabClass('tab-link-conns')}" data-target="tab-link-conns">
+                     <i class="fa-solid fa-link"></i> Connections
+                 </button>
+             </div>`;
 
                 // --- TAB 1: GENERAL ---
                 // [注意] 這裡是 content 字串的開始
@@ -4602,13 +4752,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 // 1. 基本資訊 (Name/ID)
                 content += `<div class="prop-section-header">General</div>`;
                 content += `<div class="prop-row">
-                                <span class="prop-label">Name</span>
-                                <input type="text" id="prop-link-name" class="prop-input" value="${obj.name || obj.id}">
-                            </div>`;
+                             <span class="prop-label">Name</span>
+                             <input type="text" id="prop-link-name" class="prop-input" value="${obj.name || obj.id}">
+                         </div>`;
                 content += `<div class="prop-row">
-                                <span class="prop-label">ID</span>
-                                <input type="text" class="prop-input" value="${obj.id}" disabled>
-                            </div>`;
+                             <span class="prop-label">ID</span>
+                             <input type="text" class="prop-input" value="${obj.id}" disabled>
+                         </div>`;
 
                 // ============================================================
                 // ★★★ [修正重點] Two-way Settings 必須插在這裡 (TAB 內容內部) ★★★
@@ -4619,24 +4769,24 @@ document.addEventListener('DOMContentLoaded', () => {
                         content += `<div class="prop-section-header" style="color:#2563eb; margin-top:10px;">Two-way Settings</div>`;
 
                         content += `<div class="prop-row">
-                                        <span class="prop-label">Paired with</span>
-                                        <span style="font-size:0.8rem; color:#64748b;">${pairLink.name || pairLink.id}</span>
-                                    </div>`;
+                                     <span class="prop-label">Paired with</span>
+                                     <span style="font-size:0.8rem; color:#64748b;">${pairLink.name || pairLink.id}</span>
+                                 </div>`;
 
                         content += `<div class="prop-row">
-                                        <span class="prop-label">Median (m)</span>
-                                        <input type="number" id="prop-edit-median" class="prop-input" 
-                                               value="${obj.pairInfo.medianWidth}" step="0.5" min="0">
-                                    </div>`;
+                                     <span class="prop-label">Median (m)</span>
+                                     <input type="number" id="prop-edit-median" class="prop-input" 
+                                            value="${obj.pairInfo.medianWidth}" step="0.5" min="0">
+                                 </div>`;
 
                         content += `<div class="prop-hint">
-                                        Adjusting median width moves both roads.
-                                    </div>`;
+                                     Adjusting median width moves both roads.
+                                 </div>`;
                     } else {
                         // 如果配對的路找不到 (可能被刪除)
                         content += `<div class="prop-hint" style="color:orange; margin-top:10px;">
-                                        <i class="fa-solid fa-link-slash"></i> Paired link missing.
-                                    </div>`;
+                                     <i class="fa-solid fa-link-slash"></i> Paired link missing.
+                                 </div>`;
                     }
                 }
                 // ============================================================
@@ -4644,28 +4794,28 @@ document.addEventListener('DOMContentLoaded', () => {
                 // 2. 幾何資訊 (Geometry)
                 content += `<div class="prop-section-header">Geometry</div>`;
                 content += `<div class="prop-row">
-                                <span class="prop-label">Length</span>
-                                <span class="prop-value-text">${getPolylineLength(obj.waypoints).toFixed(2)} m</span>
-                            </div>`;
+                             <span class="prop-label">Length</span>
+                             <span class="prop-value-text">${getPolylineLength(obj.waypoints).toFixed(2)} m</span>
+                         </div>`;
                 content += `<div class="prop-row">
-                                <span class="prop-label">Total Width</span>
-                                <span class="prop-value-text">${getLinkTotalWidth(obj).toFixed(2)} m</span>
-                            </div>`;
+                             <span class="prop-label">Total Width</span>
+                             <span class="prop-value-text">${getLinkTotalWidth(obj).toFixed(2)} m</span>
+                         </div>`;
 
                 // 3. 車道配置
                 content += `<div class="prop-section-header">Lanes Configuration</div>`;
                 content += `<div class="prop-row">
-                                <span class="prop-label">Count</span>
-                                <input type="number" id="prop-lanes" class="prop-input" value="${obj.lanes.length}" min="1" max="10">
-                            </div>`;
+                             <span class="prop-label">Count</span>
+                             <input type="number" id="prop-lanes" class="prop-input" value="${obj.lanes.length}" min="1" max="10">
+                         </div>`;
 
                 content += `<label class="prop-label" style="font-size:0.75rem; margin-top:8px; display:block;">Individual Widths (m)</label>`;
                 content += `<div class="prop-grid-container" id="lane-widths-container">`;
                 obj.lanes.forEach((lane, index) => {
                     content += `<div class="prop-grid-item">
-                                    <span class="prop-grid-label">L${index + 1}</span>
-                                    <input type="number" id="prop-lane-width-${index}" class="prop-grid-input prop-lane-width" data-index="${index}" value="${lane.width.toFixed(2)}" step="0.1" min="1">
-                                </div>`;
+                                 <span class="prop-grid-label">L${index + 1}</span>
+                                 <input type="number" id="prop-lane-width-${index}" class="prop-grid-input prop-lane-width" data-index="${index}" value="${lane.width.toFixed(2)}" step="0.1" min="1">
+                             </div>`;
                 });
                 content += `</div>`;
 
@@ -4689,26 +4839,26 @@ document.addEventListener('DOMContentLoaded', () => {
 
                         // [修正] 加入 class "conn-list-item" 與 data-conn-id，用於滑鼠移入高亮
                         content += `
-                        <div class="prop-card conn-list-item" data-conn-id="${conn.id}" style="padding: 8px; border-left: 3px solid #3b82f6; cursor:default;">
-                            <div style="display:flex; justify-content:space-between; align-items:center;">
-                                <div style="font-size:0.85rem; color:var(--text-main);">
-                                    <span style="font-weight:bold; color:#2563eb;">Lane ${conn.sourceLaneIndex + 1}</span>
-                                    <i class="fa-solid fa-arrow-right" style="margin:0 6px; color:#94a3b8; font-size:0.75rem;"></i>
-                                    <span>${destName}</span>
-                                    <span style="font-size:0.75rem; color:#64748b; background:#f1f5f9; padding:1px 4px; border-radius:3px;">L${conn.destLaneIndex + 1}</span>
-                                </div>
-                                <button class="btn-mini btn-del-single-conn" data-id="${conn.id}" title="Remove Connection" style="color:#ef4444; border:1px solid #fecaca; background:#fff;">
-                                    <i class="fa-solid fa-xmark"></i>
-                                </button>
-                            </div>
-                        </div>`;
+                     <div class="prop-card conn-list-item" data-conn-id="${conn.id}" style="padding: 8px; border-left: 3px solid #3b82f6; cursor:default;">
+                         <div style="display:flex; justify-content:space-between; align-items:center;">
+                             <div style="font-size:0.85rem; color:var(--text-main);">
+                                 <span style="font-weight:bold; color:#2563eb;">Lane ${conn.sourceLaneIndex + 1}</span>
+                                 <i class="fa-solid fa-arrow-right" style="margin:0 6px; color:#94a3b8; font-size:0.75rem;"></i>
+                                 <span>${destName}</span>
+                                 <span style="font-size:0.75rem; color:#64748b; background:#f1f5f9; padding:1px 4px; border-radius:3px;">L${conn.destLaneIndex + 1}</span>
+                             </div>
+                             <button class="btn-mini btn-del-single-conn" data-id="${conn.id}" title="Remove Connection" style="color:#ef4444; border:1px solid #fecaca; background:#fff;">
+                                 <i class="fa-solid fa-xmark"></i>
+                             </button>
+                         </div>
+                     </div>`;
                     });
                     content += `</div>`;
                 } else {
                     content += `<div class="prop-hint" style="text-align:center; padding:20px 0;">
-                                    <i class="fa-solid fa-link-slash" style="font-size:1.5rem; color:#cbd5e1; margin-bottom:8px;"></i><br>
-                                    No outgoing connections.
-                                </div>`;
+                                 <i class="fa-solid fa-link-slash" style="font-size:1.5rem; color:#cbd5e1; margin-bottom:8px;"></i><br>
+                                 No outgoing connections.
+                             </div>`;
                 }
 
                 content += `</div>`; // End Tab 2
@@ -4720,17 +4870,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 const getTabClass = (tabName) => lastActiveNodeTab === tabName ? 'active' : '';
 
                 content += `
-                <div class="prop-tab-header">
-                    <button class="prop-tab-btn ${getTabClass('tab-settings')}" data-target="tab-settings">
-                        <i class="fa-solid fa-sliders"></i> Settings
-                    </button>
-                    <button class="prop-tab-btn ${getTabClass('tab-conn')}" data-target="tab-conn">
-                        <i class="fa-solid fa-network-wired"></i> Links
-                    </button>
-                    <button class="prop-tab-btn ${getTabClass('tab-flow')}" data-target="tab-flow">
-                        <i class="fa-solid fa-arrow-right-arrow-left"></i> Flow
-                    </button>
-                </div>`;
+            <div class="prop-tab-header">
+                <button class="prop-tab-btn ${getTabClass('tab-settings')}" data-target="tab-settings">
+                    <i class="fa-solid fa-sliders"></i> Settings
+                </button>
+                <button class="prop-tab-btn ${getTabClass('tab-conn')}" data-target="tab-conn">
+                    <i class="fa-solid fa-network-wired"></i> Links
+                </button>
+                <button class="prop-tab-btn ${getTabClass('tab-flow')}" data-target="tab-flow">
+                    <i class="fa-solid fa-arrow-right-arrow-left"></i> Flow
+                </button>
+            </div>`;
 
                 // 2. 準備各分頁內容容器
                 const getContentClass = (tabName) => lastActiveNodeTab === tabName ? 'active' : '';
@@ -4746,22 +4896,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 // 1. Status
                 content += `<div class="prop-row">
-                                <span class="prop-label">Status</span>
-                                ${hasSignal
+                            <span class="prop-label">Status</span>
+                            ${hasSignal
                         ? '<span class="prop-status-indicator success" style="padding:2px 8px; margin:0;">Active</span>'
                         : '<span class="prop-status-indicator" style="padding:2px 8px; margin:0; background:#f1f5f9; color:#94a3b8;">No Signal</span>'}
-                            </div>`;
+                        </div>`;
 
                 // 2. Time Shift (Moved Up)
                 content += `<div class="prop-row">
-                                <span class="prop-label">Time Shift (s)</span>
-                                <input type="number" id="prop-tfl-shift" class="prop-input" value="${tflData.timeShift}" min="0" step="1">
-                            </div>`;
+                            <span class="prop-label">Time Shift (s)</span>
+                            <input type="number" id="prop-tfl-shift" class="prop-input" value="${tflData.timeShift}" min="0" step="1">
+                        </div>`;
 
                 // 3. Edit Button (Moved Down)
                 content += `<button id="edit-tfl-btn" class="btn-action" style="width:100%; margin-top:8px;">
-                                <i class="fa-solid fa-traffic-light"></i> Edit Schedule
-                            </button>`;
+                            <i class="fa-solid fa-traffic-light"></i> Edit Schedule
+                        </button>`;
 
                 content += `</div>`; // End Tab 1
 
@@ -4812,42 +4962,42 @@ document.addEventListener('DOMContentLoaded', () => {
                         // 3. 渲染卡片
                         // [修正重點] 加入 class "connection-group-card" 和 data-source/data-dest
                         content += `<div class="prop-card connection-group-card" 
-                                         data-source="${group.sourceLinkId}" 
-                                         data-dest="${group.destLinkId}"
-                                         id="${group.domId}" 
-                                         style="cursor:default;">
-                                         
-                                        <!-- Header Row -->
-                                        <div class="prop-card-row" style="margin-bottom:8px; border-bottom:1px solid #f1f5f9; padding-bottom:6px;">
-                                            <span style="font-weight:700; font-size:0.85rem; color:var(--text-main);">
-                                                ${group.sourceLinkId} <i class="fa-solid fa-arrow-right" style="font-size:0.7rem; color:#94a3b8;"></i> ${group.destLinkId}
-                                            </span>
-                                            
-                                            <!-- Buttons -->
-                                            <div style="display:flex; gap:6px;">
-                                                <button class="btn-mini group-edit-btn" title="Edit Lanes" data-source="${group.sourceLinkId}" data-dest="${group.destLinkId}" style="background:#f1f5f9; border:1px solid #e2e8f0; color:var(--text-muted);">
-                                                    <i class="fa-solid fa-pen"></i>
-                                                </button>
-                                                <button class="btn-mini group-delete-btn" title="Delete Group" data-source="${group.sourceLinkId}" data-dest="${group.destLinkId}" style="background:#fff; border:1px solid #fecaca; color:#ef4444;">
-                                                    <i class="fa-solid fa-trash-can"></i>
-                                                </button>
-                                            </div>
-                                        </div>
+                                     data-source="${group.sourceLinkId}" 
+                                     data-dest="${group.destLinkId}"
+                                     id="${group.domId}" 
+                                     style="cursor:default;">
+                                     
+                                    <!-- Header Row -->
+                                    <div class="prop-card-row" style="margin-bottom:8px; border-bottom:1px solid #f1f5f9; padding-bottom:6px;">
+                                        <span style="font-weight:700; font-size:0.85rem; color:var(--text-main);">
+                                            ${group.sourceLinkId} <i class="fa-solid fa-arrow-right" style="font-size:0.7rem; color:#94a3b8;"></i> ${group.destLinkId}
+                                        </span>
                                         
-                                        <!-- Info Row -->
-                                        <div class="prop-card-row">
-                                            <span class="prop-card-label">Lanes Connected</span>
-                                            <span style="font-size:0.8rem; font-weight:600; color:var(--text-main);">${group.connectionIds.length}</span>
+                                        <!-- Buttons -->
+                                        <div style="display:flex; gap:6px;">
+                                            <button class="btn-mini group-edit-btn" title="Edit Lanes" data-source="${group.sourceLinkId}" data-dest="${group.destLinkId}" style="background:#f1f5f9; border:1px solid #e2e8f0; color:var(--text-muted);">
+                                                <i class="fa-solid fa-pen"></i>
+                                            </button>
+                                            <button class="btn-mini group-delete-btn" title="Delete Group" data-source="${group.sourceLinkId}" data-dest="${group.destLinkId}" style="background:#fff; border:1px solid #fecaca; color:#ef4444;">
+                                                <i class="fa-solid fa-trash-can"></i>
+                                            </button>
                                         </div>
+                                    </div>
+                                    
+                                    <!-- Info Row -->
+                                    <div class="prop-card-row">
+                                        <span class="prop-card-label">Lanes Connected</span>
+                                        <span style="font-size:0.8rem; font-weight:600; color:var(--text-main);">${group.connectionIds.length}</span>
+                                    </div>
 
-                                        <!-- Control Row -->
-                                        <div class="prop-card-row" style="margin-top:6px;">
-                                            <span class="prop-card-label"><i class="fa-solid fa-traffic-light"></i> Signal Group</span>
-                                            <div style="flex:1; margin-left:8px;">
-                                                ${signalSelectHtml}
-                                            </div>
+                                    <!-- Control Row -->
+                                    <div class="prop-card-row" style="margin-top:6px;">
+                                        <span class="prop-card-label"><i class="fa-solid fa-traffic-light"></i> Signal Group</span>
+                                        <div style="flex:1; margin-left:8px;">
+                                            ${signalSelectHtml}
                                         </div>
-                                    </div>`;
+                                    </div>
+                                </div>`;
                     });
                 } else {
                     content += `<div style="font-size:0.8rem; color:#94a3b8; font-style:italic; padding:4px;">No connection groups found.</div>`;
@@ -4855,17 +5005,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 content += `<div class="prop-section-header" style="margin-top:16px;">Tools</div>`;
                 content += `<button id="redraw-node-connections-btn" class="btn-action" style="width:100%;">
-                                <i class="fa-solid fa-rotate"></i> Redraw Connections
-                            </button>`;
+                            <i class="fa-solid fa-rotate"></i> Redraw Connections
+                        </button>`;
                 content += `</div>`; // End Tab 2
 
 
                 // --- TAB 3: FLOW (Turning Ratios) ---
                 content += `<div id="tab-flow" class="prop-tab-content ${getContentClass('tab-flow')}">`;
                 content += `<div class="prop-section-header" style="display:flex; justify-content:space-between; align-items:center;">
-                                Turning Ratios
-                                <button id="btn-auto-calc-turns" class="btn-mini" style="background:#e0f2fe; color:#0284c7;">Auto-Calc</button>
-                            </div>`;
+                            Turning Ratios
+                            <button id="btn-auto-calc-turns" class="btn-mini" style="background:#e0f2fe; color:#0284c7;">Auto-Calc</button>
+                        </div>`;
 
                 const incomingLinks = [...obj.incomingLinkIds];
                 const outgoingLinks = [...obj.outgoingLinkIds];
@@ -4878,8 +5028,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
                         // [修正] 加入 class "turn-ratio-header" 與 data-link，用於滑鼠移入高亮來源路段
                         content += `<div class="turn-ratio-header" data-link="${inLink}" style="font-size:0.8rem; font-weight:700; color:#475569; margin-bottom:6px; border-bottom:1px solid #e2e8f0; padding-bottom:4px; cursor:default;">
-                                        From ${inLink}
-                                    </div>`;
+                                    From ${inLink}
+                                </div>`;
 
                         outgoingLinks.forEach(outLink => {
                             const ratio = (obj.turningRatios[inLink] && obj.turningRatios[inLink][outLink] !== undefined)
@@ -4888,12 +5038,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
                             // [修正] 加入 class "turn-ratio-row" 與 data-from/to，用於滑鼠移入高亮轉向路徑
                             content += `<div class="prop-row turn-ratio-row" data-from="${inLink}" data-to="${outLink}" style="margin-bottom:4px; padding:2px; border-radius:4px; cursor:default;">
-                                            <span class="prop-label" style="font-size:0.75rem;">To ${outLink}</span>
-                                            <div style="display:flex; align-items:center; gap:4px;">
-                                                <input type="number" class="prop-turn-ratio prop-input" style="width:50px; padding:2px;" data-from="${inLink}" data-to="${outLink}" value="${percent}" min="0" max="100" step="1">
-                                                <span style="font-size:0.75rem; color:#64748b;">%</span>
-                                            </div>
-                                        </div>`;
+                                        <span class="prop-label" style="font-size:0.75rem;">To ${outLink}</span>
+                                        <div style="display:flex; align-items:center; gap:4px;">
+                                            <input type="number" class="prop-turn-ratio prop-input" style="width:50px; padding:2px;" data-from="${inLink}" data-to="${outLink}" value="${percent}" min="0" max="100" step="1">
+                                            <span style="font-size:0.75rem; color:#64748b;">%</span>
+                                        </div>
+                                    </div>`;
                         });
                         content += `</div>`;
                     });
@@ -4912,45 +5062,45 @@ document.addEventListener('DOMContentLoaded', () => {
                 // --- SECTION: GENERAL ---
                 content += `<div class="prop-section-header">General</div>`;
                 content += `<div class="prop-row">
-                                <span class="prop-label">Name</span>
-                                <input type="text" id="prop-det-name" class="prop-input" value="${obj.name}">
-                            </div>`;
+                            <span class="prop-label">Name</span>
+                            <input type="text" id="prop-det-name" class="prop-input" value="${obj.name}">
+                        </div>`;
                 content += `<div class="prop-row">
-                                <span class="prop-label">Parent Link</span>
-                                <input type="text" class="prop-input" value="${obj.linkId}" disabled>
-                            </div>`;
+                            <span class="prop-label">Parent Link</span>
+                            <input type="text" class="prop-input" value="${obj.linkId}" disabled>
+                        </div>`;
                 content += `<div class="prop-row">
-                                <span class="prop-label">Position (m)</span>
-                                <input type="number" step="0.5" id="prop-det-pos" class="prop-input" value="${obj.position.toFixed(2)}">
-                            </div>`;
+                            <span class="prop-label">Position (m)</span>
+                            <input type="number" step="0.5" id="prop-det-pos" class="prop-input" value="${obj.position.toFixed(2)}">
+                        </div>`;
 
                 if (isSection) {
                     content += `<div class="prop-row">
-                                    <span class="prop-label">Length (m)</span>
-                                    <input type="number" step="0.5" id="prop-det-len" class="prop-input" value="${(obj.length || 0).toFixed(2)}">
-                                </div>`;
+                                <span class="prop-label">Length (m)</span>
+                                <input type="number" step="0.5" id="prop-det-len" class="prop-input" value="${(obj.length || 0).toFixed(2)}">
+                            </div>`;
                 }
 
                 // --- SECTION: TRAFFIC DATA ---
                 content += `<div class="prop-section-header">Traffic Data</div>`;
                 content += `<div class="prop-row">
-                                <span class="prop-label">Observed Flow</span>
-                                <input type="number" id="prop-det-flow" class="prop-input" value="${obj.observedFlow || 0}" min="0">
-                            </div>`;
+                            <span class="prop-label">Observed Flow</span>
+                            <input type="number" id="prop-det-flow" class="prop-input" value="${obj.observedFlow || 0}" min="0">
+                        </div>`;
                 content += `<div class="prop-hint" style="margin-top:4px; font-size:0.7rem; padding:4px;">
-                                Unit: Vehicles per Hour (veh/h)
-                            </div>`;
+                            Unit: Vehicles per Hour (veh/h)
+                        </div>`;
 
                 // --- SECTION: SOURCE CONFIG ---
                 content += `<div class="prop-section-header">Source Configuration</div>`;
 
                 // Checkbox Row
                 content += `<div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; padding: 6px; background: #fff; border: 1px solid var(--border-light); border-radius: 4px;">
-                                <label for="prop-det-is-source" style="font-size:0.85rem; color:var(--text-main); font-weight:500; cursor:pointer;">
-                                    Act as Flow Source
-                                </label>
-                                <input type="checkbox" id="prop-det-is-source" ${obj.isSource ? 'checked' : ''} style="cursor:pointer;">
-                            </div>`;
+                            <label for="prop-det-is-source" style="font-size:0.85rem; color:var(--text-main); font-weight:500; cursor:pointer;">
+                                Act as Flow Source
+                            </label>
+                            <input type="checkbox" id="prop-det-is-source" ${obj.isSource ? 'checked' : ''} style="cursor:pointer;">
+                        </div>`;
 
                 // Vehicle Mix List (Conditional)
                 if (obj.isSource) {
@@ -4979,31 +5129,31 @@ document.addEventListener('DOMContentLoaded', () => {
                         const styledDropdown = dropdownHtml.replace('<select', '<select class="prop-select" style="padding:2px 4px; font-size:0.8rem;"');
 
                         content += `
-                        <div class="prop-card">
-                            <div class="prop-card-row">
-                                <span class="prop-card-label">Type</span>
-                                <div style="flex:1; margin-left:8px;">${styledDropdown}</div>
+                    <div class="prop-card">
+                        <div class="prop-card-row">
+                            <span class="prop-card-label">Type</span>
+                            <div style="flex:1; margin-left:8px;">${styledDropdown}</div>
+                        </div>
+                        <div class="prop-card-row">
+                            <div style="display:flex; align-items:center; gap:6px;">
+                                <span class="prop-card-label">Weight</span>
+                                <input type="number" step="0.1" class="det-prof-weight prop-card-input" data-index="${idx}" value="${entry.weight}">
                             </div>
-                            <div class="prop-card-row">
-                                <div style="display:flex; align-items:center; gap:6px;">
-                                    <span class="prop-card-label">Weight</span>
-                                    <input type="number" step="0.1" class="det-prof-weight prop-card-input" data-index="${idx}" value="${entry.weight}">
-                                </div>
-                                <button class="det-prof-del-btn btn-mini btn-mini-danger" data-index="${idx}">
-                                    <i class="fa-solid fa-trash-can"></i>
-                                </button>
-                            </div>
-                        </div>`;
+                            <button class="det-prof-del-btn btn-mini btn-mini-danger" data-index="${idx}">
+                                <i class="fa-solid fa-trash-can"></i>
+                            </button>
+                        </div>
+                    </div>`;
                     });
                     content += `</div>`; // End list
 
                     // Add Buttons
                     content += `<button id="btn-add-det-profile" class="btn-full">
-                                    <i class="fa-solid fa-plus"></i> Add Vehicle Type
-                                </button>`;
+                                <i class="fa-solid fa-plus"></i> Add Vehicle Type
+                            </button>`;
                     content += `<button id="btn-manage-profiles" class="btn-full" style="background:#f1f5f9; color:var(--text-muted); border-style:solid; margin-top:8px;">
-                                    <i class="fa-solid fa-gear"></i> Manage Definitions
-                                </button>`;
+                                <i class="fa-solid fa-gear"></i> Manage Definitions
+                            </button>`;
                 }
                 break;
 
@@ -5013,91 +5163,91 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 // ID (唯讀)
                 content += `<div class="prop-row">
-                                <span class="prop-label">ID</span>
-                                <input type="text" class="prop-input" value="${obj.id}" disabled>
-                            </div>`;
+                            <span class="prop-label">ID</span>
+                            <input type="text" class="prop-input" value="${obj.id}" disabled>
+                        </div>`;
 
                 // Link ID (唯讀)
                 content += `<div class="prop-row">
-                                <span class="prop-label">Parent Link</span>
-                                <input type="text" class="prop-input" value="${obj.linkId}" disabled>
-                            </div>`;
+                            <span class="prop-label">Parent Link</span>
+                            <input type="text" class="prop-input" value="${obj.linkId}" disabled>
+                        </div>`;
 
                 // --- SECTION: CONFIGURATION ---
                 content += `<div class="prop-section-header">Configuration</div>`;
 
                 // Sign Type (下拉選單)
                 content += `<div class="prop-row">
-                                <span class="prop-label">Sign Type</span>
-                                <select id="prop-sign-type" class="prop-select">
-                                    <option value="start" ${obj.signType === 'start' ? 'selected' : ''}>Speed Limit Start</option>
-                                    <option value="end" ${obj.signType === 'end' ? 'selected' : ''}>Speed Limit End</option>
-                                </select>
-                            </div>`;
+                            <span class="prop-label">Sign Type</span>
+                            <select id="prop-sign-type" class="prop-select">
+                                <option value="start" ${obj.signType === 'start' ? 'selected' : ''}>Speed Limit Start</option>
+                                <option value="end" ${obj.signType === 'end' ? 'selected' : ''}>Speed Limit End</option>
+                            </select>
+                        </div>`;
 
                 // Speed Limit (僅在 start 類型顯示)
                 // 注意：.prop-row 預設是 flex，隱藏時設為 none
                 const limitDisplay = (obj.signType === 'start') ? 'flex' : 'none';
                 content += `<div class="prop-row" id="prop-speed-limit-row" style="display: ${limitDisplay};">
-                                <span class="prop-label">Limit (km/h)</span>
-                                <input type="number" id="prop-speed-limit" class="prop-input" value="${obj.speedLimit}" min="0">
-                            </div>`;
+                            <span class="prop-label">Limit (km/h)</span>
+                            <input type="number" id="prop-speed-limit" class="prop-input" value="${obj.speedLimit}" min="0">
+                        </div>`;
 
                 // Position
                 content += `<div class="prop-row">
-                                <span class="prop-label">Position (m)</span>
-                                <input type="number" step="0.1" id="prop-sign-pos" class="prop-input" value="${obj.position.toFixed(2)}">
-                            </div>`;
+                            <span class="prop-label">Position (m)</span>
+                            <input type="number" step="0.1" id="prop-sign-pos" class="prop-input" value="${obj.position.toFixed(2)}">
+                        </div>`;
 
                 // --- SECTION: ACTIONS ---
                 content += `<div class="prop-section-header">Actions</div>`;
                 content += `<button id="btn-delete-sign" class="btn-danger-outline">
-                                <i class="fa-solid fa-trash-can"></i> Delete Road Sign
-                            </button>`;
+                            <i class="fa-solid fa-trash-can"></i> Delete Road Sign
+                        </button>`;
                 break;
 
             case 'Connection':
                 // --- SECTION: GENERAL ---
                 content += `<div class="prop-section-header">General</div>`;
                 content += `<div class="prop-row">
-                                <span class="prop-label">ID</span>
-                                <input type="text" class="prop-input" value="${obj.id}" disabled>
-                            </div>`;
+                            <span class="prop-label">ID</span>
+                            <input type="text" class="prop-input" value="${obj.id}" disabled>
+                        </div>`;
 
                 // --- SECTION: TOPOLOGY ---
                 content += `<div class="prop-section-header">Topology</div>`;
 
                 // Source
                 content += `<div class="prop-row">
-                                <span class="prop-label">From Link</span>
-                                <input type="text" class="prop-input" value="${obj.sourceLinkId}" disabled>
-                            </div>`;
+                            <span class="prop-label">From Link</span>
+                            <input type="text" class="prop-input" value="${obj.sourceLinkId}" disabled>
+                        </div>`;
                 content += `<div class="prop-row">
-                                <span class="prop-label">From Lane</span>
-                                <input type="text" class="prop-input" value="L${obj.sourceLaneIndex + 1}" disabled>
-                            </div>`;
+                            <span class="prop-label">From Lane</span>
+                            <input type="text" class="prop-input" value="L${obj.sourceLaneIndex + 1}" disabled>
+                        </div>`;
 
                 // Destination
                 content += `<div class="prop-row" style="margin-top:8px;">
-                                <span class="prop-label">To Link</span>
-                                <input type="text" class="prop-input" value="${obj.destLinkId}" disabled>
-                            </div>`;
+                            <span class="prop-label">To Link</span>
+                            <input type="text" class="prop-input" value="${obj.destLinkId}" disabled>
+                        </div>`;
                 content += `<div class="prop-row">
-                                <span class="prop-label">To Lane</span>
-                                <input type="text" class="prop-input" value="L${obj.destLaneIndex + 1}" disabled>
-                            </div>`;
+                            <span class="prop-label">To Lane</span>
+                            <input type="text" class="prop-input" value="L${obj.destLaneIndex + 1}" disabled>
+                        </div>`;
 
                 // Via Node
                 content += `<div class="prop-row" style="margin-top:8px;">
-                                <span class="prop-label">Via Node</span>
-                                <input type="text" class="prop-input" value="${obj.nodeId}" disabled>
-                            </div>`;
+                            <span class="prop-label">Via Node</span>
+                            <input type="text" class="prop-input" value="${obj.nodeId}" disabled>
+                        </div>`;
 
                 // --- SECTION: ACTIONS ---
                 content += `<div class="prop-section-header">Actions</div>`;
                 content += `<button id="prop-conn-delete-btn" class="btn-danger-outline">
-                                <i class="fa-solid fa-trash-can"></i> Delete Connection
-                            </button>`;
+                            <i class="fa-solid fa-trash-can"></i> Delete Connection
+                        </button>`;
                 break;
 
             case 'ConnectionGroup':
@@ -5105,74 +5255,74 @@ document.addEventListener('DOMContentLoaded', () => {
                 content += `<div class="prop-section-header">Group Info</div>`;
 
                 content += `<div class="prop-row">
-                                <span class="prop-label">From Link</span>
-                                <input type="text" class="prop-input" value="${obj.sourceLinkId}" disabled>
-                            </div>`;
+                            <span class="prop-label">From Link</span>
+                            <input type="text" class="prop-input" value="${obj.sourceLinkId}" disabled>
+                        </div>`;
                 content += `<div class="prop-row">
-                                <span class="prop-label">To Link</span>
-                                <input type="text" class="prop-input" value="${obj.destLinkId}" disabled>
-                            </div>`;
+                            <span class="prop-label">To Link</span>
+                            <input type="text" class="prop-input" value="${obj.destLinkId}" disabled>
+                        </div>`;
                 content += `<div class="prop-row">
-                                <span class="prop-label">Via Node</span>
-                                <input type="text" class="prop-input" value="${obj.nodeId}" disabled>
-                            </div>`;
+                            <span class="prop-label">Via Node</span>
+                            <input type="text" class="prop-input" value="${obj.nodeId}" disabled>
+                        </div>`;
 
                 content += `<div class="prop-row">
-                                <span class="prop-label">Total Connections</span>
-                                <span class="prop-value-text" style="font-weight:bold; color:var(--primary);">${obj.connectionIds.length}</span>
-                            </div>`;
+                            <span class="prop-label">Total Connections</span>
+                            <span class="prop-value-text" style="font-weight:bold; color:var(--primary);">${obj.connectionIds.length}</span>
+                        </div>`;
 
                 // --- SECTION: ACTIONS ---
                 content += `<div class="prop-section-header">Management</div>`;
                 content += `<div class="btn-group-row">
-                                <button id="edit-group-btn" class="btn-action">
-                                    <i class="fa-solid fa-pen-to-square"></i> Edit
-                                </button>
-                                <button id="delete-group-btn" class="btn-action" style="color:#ef4444; border-color:#fecaca;">
-                                    <i class="fa-solid fa-trash-can"></i> Delete
-                                </button>
-                            </div>`;
+                            <button id="edit-group-btn" class="btn-action">
+                                <i class="fa-solid fa-pen-to-square"></i> Edit
+                            </button>
+                            <button id="delete-group-btn" class="btn-action" style="color:#ef4444; border-color:#fecaca;">
+                                <i class="fa-solid fa-trash-can"></i> Delete
+                            </button>
+                        </div>`;
                 break;
 
             case 'Origin':
                 // --- SECTION: GENERAL ---
                 content += `<div class="prop-section-header">General</div>`;
                 content += `<div class="prop-row">
-                                <span class="prop-label">ID</span>
-                                <input type="text" class="prop-input" value="${obj.id}" disabled>
-                            </div>`;
+                            <span class="prop-label">ID</span>
+                            <input type="text" class="prop-input" value="${obj.id}" disabled>
+                        </div>`;
                 content += `<div class="prop-row">
-                                <span class="prop-label">Parent Link</span>
-                                <input type="text" class="prop-input" value="${obj.linkId}" disabled>
-                            </div>`;
+                            <span class="prop-label">Parent Link</span>
+                            <input type="text" class="prop-input" value="${obj.linkId}" disabled>
+                        </div>`;
 
                 // --- SECTION: GENERATION ---
                 content += `<div class="prop-section-header">Traffic Generation</div>`;
 
                 content += `<button id="configure-spawner-btn" class="btn-action" style="width:100%; justify-content:center; gap:6px;">
-                                <i class="fa-solid fa-clock"></i> Configure Schedule
-                            </button>`;
+                            <i class="fa-solid fa-clock"></i> Configure Schedule
+                        </button>`;
 
                 content += `<div class="prop-hint">
-                                <i class="fa-solid fa-circle-info"></i> 
-                                Defines time-based vehicle spawn rates and destinations (OD Mode).
-                            </div>`;
+                            <i class="fa-solid fa-circle-info"></i> 
+                            Defines time-based vehicle spawn rates and destinations (OD Mode).
+                        </div>`;
                 break;
 
             case 'Destination':
                 // --- SECTION: GENERAL ---
                 content += `<div class="prop-section-header">General</div>`;
                 content += `<div class="prop-row">
-                                <span class="prop-label">ID</span>
-                                <input type="text" class="prop-input" value="${obj.id}" disabled>
-                            </div>`;
+                            <span class="prop-label">ID</span>
+                            <input type="text" class="prop-input" value="${obj.id}" disabled>
+                        </div>`;
                 content += `<div class="prop-row">
-                                <span class="prop-label">Parent Link</span>
-                                <input type="text" class="prop-input" value="${obj.linkId}" disabled>
-                            </div>`;
+                            <span class="prop-label">Parent Link</span>
+                            <input type="text" class="prop-input" value="${obj.linkId}" disabled>
+                        </div>`;
                 content += `<div class="prop-hint">
-                                Vehicles reaching this point will be removed from the simulation.
-                            </div>`;
+                            Vehicles reaching this point will be removed from the simulation.
+                        </div>`;
                 break;
 
             case 'Background':
@@ -5180,65 +5330,65 @@ document.addEventListener('DOMContentLoaded', () => {
                 content += `<div class="prop-section-header">Image Source</div>`;
 
                 content += `<button id="prop-bg-file-btn" class="btn-action" style="width:100%; justify-content:center; gap:6px;">
-                                <i class="fa-regular fa-folder-open"></i> Replace Image...
-                            </button>`;
+                            <i class="fa-regular fa-folder-open"></i> Replace Image...
+                        </button>`;
                 content += `<input type="file" id="prop-bg-file-input" style="display: none;" accept="image/*">`;
 
                 if (obj.imageType) {
                     content += `<div class="prop-row" style="margin-top:8px;">
-                                    <span class="prop-label">Format</span>
-                                    <input type="text" class="prop-input" value="${obj.imageType}" disabled>
-                                </div>`;
+                                <span class="prop-label">Format</span>
+                                <input type="text" class="prop-input" value="${obj.imageType}" disabled>
+                            </div>`;
                 }
 
                 // --- SECTION: APPEARANCE ---
                 content += `<div class="prop-section-header">Appearance</div>`;
 
                 content += `<div class="prop-row">
-                                <span class="prop-label">Opacity (%)</span>
-                                <input type="number" id="prop-bg-opacity" class="prop-input" value="${obj.opacity}" min="0" max="100" step="10">
-                            </div>`;
+                            <span class="prop-label">Opacity (%)</span>
+                            <input type="number" id="prop-bg-opacity" class="prop-input" value="${obj.opacity}" min="0" max="100" step="10">
+                        </div>`;
 
                 content += `<div class="prop-row">
-                                <span class="prop-label">Scale</span>
-                                <input type="number" id="prop-bg-scale" class="prop-input" value="${obj.scale.toFixed(2)}" min="0.01" step="0.01">
-                            </div>`;
+                            <span class="prop-label">Scale</span>
+                            <input type="number" id="prop-bg-scale" class="prop-input" value="${obj.scale.toFixed(2)}" min="0.01" step="0.01">
+                        </div>`;
 
                 // --- SECTION: DIMENSIONS ---
                 content += `<div class="prop-section-header">Dimensions (px)</div>`;
 
                 content += `<div class="prop-row">
-                                <span class="prop-label">Width</span>
-                                <input type="text" class="prop-input" value="${(obj.width).toFixed(0)}" disabled>
-                            </div>`;
+                            <span class="prop-label">Width</span>
+                            <input type="text" class="prop-input" value="${(obj.width).toFixed(0)}" disabled>
+                        </div>`;
                 content += `<div class="prop-row">
-                                <span class="prop-label">Height</span>
-                                <input type="text" class="prop-input" value="${(obj.height).toFixed(0)}" disabled>
-                            </div>`;
+                            <span class="prop-label">Height</span>
+                            <input type="text" class="prop-input" value="${(obj.height).toFixed(0)}" disabled>
+                        </div>`;
 
                 content += `<div class="prop-hint">
-                                <i class="fa-solid fa-lock"></i> 
-                                Use the toggle button at the bottom right of the canvas to Lock/Unlock positioning.
-                            </div>`;
+                            <i class="fa-solid fa-lock"></i> 
+                            Use the toggle button at the bottom right of the canvas to Lock/Unlock positioning.
+                        </div>`;
 
                 // --- SECTION: ACTIONS ---
                 content += `<div class="prop-section-header">Actions</div>`;
                 // 注意：這裡假設 deleteSelectedObject() 會處理 Background，或是你可以呼叫 deleteBackground()
                 content += `<button onclick="deleteSelectedObject()" class="btn-danger-outline">
-                                <i class="fa-solid fa-trash-can"></i> Delete Background
-                            </button>`;
+                            <i class="fa-solid fa-trash-can"></i> Delete Background
+                        </button>`;
                 break;
 
             case 'Overpass':
                 const bottomLinkId = obj.linkId1 === obj.topLinkId ? obj.linkId2 : obj.linkId1;
                 content += `<div class="prop-group">
-                            <label>Top Layer</label>
-                            <p style="font-weight: bold;">${obj.topLinkId}</p>
-                        </div>`;
+                        <label>Top Layer</label>
+                        <p style="font-weight: bold;">${obj.topLinkId}</p>
+                    </div>`;
                 content += `<div class="prop-group">
-                            <label>Bottom Layer</label>
-                            <p>${bottomLinkId}</p>
-                        </div>`;
+                        <label>Bottom Layer</label>
+                        <p>${bottomLinkId}</p>
+                    </div>`;
                 content += `<button id="swap-overpass-btn" class="tool-btn">Swap Layer Order</button>`;
                 break;
 
@@ -5247,38 +5397,38 @@ document.addEventListener('DOMContentLoaded', () => {
                 content += `<div class="prop-section-header">Canvas Position</div>`;
 
                 content += `<div class="prop-row">
-                                <span class="prop-label">X</span>
-                                <input type="number" class="prop-input" value="${obj.x.toFixed(2)}" disabled>
-                            </div>`;
+                            <span class="prop-label">X</span>
+                            <input type="number" class="prop-input" value="${obj.x.toFixed(2)}" disabled>
+                        </div>`;
                 content += `<div class="prop-row">
-                                <span class="prop-label">Y</span>
-                                <input type="number" class="prop-input" value="${obj.y.toFixed(2)}" disabled>
-                            </div>`;
+                            <span class="prop-label">Y</span>
+                            <input type="number" class="prop-input" value="${obj.y.toFixed(2)}" disabled>
+                        </div>`;
 
                 // --- SECTION: GEO REFERENCE ---
                 content += `<div class="prop-section-header">Geo Reference</div>`;
 
                 // 使用 border-left 色條來區分 Lat/Lon
                 content += `<div class="prop-row" style="border-left: 3px solid #ef4444; padding-left: 8px;">
-                                <span class="prop-label">Latitude</span>
-                                <input type="number" id="prop-pin-lat" class="prop-input" value="${obj.lat}" step="0.000001">
-                            </div>`;
+                            <span class="prop-label">Latitude</span>
+                            <input type="number" id="prop-pin-lat" class="prop-input" value="${obj.lat}" step="0.000001">
+                        </div>`;
 
                 content += `<div class="prop-row" style="border-left: 3px solid #3b82f6; padding-left: 8px;">
-                                <span class="prop-label">Longitude</span>
-                                <input type="number" id="prop-pin-lon" class="prop-input" value="${obj.lon}" step="0.000001">
-                            </div>`;
+                            <span class="prop-label">Longitude</span>
+                            <input type="number" id="prop-pin-lon" class="prop-input" value="${obj.lon}" step="0.000001">
+                        </div>`;
 
                 content += `<div class="prop-hint">
-                                <i class="fa-solid fa-map-pin"></i> 
-                                Used to align the simulation grid with real-world map coordinates (Max 2 pins).
-                            </div>`;
+                            <i class="fa-solid fa-map-pin"></i> 
+                            Used to align the simulation grid with real-world map coordinates (Max 2 pins).
+                        </div>`;
 
                 // --- SECTION: ACTIONS ---
                 content += `<div class="prop-section-header">Actions</div>`;
                 content += `<button id="btn-delete-pin" class="btn-danger-outline">
-                                <i class="fa-solid fa-trash-can"></i> Delete Pin
-                            </button>`;
+                            <i class="fa-solid fa-trash-can"></i> Delete Pin
+                        </button>`;
                 break;
 
             case 'ParkingLot':
@@ -5286,49 +5436,49 @@ document.addEventListener('DOMContentLoaded', () => {
                 content += `<div class="prop-section-header">General</div>`;
 
                 content += `<div class="prop-row">
-                                <span class="prop-label">Name</span>
-                                <input type="text" id="prop-pl-name" class="prop-input" value="${obj.name}">
-                            </div>`;
+                            <span class="prop-label">Name</span>
+                            <input type="text" id="prop-pl-name" class="prop-input" value="${obj.name}">
+                        </div>`;
                 content += `<div class="prop-row">
-                                <span class="prop-label">ID</span>
-                                <input type="text" class="prop-input" value="${obj.id}" disabled>
-                            </div>`;
+                            <span class="prop-label">ID</span>
+                            <input type="text" class="prop-input" value="${obj.id}" disabled>
+                        </div>`;
 
                 // --- SECTION: CAPACITY ---
                 content += `<div class="prop-section-header">Capacity</div>`;
 
                 content += `<div class="prop-row">
-                                <span class="prop-label"><i class="fa-solid fa-car"></i> Cars</span>
-                                <input type="number" id="prop-pl-car" class="prop-input" value="${obj.carCapacity}" min="0">
-                            </div>`;
+                            <span class="prop-label"><i class="fa-solid fa-car"></i> Cars</span>
+                            <input type="number" id="prop-pl-car" class="prop-input" value="${obj.carCapacity}" min="0">
+                        </div>`;
                 content += `<div class="prop-row">
-                                <span class="prop-label"><i class="fa-solid fa-motorcycle"></i> Motos</span>
-                                <input type="number" id="prop-pl-moto" class="prop-input" value="${obj.motoCapacity}" min="0">
-                            </div>`;
+                            <span class="prop-label"><i class="fa-solid fa-motorcycle"></i> Motos</span>
+                            <input type="number" id="prop-pl-moto" class="prop-input" value="${obj.motoCapacity}" min="0">
+                        </div>`;
 
                 // --- SECTION: SIMULATION ---
                 content += `<div class="prop-section-header">Simulation Behavior</div>`;
 
                 content += `<div class="prop-row">
-                                <span class="prop-label">Attraction (%)</span>
-                                <input type="number" id="prop-pl-attr" class="prop-input" value="${obj.attractionProb || 0}" min="0" max="100" step="1">
-                            </div>`;
+                            <span class="prop-label">Attraction (%)</span>
+                            <input type="number" id="prop-pl-attr" class="prop-input" value="${obj.attractionProb || 0}" min="0" max="100" step="1">
+                        </div>`;
 
                 content += `<div class="prop-row">
-                                <span class="prop-label">Stay Duration (min)</span>
-                                <input type="number" id="prop-pl-duration" class="prop-input" value="${obj.stayDuration || 0}" min="0" step="1">
-                            </div>`;
+                            <span class="prop-label">Stay Duration (min)</span>
+                            <input type="number" id="prop-pl-duration" class="prop-input" value="${obj.stayDuration || 0}" min="0" step="1">
+                        </div>`;
 
                 content += `<div class="prop-hint">
-                                <i class="fa-solid fa-circle-info"></i> 
-                                Double-click on canvas to finish drawing polygon.
-                            </div>`;
+                            <i class="fa-solid fa-circle-info"></i> 
+                            Double-click on canvas to finish drawing polygon.
+                        </div>`;
 
                 // --- SECTION: ACTIONS ---
                 content += `<div class="prop-section-header">Actions</div>`;
                 content += `<button id="btn-delete-pl" class="btn-danger-outline">
-                                <i class="fa-solid fa-trash-can"></i> Delete Parking Lot
-                            </button>`;
+                            <i class="fa-solid fa-trash-can"></i> Delete Parking Lot
+                        </button>`;
                 break;
 
             case 'ParkingGate':
@@ -5338,38 +5488,38 @@ document.addEventListener('DOMContentLoaded', () => {
                 const linkedPl = obj.parkingLotId ? network.parkingLots[obj.parkingLotId] : null;
                 if (linkedPl) {
                     content += `<div class="prop-status-indicator success">
-                                    <i class="fa-solid fa-link"></i>
-                                    <div>
-                                        <div>Linked</div>
-                                        <div style="font-size:0.75rem; opacity:0.8;">${linkedPl.name}</div>
-                                    </div>
-                                </div>`;
+                                <i class="fa-solid fa-link"></i>
+                                <div>
+                                    <div>Linked</div>
+                                    <div style="font-size:0.75rem; opacity:0.8;">${linkedPl.name}</div>
+                                </div>
+                            </div>`;
                 } else {
                     content += `<div class="prop-status-indicator error">
-                                    <i class="fa-solid fa-link-slash"></i>
-                                    <div>
-                                        <div>Not Linked</div>
-                                        <div style="font-size:0.75rem; opacity:0.8;">Drag onto a Parking Lot boundary.</div>
-                                    </div>
-                                </div>`;
+                                <i class="fa-solid fa-link-slash"></i>
+                                <div>
+                                    <div>Not Linked</div>
+                                    <div style="font-size:0.75rem; opacity:0.8;">Drag onto a Parking Lot boundary.</div>
+                                </div>
+                            </div>`;
                 }
 
                 // --- SECTION: CONFIGURATION ---
                 content += `<div class="prop-section-header">Configuration</div>`;
 
                 content += `<div class="prop-row">
-                                <span class="prop-label">ID</span>
-                                <input type="text" class="prop-input" value="${obj.id}" disabled>
-                            </div>`;
+                            <span class="prop-label">ID</span>
+                            <input type="text" class="prop-input" value="${obj.id}" disabled>
+                        </div>`;
 
                 content += `<div class="prop-row">
-                                <span class="prop-label">Type</span>
-                                <select id="prop-gate-type" class="prop-select">
-                                    <option value="entry" ${obj.gateType === 'entry' ? 'selected' : ''}>Entry Only</option>
-                                    <option value="exit" ${obj.gateType === 'exit' ? 'selected' : ''}>Exit Only</option>
-                                    <option value="bidirectional" ${obj.gateType === 'bidirectional' ? 'selected' : ''}>Bi-directional</option>
-                                </select>
-                            </div>`;
+                            <span class="prop-label">Type</span>
+                            <select id="prop-gate-type" class="prop-select">
+                                <option value="entry" ${obj.gateType === 'entry' ? 'selected' : ''}>Entry Only</option>
+                                <option value="exit" ${obj.gateType === 'exit' ? 'selected' : ''}>Exit Only</option>
+                                <option value="bidirectional" ${obj.gateType === 'bidirectional' ? 'selected' : ''}>Bi-directional</option>
+                            </select>
+                        </div>`;
 
                 // --- [新增] 雙向道路設定 (若存在配對資訊) ---
                 if (obj.pairInfo && obj.pairInfo.pairId) {
@@ -5379,25 +5529,25 @@ document.addEventListener('DOMContentLoaded', () => {
 
                         // 顯示配對狀態
                         content += `<div class="prop-row">
-                                    <span class="prop-label">Paired Link</span>
-                                    <input type="text" class="prop-input" value="${pairLink.name || pairLink.id}" disabled style="color:#666;">
-                                </div>`;
+                                <span class="prop-label">Paired Link</span>
+                                <input type="text" class="prop-input" value="${pairLink.name || pairLink.id}" disabled style="color:#666;">
+                            </div>`;
 
                         // 分隔島寬度輸入框
                         content += `<div class="prop-row">
-                                    <span class="prop-label">Median Width (m)</span>
-                                    <input type="number" id="prop-edit-median" class="prop-input" 
-                                           value="${obj.pairInfo.medianWidth}" step="0.5" min="0">
-                                </div>`;
+                                <span class="prop-label">Median Width (m)</span>
+                                <input type="number" id="prop-edit-median" class="prop-input" 
+                                       value="${obj.pairInfo.medianWidth}" step="0.5" min="0">
+                            </div>`;
 
                         content += `<div class="prop-hint">
-                                    Changing this will move both roads relative to their center axis.
-                                </div>`;
+                                Changing this will move both roads relative to their center axis.
+                            </div>`;
                     } else {
                         // 若配對的路被刪除了，顯示警告
                         content += `<div class="prop-hint" style="color:orange;">
-                                    <i class="fa-solid fa-link-slash"></i> Paired link not found (Broken Link).
-                                </div>`;
+                                <i class="fa-solid fa-link-slash"></i> Paired link not found (Broken Link).
+                            </div>`;
                     }
                 }
                 // --- [新增結束] ---
@@ -5405,20 +5555,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 content += `<div class="prop-section-header">Geometry</div>`;
 
                 content += `<div class="prop-row">
-                                <span class="prop-label">Rotation (deg)</span>
-                                <input type="number" id="prop-gate-rotation" class="prop-input" value="${(obj.rotation || 0).toFixed(1)}">
-                            </div>`;
+                            <span class="prop-label">Rotation (deg)</span>
+                            <input type="number" id="prop-gate-rotation" class="prop-input" value="${(obj.rotation || 0).toFixed(1)}">
+                        </div>`;
 
                 content += `<div class="prop-row">
-                                <span class="prop-label">Width (m)</span>
-                                <input type="text" class="prop-input" value="${obj.width.toFixed(2)}" disabled>
-                            </div>`;
+                            <span class="prop-label">Width (m)</span>
+                            <input type="text" class="prop-input" value="${obj.width.toFixed(2)}" disabled>
+                        </div>`;
 
                 // --- SECTION: ACTIONS ---
                 content += `<div class="prop-section-header">Actions</div>`;
                 content += `<button id="btn-delete-gate" class="btn-danger-outline">
-                                <i class="fa-solid fa-trash-can"></i> Delete Gate
-                            </button>`;
+                            <i class="fa-solid fa-trash-can"></i> Delete Gate
+                        </button>`;
                 break;
             case 'RoadMarking':
                 // --- SECTION: GENERAL ---
@@ -5426,19 +5576,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 // ID (Read-only)
                 content += `<div class="prop-row">
-                                <span class="prop-label">ID</span>
-                                <input type="text" class="prop-input" value="${obj.id}" disabled>
-                            </div>`;
+                            <span class="prop-label">ID</span>
+                            <input type="text" class="prop-input" value="${obj.id}" disabled>
+                        </div>`;
 
                 // Type Select
                 content += `<div class="prop-row">
-                                <span class="prop-label">Type</span>
-                                <select id="prop-mark-type" class="prop-select">
-                                    <option value="stop_line" ${obj.markingType === 'stop_line' ? 'selected' : ''}>Stop Line</option>
-                                    <option value="waiting_area" ${obj.markingType === 'waiting_area' ? 'selected' : ''}>Waiting Area</option>
-                                    <option value="two_stage_box" ${obj.markingType === 'two_stage_box' ? 'selected' : ''}>Two-Stage Box</option>
-                                </select>
-                            </div>`;
+                            <span class="prop-label">Type</span>
+                            <select id="prop-mark-type" class="prop-select">
+                                <option value="stop_line" ${obj.markingType === 'stop_line' ? 'selected' : ''}>Stop Line</option>
+                                <option value="waiting_area" ${obj.markingType === 'waiting_area' ? 'selected' : ''}>Waiting Area</option>
+                                <option value="two_stage_box" ${obj.markingType === 'two_stage_box' ? 'selected' : ''}>Two-Stage Box</option>
+                            </select>
+                        </div>`;
 
                 // --- SECTION: PLACEMENT ---
                 content += `<div class="prop-section-header">Placement</div>`;
@@ -5446,14 +5596,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 // 判斷是否為 Link 上的鎖定模式
                 if (obj.linkId && !obj.isFree) {
                     content += `<div class="prop-row">
-                                    <span class="prop-label">Parent Link</span>
-                                    <input type="text" class="prop-input" value="${obj.linkId}" disabled>
-                                </div>`;
+                                <span class="prop-label">Parent Link</span>
+                                <input type="text" class="prop-input" value="${obj.linkId}" disabled>
+                            </div>`;
 
                     content += `<div class="prop-row">
-                                    <span class="prop-label">Position (m)</span>
-                                    <input type="number" step="0.5" id="prop-mark-pos" class="prop-input" value="${obj.position.toFixed(2)}">
-                                </div>`;
+                                <span class="prop-label">Position (m)</span>
+                                <input type="number" step="0.5" id="prop-mark-pos" class="prop-input" value="${obj.position.toFixed(2)}">
+                            </div>`;
 
                     // Lane Selection (Grid Layout)
                     const link = network.links[obj.linkId];
@@ -5464,9 +5614,9 @@ document.addEventListener('DOMContentLoaded', () => {
                         link.lanes.forEach((_, idx) => {
                             const checked = obj.laneIndices.includes(idx) ? 'checked' : '';
                             content += `<label style="font-size: 0.8rem; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; background: #f8fafc; padding: 2px 6px; border-radius: 4px; border: 1px solid var(--border-light);">
-                                            <input type="checkbox" class="prop-mark-lane" value="${idx}" ${checked}>
-                                            L${idx + 1}
-                                        </label>`;
+                                        <input type="checkbox" class="prop-mark-lane" value="${idx}" ${checked}>
+                                        L${idx + 1}
+                                    </label>`;
                         });
                         content += `</div>`;
                     }
@@ -5477,38 +5627,38 @@ document.addEventListener('DOMContentLoaded', () => {
                     const parentId = obj.nodeId || obj.linkId;
 
                     content += `<div class="prop-row">
-                                    <span class="prop-label">${parentLabel}</span>
-                                    <input type="text" class="prop-input" value="${parentId}" disabled>
-                                </div>`;
+                                <span class="prop-label">${parentLabel}</span>
+                                <input type="text" class="prop-input" value="${parentId}" disabled>
+                            </div>`;
 
                     content += `<div class="prop-row">
-                                    <span class="prop-label">Global X</span>
-                                    <input type="text" class="prop-input" value="${obj.x.toFixed(2)}" disabled>
-                                </div>`;
+                                <span class="prop-label">Global X</span>
+                                <input type="text" class="prop-input" value="${obj.x.toFixed(2)}" disabled>
+                            </div>`;
                     content += `<div class="prop-row">
-                                    <span class="prop-label">Global Y</span>
-                                    <input type="text" class="prop-input" value="${obj.y.toFixed(2)}" disabled>
-                                </div>`;
+                                <span class="prop-label">Global Y</span>
+                                <input type="text" class="prop-input" value="${obj.y.toFixed(2)}" disabled>
+                            </div>`;
                     content += `<div class="prop-row">
-                                    <span class="prop-label">Rotation (deg)</span>
-                                    <input type="number" id="prop-mark-rot" class="prop-input" value="${(obj.rotation || 0).toFixed(1)}">
-                                </div>`;
+                                <span class="prop-label">Rotation (deg)</span>
+                                <input type="number" id="prop-mark-rot" class="prop-input" value="${(obj.rotation || 0).toFixed(1)}">
+                            </div>`;
                 }
 
                 // --- SECTION: DIMENSIONS (若非停止線) ---
                 if (obj.markingType !== 'stop_line') {
                     content += `<div class="prop-section-header">Dimensions</div>`;
                     content += `<div class="prop-row">
-                                    <span class="prop-label">Length (m)</span>
-                                    <input type="number" step="0.1" id="prop-mark-len" class="prop-input" value="${obj.length}">
-                                </div>`;
+                                <span class="prop-label">Length (m)</span>
+                                <input type="number" step="0.1" id="prop-mark-len" class="prop-input" value="${obj.length}">
+                            </div>`;
 
                     // Width 僅在自由模式或 Two-Stage Box 顯示
                     if (obj.markingType === 'two_stage_box' && (obj.nodeId || obj.isFree)) {
                         content += `<div class="prop-row">
-                                        <span class="prop-label">Width (m)</span>
-                                        <input type="number" step="0.1" id="prop-mark-wid" class="prop-input" value="${obj.width.toFixed(2)}">
-                                    </div>`;
+                                    <span class="prop-label">Width (m)</span>
+                                    <input type="number" step="0.1" id="prop-mark-wid" class="prop-input" value="${obj.width.toFixed(2)}">
+                                </div>`;
                     }
                 }
 
@@ -5518,29 +5668,29 @@ document.addEventListener('DOMContentLoaded', () => {
 
                     // 使用 Flex Row 讓 Checkbox 與文字對齊
                     content += `<div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
-                                    <input type="checkbox" id="prop-mark-isfree" ${obj.isFree ? 'checked' : ''} style="cursor: pointer;">
-                                    <label for="prop-mark-isfree" style="font-size: 0.85rem; color: var(--text-main); cursor: pointer;">
-                                        Manual Positioning
-                                    </label>
-                                </div>`;
+                                <input type="checkbox" id="prop-mark-isfree" ${obj.isFree ? 'checked' : ''} style="cursor: pointer;">
+                                <label for="prop-mark-isfree" style="font-size: 0.85rem; color: var(--text-main); cursor: pointer;">
+                                    Manual Positioning
+                                </label>
+                            </div>`;
 
                     if (obj.isFree) {
                         content += `<div class="prop-hint" style="margin-top:0;">
-                                        <i class="fa-solid fa-hand-pointer"></i> 
-                                        You can now drag the box freely (e.g., into the intersection).
-                                    </div>`;
+                                    <i class="fa-solid fa-hand-pointer"></i> 
+                                    You can now drag the box freely (e.g., into the intersection).
+                                </div>`;
                     } else {
                         content += `<div class="prop-hint" style="margin-top:0;">
-                                        Attached to link lanes. Check "Manual Positioning" to detach.
-                                    </div>`;
+                                    Attached to link lanes. Check "Manual Positioning" to detach.
+                                </div>`;
                     }
                 }
 
                 // --- SECTION: ACTIONS ---
                 content += `<div class="prop-section-header">Actions</div>`;
                 content += `<button id="btn-delete-marking" class="btn-danger-outline">
-                                <i class="fa-solid fa-trash-can"></i> Delete Marking
-                            </button>`;
+                            <i class="fa-solid fa-trash-can"></i> Delete Marking
+                        </button>`;
                 break;
         }
 
@@ -8167,6 +8317,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // 完整替換此函數
     // 在 resetWorkspace 函數中，確保重置 pushpins
     // --- 修改 resetWorkspace ---
+    // 完整替換此函數 (或修改對應部分)
     function resetWorkspace() {
         deselectAll();
         layer.destroyChildren();
@@ -8174,8 +8325,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (typeof measureGroup !== 'undefined') measureGroup.destroyChildren();
 
+        // 重新初始化 network 物件
         network = {
-            // [修正] 將導航模式預設為 HYBRID，表示同時支援 OD 路徑與轉向率
             navigationMode: 'HYBRID',
             links: {}, nodes: {}, connections: {}, detectors: {},
             vehicleProfiles: {},
@@ -8187,13 +8338,13 @@ document.addEventListener('DOMContentLoaded', () => {
             roadSigns: {}, origins: {}, destinations: {},
             roadMarkings: {}
         };
+
+        // 【關鍵修正】: 必須更新 window.network，讓外部工具 (SubNetworkTool) 能讀取到新的路網資料
+        window.network = network;
+
         idCounter = 0;
         selectedObject = null;
         currentModalOrigin = null;
-
-        // [修正] 移除對 simulationModeSelect DOM 的操作
-        // const modeSelect = document.getElementById('simulationModeSelect');
-        // if (modeSelect) modeSelect.value = 'od_path';
 
         drawGrid();
         updatePropertiesPanel(null);
@@ -10822,4 +10973,20 @@ document.addEventListener('DOMContentLoaded', () => {
         const targetP = isStart ? p1 : p2;
         return add(targetP, scale(n, offset));
     }
+
+    window.network = network;
+    window.layer = layer;
+    window.stage = stage;
+    window.createNode = createNode;
+    window.createLink = createLink;
+    window.createConnection = createConnection;
+    window.getLanePath = getLanePath;
+    window.drawLink = drawLink;
+    window.updateConnectionEndpoints = updateConnectionEndpoints;
+    window.updateAllDetectorsOnLink = updateAllDetectorsOnLink;
+    window.updateFlowPointsOnLink = updateFlowPointsOnLink;
+    window.updateRoadSignsOnLink = updateRoadSignsOnLink;
+    window.updateAllOverpasses = updateAllOverpasses;
+    window.redrawNodeConnections = redrawNodeConnections;
+    window.saveState = saveState;
 });
