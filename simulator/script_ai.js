@@ -127,13 +127,21 @@ class AIController {
     }
 
     // PCU 轉換等級 (0~5)
+    //toQueueLevel(pcu) {
+    //  if (pcu <= 0) return 0;
+    //if (pcu <= 2) return 1;
+    //if (pcu <= 5) return 2;
+    //if (pcu <= 9) return 3;
+    //if (pcu <= 14) return 4;
+    //return 5;
+    //}
+
+    // PCU 轉換等級 (0~5)
     toQueueLevel(pcu) {
         if (pcu <= 0) return 0;
-        if (pcu <= 2) return 1;
-        if (pcu <= 5) return 2;
-        if (pcu <= 9) return 3;
-        if (pcu <= 14) return 4;
-        return 5;
+        if (pcu <= 10) return 1;
+        if (pcu <= 20) return 2;
+        return 3;
     }
 
     // 計算特定時相的排隊量 (含 PCU 加權)
@@ -185,7 +193,7 @@ class AIController {
         });
         let pcuTotal = 0;
         this.simulation.vehicles.forEach(v => {
-            if (incomingLinkIds.includes(v.currentLinkId) && v.speed < 1.0) {
+            if (incomingLinkIds.includes(v.currentLinkId) && v.speed < 8.0) {
                 const distToStop = v.currentPathLength - v.distanceOnPath;
                 if (distToStop < 120) pcuTotal += (v.isMotorcycle ? 0.3 : 1.0);
             }
@@ -197,7 +205,8 @@ class AIController {
         // 1. 時間等級 (用於狀態特徵)
         let timeLevel = 0;
         if (elapsedInPhase > 10) timeLevel = 1;
-        if (elapsedInPhase > 30) timeLevel = 2;
+        if (elapsedInPhase > 20) timeLevel = 2;
+        if (elapsedInPhase > 30) timeLevel = 3;
 
         // 2. 當前時相排隊量
         const currPcu = this.getPhaseQueuePCU(nodeId, tfl, currentPhaseIdx);
@@ -283,17 +292,35 @@ class AIController {
             if (!this.currentEpisodeRewards[nodeId]) this.currentEpisodeRewards[nodeId] = 0;
             this.currentEpisodeRewards[nodeId] += reward;
 
-            // 3. 學習 (Q-Table 更新)
+        // 3. 學習 (Q-Table 更新)
             if (this.isLearningEnabled && this.lastState[nodeId] !== undefined) {
                 agent.learn(this.lastState[nodeId], this.lastAction[nodeId], reward, currentState);
             }
 
             // 4. 決策與執行
-            const stateInfo = tfl.getCurrentStateInfo(this.simulation.time);
+            // 自行計算當前時相剩餘時間與是否安全介入，取代不存在的 getCurrentStateInfo
+            const currentPhase = tfl.schedule[currentPhaseIdx];
+            const timeRemainingInPhase = currentPhase.duration - elapsedInPhase;
+            
+            // 判斷當前時相是否可安全介入：只要該時相內有任何「綠燈(Green)」，就允許 AI 延長或切斷
+            // 如果是全紅燈或黃燈過渡期，則視為不可介入，讓它自然流動
+            let isSafeToIntervene = false;
+            for (const sig of Object.values(currentPhase.signals)) {
+                if (sig === 'Green') {
+                    isSafeToIntervene = true;
+                    break;
+                }
+            }
+
+            const stateInfo = {
+                isSafeToIntervene: isSafeToIntervene,
+                timeRemainingInPhase: timeRemainingInPhase
+            };
+
             let action = 0;
 
             if (stateInfo.isSafeToIntervene) {
-                action = agent.chooseAction(currentState);
+                action = agent.chooseAction(currentState);action = agent.chooseAction(currentState);
 
                 // ★★★ 新增：記錄決策模式 ★★★
                 this.lastActionType[nodeId] = agent.lastMode;
@@ -315,11 +342,26 @@ class AIController {
                     tfl.timeShift += timeToCompensate;
 
                     // 防止閃爍修正 (Flicker Fix) - 用於延長綠燈尾端
-                    const updatedStateInfo = tfl.getCurrentStateInfo(this.simulation.time);
+                    // --- 替換掉原本的 tfl.getCurrentStateInfo，手動計算更新後的剩餘時間 ---
+                    const updatedEffectiveTime = this.simulation.time - tfl.timeShift;
+                    let updatedTimeInCycle = ((updatedEffectiveTime % cycleTime) + cycleTime) % cycleTime;
+                    
+                    let updatedPhaseIdx = 0;
+                    let updatedElapsed = updatedTimeInCycle;
+                    for (let i = 0; i < tfl.schedule.length; i++) {
+                        if (updatedElapsed < tfl.schedule[i].duration) {
+                            updatedPhaseIdx = i;
+                            break;
+                        }
+                        updatedElapsed -= tfl.schedule[i].duration;
+                    }
+                    const updatedTimeRemaining = tfl.schedule[updatedPhaseIdx].duration - updatedElapsed;
+                    // ------------------------------------------------------------------
+
                     const neededDuration = this.decisionInterval + 0.5;
 
-                    if (updatedStateInfo.timeRemainingInPhase < neededDuration) {
-                        const extraShift = neededDuration - updatedStateInfo.timeRemainingInPhase;
+                    if (updatedTimeRemaining < neededDuration) {
+                        const extraShift = neededDuration - updatedTimeRemaining;
                         tfl.timeShift += extraShift;
                     }
                 }

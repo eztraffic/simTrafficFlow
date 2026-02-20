@@ -106,11 +106,37 @@ class PoliceController {
         const tfl = this.simulation.trafficLights.find(t => t.nodeId === this.selectedNodeId);
         if (!tfl) return;
 
-        // 獲取當前號誌狀態資訊
-        // 需確保 script02.js 中的 TrafficLightController 有實作 getCurrentStateInfo 方法
-        const stateInfo = tfl.getCurrentStateInfo ? tfl.getCurrentStateInfo(this.simulation.time) : { isSafeToIntervene: false };
+        // ★★★ 修正：自行計算當前時相與剩餘時間 (取代不存在的 getCurrentStateInfo) ★★★
+        const cycleTime = tfl.cycleDuration;
+        if (cycleTime <= 0) return;
 
-        if (stateInfo.isSafeToIntervene) {
+        const effectiveTime = this.simulation.time - tfl.timeShift;
+        let timeInCycle = ((effectiveTime % cycleTime) + cycleTime) % cycleTime;
+
+        let currentPhaseIdx = 0;
+        let elapsedInPhase = timeInCycle;
+        for (let i = 0; i < tfl.schedule.length; i++) {
+            if (elapsedInPhase < tfl.schedule[i].duration) {
+                currentPhaseIdx = i;
+                break;
+            }
+            elapsedInPhase -= tfl.schedule[i].duration;
+        }
+
+        const currentPhase = tfl.schedule[currentPhaseIdx];
+        const timeRemainingInPhase = currentPhase.duration - elapsedInPhase;
+
+        // 判斷是否為安全介入時機 (該時相必須有綠燈)
+        let isSafeToIntervene = false;
+        for (const sig of Object.values(currentPhase.signals)) {
+            if (sig === 'Green') {
+                isSafeToIntervene = true;
+                break;
+            }
+        }
+        // ★★★ 修正結束 ★★★
+
+        if (isSafeToIntervene) {
             // 情境一：按住 P (凍結)
             if (this.isHoldingP) {
                 // 原理：simulation.time 增加了 dt，我們也把 shift 增加 dt
@@ -125,8 +151,9 @@ class PoliceController {
             if (this.hasPressedN) {
                 // 原理：減少 timeShift，讓 effectiveTime 瞬間增加「剩餘時間」
                 // 微調：多加 0.05 確保跨過邊界
-                if (stateInfo.timeRemainingInPhase) {
-                    tfl.timeShift -= (stateInfo.timeRemainingInPhase + 0.05);
+                if (timeRemainingInPhase) {
+                    // ★ 注意：這裡改用上面計算好的 timeRemainingInPhase
+                    tfl.timeShift -= (timeRemainingInPhase + 0.05);
                     this.showHUDMessage("強制切換步階");
                 }
                 this.hasPressedN = false; // 單次觸發
@@ -134,7 +161,7 @@ class PoliceController {
         } else {
             // 如果現在是黃燈或全紅，忽略指令，並重置單次觸發鍵
             if (this.hasPressedN) {
-                // 也可以選擇在這裡顯示 "禁止操作 (黃燈/全紅)"
+                this.showHUDMessage("禁止操作 (黃燈/全紅中)");
             }
             this.hasPressedN = false;
         }
