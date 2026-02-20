@@ -386,6 +386,8 @@ document.addEventListener('DOMContentLoaded', () => {
     let signalPathsGroup = new THREE.Group();
     let trafficLightsGroup = new THREE.Group();
     let trafficLightMeshes = [];
+    // ★★★ 新增這行：用來儲存所有行人號誌的參照，以便 update 迴圈使用 ★★★
+    let pedestrianMeshes = [];
 
     const LANE_COLORS = ['rgb(255, 99, 132)', 'rgb(54, 162, 235)', 'rgb(255, 206, 86)', 'rgb(75, 192, 192)', 'rgb(153, 102, 255)', 'rgb(255, 159, 64)'];
 
@@ -2595,7 +2597,43 @@ document.addEventListener('DOMContentLoaded', () => {
 
             lampsBack.push({ mesh: meshBack, material: matBack, config: cfg });
         });
+        // --- 新增：掛載台灣式行人號誌 ---
+        // 僅在有正面連結 (linkIdFront) 時建立，避免重複或背面無路的情況
+        // 位置：號誌桿身 (x=0, z=0)，高度約 2.5m (離地)，角度與車輛號誌相同 (面向對街行人)
+        // 註：車輛號誌是面向車輛 (rotateY(Math.PI))，行人號誌若要面向"平行車流"的對面，角度應相同。
 
+        if (typeof PedestrianManager !== 'undefined') {
+            // Front Pedestrian Light
+            if (linkIdFront) {
+                const pedGroupFront = PedestrianManager.createMesh();
+                pedGroupFront.position.set(0, 2.5, 0.25);
+                group.add(pedGroupFront);
+
+                // ★ 修正：存入 pedestrianMeshes
+                pedestrianMeshes.push({
+                    type: 'pedestrian',
+                    mesh: pedGroupFront,
+                    nodeId: nodeId,
+                    linkId: linkIdFront
+                });
+            }
+
+            if (linkIdBack) {
+                const pedGroupBack = PedestrianManager.createMesh();
+                pedGroupBack.position.set(0, 2.5, -0.25);
+                pedGroupBack.rotation.y = Math.PI;
+                group.add(pedGroupBack);
+
+                // ★ 修正：存入 pedestrianMeshes
+                pedestrianMeshes.push({
+                    type: 'pedestrian',
+                    mesh: pedGroupBack,
+                    nodeId: nodeId,
+                    linkId: linkIdBack
+                });
+            }
+        }
+        // -----------------------------
         // Store reference for updates with independent link control
         trafficLightMeshes.push({
             nodeId: nodeId,
@@ -2613,6 +2651,8 @@ document.addEventListener('DOMContentLoaded', () => {
         signalPathsGroup.clear();
         trafficLightsGroup.clear();
         trafficLightMeshes = [];
+        // ★★★ 新增這行：清空行人號誌陣列 ★★★
+        pedestrianMeshes = [];
 
         // =================================================================
         // [修正] 統一柏油路面材質 (Asphalt)
@@ -3441,7 +3481,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function update3DSignals() {
         if (!simulation || !showTurnPaths) return;
 
-        // Update Lines
+        // 1. 更新一般車輛號誌的連線與燈頭 (保持原本邏輯)
         signalPathsGroup.children.forEach(line => {
             const { nodeId, turnGroupId } = line.userData;
             const tfl = simulation.trafficLights.find(t => t.nodeId === nodeId);
@@ -3453,16 +3493,21 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
 
-        // Update Poles (Dual Face Logic)
         if (trafficLightMeshes.length > 0) {
+            // ... (原本的 updateFace 邏輯保持不變) ...
+            // 為節省篇幅，此處省略 updateFace 定義，請保留您原本修正後的版本
             const updateFace = (linkId, lamps, tfl, node) => {
+                if (!lamps || !Array.isArray(lamps)) return;
                 if (!linkId) {
                     lamps.forEach(l => l.material.color.setHex(0x111111));
                     return;
                 }
-
+                // ... (保留原本車輛號誌更新代碼) ...
+                // 若您之前已修正過 updateFace，請維持該版本
                 const transitions = node.transitions.filter(t => t.sourceLinkId === linkId && t.turnGroupId);
                 const inLink = networkData.links[linkId];
+                if (!inLink) return;
+
                 const inAngle = getLinkAngle(inLink, true);
 
                 let stateLeft = 'Red', stateStraight = 'Red', stateRight = 'Red';
@@ -3471,8 +3516,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 transitions.forEach(trans => {
                     const signal = tfl.getSignalForTurnGroup(trans.turnGroupId);
-
-                    // --- 計算轉彎角度 (Revised: Use Curve Angle) ---
                     let turnAngle = 0;
                     if (trans.bezier && trans.bezier.points.length > 0) {
                         const pts = trans.bezier.points;
@@ -3481,21 +3524,21 @@ document.addEventListener('DOMContentLoaded', () => {
                         const dx = pEnd.x - pStart.x;
                         const dy = pEnd.y - pStart.y;
                         const curveAngle = Math.atan2(dy, dx);
-
                         let diff = curveAngle - inAngle;
                         while (diff <= -Math.PI) diff += Math.PI * 2;
                         while (diff > Math.PI) diff -= Math.PI * 2;
                         turnAngle = diff;
                     } else {
                         const outLink = networkData.links[trans.destLinkId];
-                        const outAngle = getLinkAngle(outLink, false);
-                        let diff = outAngle - inAngle;
-                        while (diff <= -Math.PI) diff += Math.PI * 2;
-                        while (diff > Math.PI) diff -= Math.PI * 2;
-                        turnAngle = diff;
+                        if (outLink) {
+                            const outAngle = getLinkAngle(outLink, false);
+                            let diff = outAngle - inAngle;
+                            while (diff <= -Math.PI) diff += Math.PI * 2;
+                            while (diff > Math.PI) diff -= Math.PI * 2;
+                            turnAngle = diff;
+                        }
                     }
 
-                    // --- Logic Corrected for Y-Up Coordinate System ---
                     if (turnAngle > 0.2) {
                         hasRight = true;
                         if (signal === 'Green') stateRight = 'Green';
@@ -3511,32 +3554,111 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 });
 
-                // Apply Colors
-                lamps.forEach(l => l.material.color.setHex(0x111111)); // Reset
-
+                lamps.forEach(l => l.material.color.setHex(0x111111));
                 let showRed = true;
                 if (stateStraight === 'Green' || stateLeft === 'Green' || stateRight === 'Green' || anyYellow) showRed = false;
                 if (stateStraight !== 'Green' && !anyYellow) showRed = true;
 
-                if (showRed) lamps[0].material.color.setHex(lamps[0].config.color);
-                if (anyYellow) {
+                if (lamps.length >= 1 && showRed) lamps[0].material.color.setHex(lamps[0].config.color);
+
+                if (anyYellow && lamps.length >= 2) {
                     lamps[1].material.color.setHex(lamps[1].config.color);
-                    lamps[0].material.color.setHex(0x111111);
+                    if (lamps.length >= 1) lamps[0].material.color.setHex(0x111111);
                 }
-                if (hasLeft && stateLeft === 'Green') lamps[2].material.color.setHex(lamps[2].config.color);
-                if (hasStraight && stateStraight === 'Green') lamps[3].material.color.setHex(lamps[3].config.color);
-                if (hasRight && stateRight === 'Green') lamps[4].material.color.setHex(lamps[4].config.color);
+
+                if (hasLeft && stateLeft === 'Green' && lamps.length >= 3) lamps[2].material.color.setHex(lamps[2].config.color);
+                if (hasStraight && stateStraight === 'Green' && lamps.length >= 4) lamps[3].material.color.setHex(lamps[3].config.color);
+                if (hasRight && stateRight === 'Green' && lamps.length >= 5) lamps[4].material.color.setHex(lamps[4].config.color);
             };
 
             trafficLightMeshes.forEach(poleData => {
                 const { nodeId, linkIdFront, linkIdBack, lampsFront, lampsBack } = poleData;
                 const tfl = simulation.trafficLights.find(t => t.nodeId === nodeId);
                 const node = networkData.nodes[nodeId];
-
                 if (tfl && node) {
                     updateFace(linkIdFront, lampsFront, tfl, node);
                     updateFace(linkIdBack, lampsBack, tfl, node);
                 }
+            });
+        }
+
+        // --- ★★★ 2. 修正後的行人號誌更新邏輯 ★★★ ---
+        if (typeof PedestrianManager !== 'undefined' && pedestrianMeshes.length > 0) {
+            pedestrianMeshes.forEach(pedData => {
+                const { mesh, nodeId, linkId } = pedData;
+
+                // 1. 取得號誌控制器
+                const tfl = simulation.trafficLights.find(t => t.nodeId === nodeId);
+                const node = networkData.nodes[nodeId];
+
+                // 預設狀態
+                let stateStraight = 'Red';
+                let remaining = 0;
+
+                if (tfl && node && linkId) {
+                    // 2. 收集該 Link 對應的「直行」TurnGroupIds
+                    const inLink = networkData.links[linkId];
+                    const straightTurnGroupIds = [];
+
+                    if (inLink) {
+                        const inAngle = getLinkAngle(inLink, true);
+                        const transitions = node.transitions.filter(t => t.sourceLinkId === linkId && t.turnGroupId);
+
+                        transitions.forEach(trans => {
+                            let turnAngle = 0;
+                            // 計算轉彎角度 (判斷是否直行)
+                            if (trans.bezier && trans.bezier.points.length > 0) {
+                                const pts = trans.bezier.points;
+                                const pStart = pts[0];
+                                const pEnd = pts[pts.length - 1];
+                                const dx = pEnd.x - pStart.x;
+                                const dy = pEnd.y - pStart.y;
+                                const curveAngle = Math.atan2(dy, dx);
+                                let diff = curveAngle - inAngle;
+                                while (diff <= -Math.PI) diff += Math.PI * 2;
+                                while (diff > Math.PI) diff -= Math.PI * 2;
+                                turnAngle = diff;
+                            } else {
+                                const outLink = networkData.links[trans.destLinkId];
+                                if (outLink) {
+                                    const outAngle = getLinkAngle(outLink, false);
+                                    let diff = outAngle - inAngle;
+                                    while (diff <= -Math.PI) diff += Math.PI * 2;
+                                    while (diff > Math.PI) diff -= Math.PI * 2;
+                                    turnAngle = diff;
+                                }
+                            }
+
+                            // 判斷是否為直行 (角度容許值 0.6)
+                            if (Math.abs(turnAngle) < 0.6) {
+                                straightTurnGroupIds.push(trans.turnGroupId);
+                            }
+                        });
+                    }
+
+                    // 3. 判斷當前狀態 (只要有一個直行群組是綠燈，就算綠燈)
+                    let isGreen = false;
+                    straightTurnGroupIds.forEach(gid => {
+                        if (tfl.getSignalForTurnGroup(gid) === 'Green') isGreen = true;
+                    });
+
+                    if (isGreen) {
+                        stateStraight = 'Green';
+                        // 綠燈時：顯示當前週期的剩餘時間
+                        const phaseInfo = tfl.getPhaseDetails(simulation.time);
+                        remaining = phaseInfo.remaining;
+                    } else {
+                        stateStraight = 'Red';
+                        // 紅燈時 (含黃燈)：計算「直到下一次綠燈」的總等待時間
+                        remaining = tfl.getTimeToNextGreen(simulation.time, straightTurnGroupIds);
+                    }
+
+                    // 防呆
+                    if (isNaN(remaining)) remaining = 0;
+                }
+
+                // 4. 更新視覺
+                PedestrianManager.update(mesh, stateStraight, remaining, simulation.time);
             });
         }
     }
@@ -3545,11 +3667,20 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!link) return 0;
         const lanes = Object.values(link.lanes);
         if (lanes.length === 0) return 0;
+        // 取第一條車道的路徑
         const path = lanes[0].path;
         if (path.length < 2) return 0;
+
         let p1, p2;
-        if (isEnd) { p1 = path[path.length - 2]; p2 = path[path.length - 1]; }
-        else { p1 = path[0]; p2 = path[1]; }
+        if (isEnd) {
+            // 該路段的末端角度 (進入路口的角度)
+            p1 = path[path.length - 2];
+            p2 = path[path.length - 1];
+        } else {
+            // 該路段的起始角度 (離開路口的角度)
+            p1 = path[0];
+            p2 = path[1];
+        }
         return Math.atan2(p2.y - p1.y, p2.x - p1.x);
     }
 
@@ -5541,53 +5672,12 @@ document.addEventListener('DOMContentLoaded', () => {
             this.turnGroupStates = {};
         }
 
-        // [新增] 輔助方法：獲取當前狀態詳細資訊
-        getCurrentStateInfo(time) {
-            if (this.cycleDuration <= 0) return { isSafeToIntervene: false, timeRemainingInPhase: 0 };
-
-            const effectiveTime = time - this.timeShift;
-            let timeInCycle = ((effectiveTime % this.cycleDuration) + this.cycleDuration) % this.cycleDuration;
-
-            let accumulatedTime = 0;
-            let currentPeriod = null;
-
-            for (const period of this.schedule) {
-                if (timeInCycle < period.duration) {
-                    currentPeriod = period;
-                    break;
-                }
-                timeInCycle -= period.duration;
-                accumulatedTime += period.duration; // 這是之前的累積時間，不含當前
-            }
-
-            if (!currentPeriod) return { isSafeToIntervene: false, timeRemainingInPhase: 0 };
-
-            // 檢查安全性：是否有任何號誌是黃燈？
-            let hasYellow = false;
-            let allRed = true;
-
-            for (const signal of Object.values(currentPeriod.signals)) {
-                if (signal === 'Yellow') hasYellow = true;
-                if (signal === 'Green') allRed = false;
-            }
-
-            // 安全規則：非黃燈 且 非全紅 (這裡簡單假設只要有綠燈就不算全紅)
-            // 注意：有些路口全紅可能有特殊定義，這裡用「沒有任何綠燈」來判斷全紅
-            const isSafe = !hasYellow && !allRed;
-
-            // 剩餘時間 = 當前週期的總長度 - 已過時間 (timeInCycle 此時已被減去之前的 period duration，所以它就是當前 period 的 elapsed)
-            const remaining = currentPeriod.duration - timeInCycle;
-
-            return {
-                isSafeToIntervene: isSafe,
-                timeRemainingInPhase: remaining
-            };
-        }
-
         update(time) {
+            // ... (保持原樣) ...
             if (this.cycleDuration <= 0) return;
             const effectiveTime = time - this.timeShift;
             let timeInCycle = ((effectiveTime % this.cycleDuration) + this.cycleDuration) % this.cycleDuration;
+
             for (const period of this.schedule) {
                 if (timeInCycle < period.duration) {
                     for (const [turnGroupId, signal] of Object.entries(period.signals)) {
@@ -5601,6 +5691,78 @@ document.addEventListener('DOMContentLoaded', () => {
 
         getSignalForTurnGroup(turnGroupId) {
             return this.turnGroupStates[turnGroupId] || 'Green';
+        }
+
+        getPhaseDetails(time) {
+            // ... (保持原樣) ...
+            if (this.cycleDuration <= 0) return { duration: 1, remaining: 0 };
+            const effectiveTime = time - this.timeShift;
+            let timeInCycle = ((effectiveTime % this.cycleDuration) + this.cycleDuration) % this.cycleDuration;
+
+            for (const period of this.schedule) {
+                if (timeInCycle < period.duration) {
+                    return {
+                        duration: period.duration,
+                        remaining: Math.max(0, period.duration - timeInCycle)
+                    };
+                }
+                timeInCycle -= period.duration;
+            }
+            return { duration: 1, remaining: 0 };
+        }
+
+        // ★★★ [新增此方法] 計算距離下一次綠燈還需等待多久 (累積紅燈秒數) ★★★
+        getTimeToNextGreen(time, targetGroupIds) {
+            if (this.cycleDuration <= 0 || !targetGroupIds || targetGroupIds.length === 0) return 0;
+
+            const effectiveTime = time - this.timeShift;
+            let timeInCycle = ((effectiveTime % this.cycleDuration) + this.cycleDuration) % this.cycleDuration;
+
+            // 1. 找到當前所在的週期索引 (index)
+            let currentPeriodIndex = 0;
+            for (let i = 0; i < this.schedule.length; i++) {
+                if (timeInCycle < this.schedule[i].duration) {
+                    currentPeriodIndex = i;
+                    break;
+                }
+                timeInCycle -= this.schedule[i].duration;
+            }
+
+            // 檢查當前是否已經是綠燈 (若任一目標群組為綠燈，視為綠燈)
+            const currentPeriod = this.schedule[currentPeriodIndex];
+            const isCurrentGreen = targetGroupIds.some(gid => currentPeriod.signals[gid] === 'Green');
+
+            // 如果現在就是綠燈，等待時間為 0 (由外部邏輯處理綠燈倒數)
+            if (isCurrentGreen) return 0;
+
+            // 如果現在是紅/黃燈，開始累加時間
+            // 初始等待時間 = 當前週期剩餘時間 (timeInCycle 此時已扣除前面的週期，剩下的就是已過時間)
+            let totalWaitTime = currentPeriod.duration - timeInCycle;
+
+            // 2. 往後遍歷週期，直到找到綠燈
+            let i = (currentPeriodIndex + 1) % this.schedule.length;
+            let safetyCounter = 0; // 防止無窮迴圈
+
+            while (i !== currentPeriodIndex && safetyCounter < this.schedule.length) {
+                const period = this.schedule[i];
+
+                // 檢查這個週期是否變綠燈了
+                const isGreen = targetGroupIds.some(gid => period.signals[gid] === 'Green');
+
+                if (isGreen) {
+                    // 找到綠燈了！停止累加
+                    return totalWaitTime;
+                } else {
+                    // 還是紅/黃燈，累加此週期全部時間
+                    totalWaitTime += period.duration;
+                }
+
+                i = (i + 1) % this.schedule.length;
+                safetyCounter++;
+            }
+
+            // 如果繞了一圈都沒綠燈 (全紅)，回傳累積時間
+            return totalWaitTime;
         }
     }
     class Spawner {
