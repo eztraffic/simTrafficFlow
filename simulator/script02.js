@@ -5864,7 +5864,38 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    class Pathfinder { constructor(links, nodes) { this.adj = new Map(); for (const linkId in links) { const link = links[linkId]; if (!this.adj.has(link.source)) this.adj.set(link.source, []); this.adj.get(link.source).push({ linkId: link.id, toNode: link.destination }); } } findRoute(startNodeId, endNodeId) { if (!startNodeId || !endNodeId) return null; const q = [[startNodeId, []]]; const visited = new Set([startNodeId]); while (q.length > 0) { const [currentNodeId, path] = q.shift(); if (currentNodeId === endNodeId) return path; const neighbors = this.adj.get(currentNodeId) || []; for (const neighbor of neighbors) { if (!visited.has(neighbor.toNode)) { visited.add(neighbor.toNode); const newPath = [...path, neighbor.linkId]; q.push([neighbor.toNode, newPath]); } } } return null; } }
+    class Pathfinder { 
+        constructor(links, nodes) { 
+            this.adj = new Map(); 
+            for (const linkId in links) { 
+                const link = links[linkId]; 
+                if (!this.adj.has(link.source)) this.adj.set(link.source, []); 
+                this.adj.get(link.source).push({ linkId: link.id, toNode: link.destination }); 
+            } 
+        } 
+        findRoute(startNodeId, endNodeId) { 
+            if (!startNodeId || !endNodeId) return null; 
+            const q = [[startNodeId, []]]; 
+            const visited = new Set([startNodeId]); 
+            while (q.length > 0) { 
+                const [currentNodeId, path] = q.shift(); 
+                if (currentNodeId === endNodeId) return path; 
+                const neighbors = this.adj.get(currentNodeId) || []; 
+                for (const neighbor of neighbors) { 
+                    
+                    // ★★★ [新增] 防止 -1 蟲洞現象 ★★★
+                    if (neighbor.toNode === '-1' || neighbor.toNode === -1) continue;
+
+                    if (!visited.has(neighbor.toNode)) { 
+                        visited.add(neighbor.toNode); 
+                        const newPath = [...path, neighbor.linkId]; 
+                        q.push([neighbor.toNode, newPath]); 
+                    } 
+                } 
+            } 
+            return null; 
+        } 
+    }
     class TrafficLightController {
         constructor(config) {
             this.nodeId = config.nodeId;
@@ -9331,7 +9362,59 @@ document.addEventListener('DOMContentLoaded', () => {
                     attractionProb, stayDuration
                 });
             });
+            // =========================================================
+            // ★★★ [新增] 幾何自我修復拓撲 (Geometric Self-Healing) ★★★
+            // 解決編輯器複製或合併時可能造成的端點遺失 (-1) 問題
+            // =========================================================
+            Object.values(links).forEach(link => {
+                const lanes = Object.values(link.lanes).sort((a,b) => a.index - b.index);
+                if (lanes.length === 0) return;
+                const path = lanes[Math.floor(lanes.length/2)].path; // 取中間車道作為參考
+                if (path.length < 2) return;
+                
+                const startPoint = path[0];
+                const endPoint = path[path.length - 1];
 
+                const findBestNode = (pt) => {
+                    let bestNode = null;
+                    let minDist = 30.0; // 容許最大誤差 30 公尺
+                    Object.values(nodes).forEach(node => {
+                        if (node.polygon && node.polygon.length > 0) {
+                            if (Geom.Utils.isPointInPolygon(pt, node.polygon)) {
+                                bestNode = node.id;
+                                minDist = -1; // 幾何包含，優先級最高
+                            } else if (minDist > 0) {
+                                let cx = 0, cy = 0;
+                                node.polygon.forEach(p => { cx += p.x; cy += p.y; });
+                                cx /= node.polygon.length;
+                                cy /= node.polygon.length;
+                                const d = Math.hypot(pt.x - cx, pt.y - cy);
+                                if (d < minDist) { minDist = d; bestNode = node.id; }
+                            }
+                        }
+                    });
+                    return bestNode;
+                };
+
+                // 若終點遺失，利用幾何位置強行找回並綁定
+                if (!link.destination || link.destination === '-1' || link.destination === -1) {
+                    const recoveredId = findBestNode(endPoint);
+                    if (recoveredId) {
+                        link.destination = recoveredId;
+                        console.log(`[Self-Healing] Restored destination of Link ${link.id} to Node ${recoveredId}`);
+                    }
+                }
+                
+                // 若起點遺失，利用幾何位置強行找回並綁定
+                if (!link.source || link.source === '-1' || link.source === -1) {
+                    const recoveredId = findBestNode(startPoint);
+                    if (recoveredId) {
+                        link.source = recoveredId;
+                        console.log(`[Self-Healing] Restored source of Link ${link.id} to Node ${recoveredId}`);
+                    }
+                }
+            });
+            // =========================================================
             Promise.all(imagePromises).then(() => {
                 resolve({
                     links,
