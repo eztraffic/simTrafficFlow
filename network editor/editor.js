@@ -3868,6 +3868,26 @@ document.addEventListener('DOMContentLoaded', () => {
             finalNode.incomingLinkIds.add(linkA.id);
         }
 
+        // --- ★ [新增] 遷移 Turning Ratios (轉向比例) ---
+        Object.values(network.nodes).forEach(node => {
+            if (!node.turningRatios) return;
+            
+            // 如果 B 是進入路段 (從 B 轉向其他)，將其鍵值改為 A
+            if (node.turningRatios[linkB.id] !== undefined) {
+                node.turningRatios[linkA.id] = node.turningRatios[linkB.id];
+                delete node.turningRatios[linkB.id];
+            }
+            
+            // 如果 B 是離開路段 (從其他轉向 B)，將目的路段的鍵值改為 A
+            Object.keys(node.turningRatios).forEach(fromId => {
+                if (node.turningRatios[fromId][linkB.id] !== undefined) {
+                    node.turningRatios[fromId][linkA.id] = node.turningRatios[fromId][linkB.id];
+                    delete node.turningRatios[fromId][linkB.id];
+                }
+            });
+        });
+        // -------------------------------------------
+
         // 4. 更新連接線 (Connections)
         Object.values(network.connections).forEach(conn => {
             if (conn.sourceLinkId === linkB.id) {
