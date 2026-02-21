@@ -1830,18 +1830,19 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
 
-            // 2. 滑鼠左鍵點擊在空白處 (Stage)
+            // // 2. 滑鼠左鍵點擊在空白處 (Stage)
             if (e.evt.button === 0 && e.target === stage) {
                 // 排除清單：如果不是這些工具，則視為拖曳畫布
                 if (activeTool !== 'add-link' &&
                     activeTool !== 'measure' &&
-                    !(activeTool === 'connect-lanes' && connectMode === 'box') &&
+                    // [修正] 加入 || connectMode === 'merge' 以防止在合併模式下拖曳畫布
+                    !(activeTool === 'connect-lanes' && (connectMode === 'box' || connectMode === 'merge')) &&
                     activeTool !== 'add-background' &&
                     activeTool !== 'add-pushpin' &&
                     activeTool !== 'add-parking-lot' &&
                     activeTool !== 'add-parking-gate' &&
                     activeTool !== 'add-intersection' &&
-                    activeTool !== 'subnetwork') { // 確保 subnetwork 在此清單中
+                    activeTool !== 'subnetwork') { 
 
                     isPanning = true;
                     lastPointerPosition = stage.getPointerPosition();
@@ -1876,18 +1877,22 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             // ---------------------------
 
-            // --- Connect Box Mode ---
-            if (activeTool === 'connect-lanes' && connectMode === 'box') {
+            // --- Connect Box / Merge Box Mode ---
+            if (activeTool === 'connect-lanes' && (connectMode === 'box' || connectMode === 'merge')) {
                 if (e.target !== stage) return;
+
+                // 根據模式設定顏色：Box(藍色), Merge(紅色/粉色以示區別)
+                const strokeColor = connectMode === 'merge' ? '#e11d48' : '#00D2FF';
+                const fillColor = connectMode === 'merge' ? 'rgba(225, 29, 72, 0.2)' : 'rgba(0, 210, 255, 0.2)';
 
                 tempShape = new Konva.Rect({
                     x: worldPos.x,
                     y: worldPos.y,
                     width: 0,
                     height: 0,
-                    stroke: '#00D2FF',
+                    stroke: strokeColor,
                     strokeWidth: 1 / stage.scaleX(),
-                    fill: 'rgba(0, 210, 255, 0.2)',
+                    fill: fillColor,
                     listening: false,
                     name: 'selection-box'
                 });
@@ -1934,7 +1939,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             // -----------------------------------------------------------
-            // [修正重點] 使用 stage.getPointerPosition() 獲取精確的世界座標
+            // 取得精確的世界座標
             // -----------------------------------------------------------
             const pointer = stage.getPointerPosition();
             if (!pointer) return;
@@ -1953,16 +1958,20 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             // -------------------------------
 
-            // --- Connect Box Mode 拖曳範圍 ---
-            if (activeTool === 'connect-lanes' && connectMode === 'box' && tempShape) {
+            // --- [修正重點] Connect Box / Merge Box Mode 拖曳範圍更新 ---
+            if (activeTool === 'connect-lanes' && (connectMode === 'box' || connectMode === 'merge') && tempShape) {
                 const startPos = tempShape.getAttr('startPos');
+                
+                // 計算矩形的新位置與大小 (支援向左/向上拖曳)
                 tempShape.x(Math.min(worldPos.x, startPos.x));
                 tempShape.y(Math.min(worldPos.y, startPos.y));
                 tempShape.width(Math.abs(worldPos.x - startPos.x));
                 tempShape.height(Math.abs(worldPos.y - startPos.y));
+                
                 layer.batchDraw();
                 return;
             }
+            // ---------------------------------------------------------
 
             // --- Parking Gate 拖曳範圍 ---
             if (activeTool === 'add-parking-gate' && tempShape) {
@@ -1988,29 +1997,36 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         stage.on('mouseup', (e) => {
-            // --- [新增] Connect Box Mode 的完成邏輯 ---
-            if (activeTool === 'connect-lanes' && connectMode === 'box' && tempShape) {
-                // 取得標準化的矩形參數
-                const rectBox = {
-                    x: tempShape.x(),
-                    y: tempShape.y(),
-                    width: tempShape.width(),
-                    height: tempShape.height()
-                };
+            // --- [修改] 支援 Connect Box 和 Merge Box 的結束框選邏輯 ---
+            if (activeTool === 'connect-lanes' && (connectMode === 'box' || connectMode === 'merge') && tempShape) {
+                const width = tempShape.width();
+                const height = tempShape.height();
 
-                // 移除視覺選取框
-                tempShape.destroy();
-                tempShape = null;
+                // 忽略太小的誤觸
+                if (Math.abs(width) > 2 && Math.abs(height) > 2) {
+                    // 標準化 x, y, w, h (處理往上或往左拖曳的負值寬高)
+                    const finalX = width > 0 ? tempShape.x() : tempShape.x() + width;
+                    const finalY = height > 0 ? tempShape.y() : tempShape.y() + height;
+                    const finalW = Math.abs(width);
+                    const finalH = Math.abs(height);
 
-                // 執行自動連結演算法 (如果框框夠大，避免誤觸)
-                if (rectBox.width > 2 || rectBox.height > 2) {
-                    autoConnectLanesInSelection(rectBox);
+                    const rect = { x: finalX, y: finalY, width: finalW, height: finalH };
+
+                    // 執行對應的演算
+                    if (connectMode === 'box') {
+                        autoConnectLanesInSelection(rect);
+                    } else if (connectMode === 'merge') {
+                        autoMergeLinksInSelection(rect);
+                    }
                 }
 
+                // 清除暫存選取框
+                tempShape.destroy();
+                tempShape = null;
                 layer.batchDraw();
                 return;
             }
-            // --- [新增結束] ---
+            // --- [修改結束] ---
 
             if (activeTool === 'add-parking-gate' && tempShape) {
                 const width = tempShape.width();
@@ -2916,7 +2932,19 @@ document.addEventListener('DOMContentLoaded', () => {
         link.konvaGroup.destroy();
         delete network.links[linkId];
     }
+    function deleteDetector(id) {
+        const detector = network.detectors[id];
+        if (!detector) return;
 
+        // 1. 銷毀 Konva 視覺群組 (這一步最重要，否則畫面上不會消失)
+        if (detector.konvaGroup) {
+            detector.konvaGroup.destroy();
+        }
+
+        // 2. 從資料結構中移除
+        delete network.detectors[id];
+    }
+    
     function deleteNode(nodeId) {
         const node = network.nodes[nodeId];
         if (!node) return;
@@ -3708,7 +3736,172 @@ document.addEventListener('DOMContentLoaded', () => {
             console.log(`Auto-connected ${connectionCount} lanes.`);
         }
     }
+// --- [新增] 路段合併演算法 (Stitching) ---
+    function autoMergeLinksInSelection(rect) {
+        console.log("AutoMerge Box:", rect);
+        const MERGE_DIST_THRESHOLD = 30; // 允許的接合距離誤差 (公尺)
+        const MERGE_ANGLE_THRESHOLD = 45; // 允許的角度誤差 (度)
 
+        const candidates = { tails: [], heads: [] };
+
+        // 1. 搜尋框選範圍內的端點
+        Object.values(network.links).forEach(link => {
+            if (!link.waypoints || link.waypoints.length < 2) return;
+
+            const pStart = link.waypoints[0];
+            const pEnd = link.waypoints[link.waypoints.length - 1];
+
+            // 檢查起點是否在框內 (作為下游候選 - Head)
+            if (pStart.x >= rect.x && pStart.x <= rect.x + rect.width &&
+                pStart.y >= rect.y && pStart.y <= rect.y + rect.height) {
+                candidates.heads.push(link);
+            }
+
+            // 檢查終點是否在框內 (作為上游候選 - Tail)
+            if (pEnd.x >= rect.x && pEnd.x <= rect.x + rect.width &&
+                pEnd.y >= rect.y && pEnd.y <= rect.y + rect.height) {
+                candidates.tails.push(link);
+            }
+        });
+
+        let mergeCount = 0;
+        const processedIds = new Set(); // 避免重複處理
+
+        // 2. 配對檢查
+        candidates.tails.forEach(linkA => { // 上游 (保留)
+            if (processedIds.has(linkA.id)) return;
+
+            candidates.heads.forEach(linkB => { // 下游 (將被合併刪除)
+                if (processedIds.has(linkB.id)) return;
+                if (linkA.id === linkB.id) return;
+
+                // 條件 A: 車道數必須相同
+                if (linkA.lanes.length !== linkB.lanes.length) return;
+
+                // 條件 B: 距離夠近
+                const pEndA = linkA.waypoints[linkA.waypoints.length - 1];
+                const pStartB = linkB.waypoints[0];
+                const dist = Math.sqrt(Math.pow(pEndA.x - pStartB.x, 2) + Math.pow(pEndA.y - pStartB.y, 2));
+                
+                if (dist > MERGE_DIST_THRESHOLD) return;
+
+                // 條件 C: 方向一致 (避免銳角接合)
+                // 計算 A 的末端向量 和 B 的前端向量
+                const vecA = getVector(linkA.waypoints[linkA.waypoints.length - 2], pEndA);
+                const vecB = getVector(pStartB, linkB.waypoints[1]);
+                const angleA = Math.atan2(vecA.y, vecA.x) * (180 / Math.PI);
+                const angleB = Math.atan2(vecB.y, vecB.x) * (180 / Math.PI);
+                
+                let angleDiff = Math.abs(angleA - angleB);
+                if (angleDiff > 180) angleDiff = 360 - angleDiff;
+
+                if (angleDiff > MERGE_ANGLE_THRESHOLD) return;
+
+                // --- 執行合併 ---
+                if (confirm(`Merge Link ${linkA.id} and ${linkB.id}?`)) {
+                    performLinkMerge(linkA, linkB);
+                    processedIds.add(linkA.id);
+                    processedIds.add(linkB.id);
+                    mergeCount++;
+                }
+            });
+        });
+
+        if (mergeCount > 0) {
+            // 更新畫面與狀態
+            deselectAll();
+            layer.batchDraw();
+            saveState();
+            alert(`Merged ${mergeCount} pairs of links.`);
+        } else {
+            console.log("No matching links found for merge.");
+        }
+    }
+
+// 執行實際合併動作 (A 吸納 B)
+    function performLinkMerge(linkA, linkB) {
+        const offsetLength = getPolylineLength(linkA.waypoints);
+        
+        // 1. 合併幾何點
+        const pEndA = linkA.waypoints[linkA.waypoints.length - 1];
+        const pStartB = linkB.waypoints[0];
+        const dist = Math.sqrt(Math.pow(pEndA.x - pStartB.x, 2) + Math.pow(pEndA.y - pStartB.y, 2));
+        
+        const pointsToAppend = (dist < 1.0) ? linkB.waypoints.slice(1) : linkB.waypoints;
+        linkA.waypoints = linkA.waypoints.concat(pointsToAppend);
+
+        // 2. 遷移資產 (Assets Migration)
+        Object.values(network.detectors).forEach(det => {
+            if (det.linkId === linkB.id) { det.linkId = linkA.id; det.position += offsetLength; drawDetector(det); }
+        });
+        Object.values(network.roadSigns).forEach(sign => {
+            if (sign.linkId === linkB.id) { sign.linkId = linkA.id; sign.position += offsetLength; drawRoadSign(sign); }
+        });
+        Object.values(network.roadMarkings).forEach(mk => {
+            if (mk.linkId === linkB.id) { mk.linkId = linkA.id; if (!mk.isFree && !mk.nodeId) { mk.position += offsetLength; } drawRoadMarking(mk); }
+        });
+        Object.values(network.origins).forEach(o => {
+            if (o.linkId === linkB.id) { o.linkId = linkA.id; o.position += offsetLength; drawOrigin(o); }
+        });
+        Object.values(network.destinations).forEach(d => {
+            if (d.linkId === linkB.id) { d.linkId = linkA.id; d.position += offsetLength; drawDestination(d); }
+        });
+
+        // --- [修正重點] 3. 修復拓撲 (Topology) 採用全域掃描防呆 ---
+        let midNodeId = null;
+        let finalNodeId = null;
+
+        Object.values(network.nodes).forEach(node => {
+            // 如果某個節點的「離開」是 B，表示這是 B 的上游節點 (即我們要消除的中間節點)
+            if (node.outgoingLinkIds.has(linkB.id)) midNodeId = node.id;
+            // 如果某個節點的「進入」是 B，表示這是 B 的下游節點 (即合併後 A 的新終點)
+            if (node.incomingLinkIds.has(linkB.id)) finalNodeId = node.id;
+        });
+
+        // 更新 Link A 的終點為 Link B 原本的終點
+        linkA.endNodeId = finalNodeId;
+
+        // 如果 Link B 有終點 Node，更新該 Node 的 incomingLinks 換成 A
+        if (finalNodeId && network.nodes[finalNodeId]) {
+            const finalNode = network.nodes[finalNodeId];
+            finalNode.incomingLinkIds.delete(linkB.id);
+            finalNode.incomingLinkIds.add(linkA.id);
+        }
+
+        // 4. 更新連接線 (Connections)
+        Object.values(network.connections).forEach(conn => {
+            if (conn.sourceLinkId === linkB.id) {
+                conn.sourceLinkId = linkA.id;
+            }
+            if (conn.destLinkId === linkB.id && conn.sourceLinkId === linkA.id) {
+                deleteConnection(conn.id);
+            } else if (conn.destLinkId === linkB.id) {
+                conn.destLinkId = linkA.id;
+            }
+        });
+
+        // 5. 處理中間節點刪除
+        if (midNodeId && network.nodes[midNodeId]) {
+            const midNode = network.nodes[midNodeId];
+            midNode.incomingLinkIds.delete(linkA.id);
+            midNode.outgoingLinkIds.delete(linkB.id);
+            
+            // 如果中間節點變成孤立點，則刪除
+            if (midNode.incomingLinkIds.size === 0 && midNode.outgoingLinkIds.size === 0) {
+                if (network.trafficLights[midNodeId]) delete network.trafficLights[midNodeId];
+                midNode.konvaShape.destroy();
+                delete network.nodes[midNodeId];
+            }
+        }
+
+        // 6. 刪除 Link B
+        linkB.konvaGroup.destroy();
+        delete network.links[linkB.id];
+
+        // 7. 重繪 Link A 與更新附屬物件
+        drawLink(linkA);
+        updateConnectionEndpoints(linkA.id); 
+    }
 
     // --- [輔助] 繪製/更新群組視覺物件 ---
     function drawConnectionGroupVisual(srcLink, dstLink, newIds, commonNodeId) {
@@ -3859,9 +4052,13 @@ document.addEventListener('DOMContentLoaded', () => {
         // --- END: 全新的節點合併邏輯 ---
 
 
-        // 步驟 3: 更新倖存節點的 Link 關係
+// 步驟 3: 更新倖存節點的 Link 關係
         survivingNode.incomingLinkIds.add(sourceLink.id);
         survivingNode.outgoingLinkIds.add(destLink.id);
+        
+        // --- 補上這兩行，確保未來複製與合併不再找不到路口 ---
+        sourceLink.endNodeId = survivingNode.id;
+        destLink.startNodeId = survivingNode.id;
 
         const sourceLanePath = getLanePath(sourceLink, sourceMeta.laneIndex);
         const destLanePath = getLanePath(destLink, destMeta.laneIndex);
@@ -4501,23 +4698,27 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 <label style="display:flex; align-items:center; gap:8px; margin-top:12px; cursor:pointer;">
                     <input type="radio" name="connMode" value="box" ${connectMode === 'box' ? 'checked' : ''}>
-                    <span><i class="fa-regular fa-square-check"></i> Box Selection (Auto)</span>
+                    <span><i class="fa-regular fa-square-check"></i> Box Selection (Connect)</span>
                 </label>
-                <div class="prop-hint">Draw a box to connect all matching links inside.</div>
+                <div class="prop-hint">Auto-connect lanes (Intersection logic).</div>
+
+                <label style="display:flex; align-items:center; gap:8px; margin-top:12px; cursor:pointer;">
+                    <input type="radio" name="connMode" value="merge" ${connectMode === 'merge' ? 'checked' : ''}>
+                    <span><i class="fa-solid fa-code-merge"></i> Box Selection (Merge)</span>
+                </label>
+                <div class="prop-hint" style="color:#e11d48;">
+                    <strong>Stitch Mode:</strong> Merges two aligned links into one continuous link.
+                    <br>(Requires: Same lane count & direction)
+                </div>
             </div>
-            <hr>
-            <div class="prop-section-header">Instructions</div>
-            <p style="font-size:0.85rem; color:var(--text-muted);">
-                <strong>Box Mode:</strong> Draws a rectangle. Any "Link End" and "Link Start" within the box that are close to each other will be automatically connected.
-            </p>
         `;
 
             // 綁定切換事件
             document.querySelectorAll('input[name="connMode"]').forEach(radio => {
                 radio.addEventListener('change', (e) => {
                     connectMode = e.target.value;
-                    // 切換游標樣式以提示使用者
-                    stage.container().style.cursor = connectMode === 'box' ? 'crosshair' : 'default';
+                    // 切換游標樣式
+                    stage.container().style.cursor = (connectMode === 'box' || connectMode === 'merge') ? 'crosshair' : 'default';
                 });
             });
             return;
@@ -5155,6 +5356,12 @@ document.addEventListener('DOMContentLoaded', () => {
                                 <i class="fa-solid fa-gear"></i> Manage Definitions
                             </button>`;
                 }
+
+                // --- [新增] SECTION: ACTIONS ---
+                content += `<div class="prop-section-header">Actions</div>`;
+                content += `<button id="btn-delete-detector" class="btn-danger-outline">
+                            <i class="fa-solid fa-trash-can"></i> Delete Detector
+                        </button>`;
                 break;
 
             case 'RoadSign':
@@ -6272,6 +6479,19 @@ document.addEventListener('DOMContentLoaded', () => {
                     drawDetector(obj);
                     layer.batchDraw();
                     saveState();
+                });
+            }
+
+            // --- [新增] 刪除按鈕監聽 ---
+            const delDetBtn = document.getElementById('btn-delete-detector');
+            if (delDetBtn) {
+                delDetBtn.addEventListener('click', () => {
+                    if (confirm(I18N.t('Delete this detector?'))) {
+                        deleteDetector(obj.id); // 呼叫既有的刪除函數
+                        deselectAll();          // 取消選取並清空面板
+                        layer.batchDraw();      // 重繪畫面
+                        saveState();            // 儲存狀態
+                    }
                 });
             }
         }

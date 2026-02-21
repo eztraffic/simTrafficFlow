@@ -222,92 +222,160 @@ const SubNetworkTool = {
         });
     },
 
-    // 移動實際資料
-    moveNetworkData: function(dx, dy) {
+// 移動實際資料
+        moveNetworkData: function(dx, dy) {
         if (!window.network) return;
 
+        // 1. 移動 Nodes
         this.selectedData.nodeIds.forEach(id => {
             const node = window.network.nodes[id];
+            
+            // 更新資料模型座標
             node.x += dx;
             node.y += dy;
-            if(node.konvaShape) node.konvaShape.position({x: node.x, y: node.y});
+            
+            // 【修正重點】：
+            // 移除原本的 node.konvaShape.position({x: node.x, y: node.y});
+            // 因為 drawNode 內部是直接讀取 Link 的「絕對座標」來繪製多邊形的。
+            // 如果我們改變 shape 的 position，會導致加上絕對座標後產生雙重位移。
+            // 因此，確保 shape 的起點維持在 (0, 0)，並清除快取讓它根據新的 Link 座標自然重繪即可。
+            if(node.konvaShape) {
+                node.konvaShape.position({ x: 0, y: 0 });
+                node.konvaShape.clearCache(); // 強制清除快取以利重繪
+            }
+            
+            // 這會更新單一連接線 (Bezier Curves)
             if (window.redrawNodeConnections) window.redrawNodeConnections(id);
         });
 
+        // 2. 移動 Links
         this.selectedData.linkIds.forEach(id => {
             const link = window.network.links[id];
+            // 更新所有路徑點
             link.waypoints = link.waypoints.map(wp => ({ x: wp.x + dx, y: wp.y + dy }));
             
+            // 重繪 Link 及其附屬物件
             if (window.drawLink) window.drawLink(link);
             if (window.updateConnectionEndpoints) window.updateConnectionEndpoints(link.id);
             if (window.updateAllDetectorsOnLink) window.updateAllDetectorsOnLink(link.id);
             if (window.updateFlowPointsOnLink) window.updateFlowPointsOnLink(link.id);
             if (window.updateRoadSignsOnLink) window.updateRoadSignsOnLink(link.id);
         });
+
+        // 3. 移動 Connection Groups (綠色粗線)
+        if (window.layer) {
+            // 找出所有連接群組的視覺線條
+            const groupLines = window.layer.find('.group-connection-visual');
+            
+            groupLines.forEach(line => {
+                const meta = line.getAttr('meta');
+                if (!meta) return;
+
+                // 檢查此群組的來源或目的路段是否在這次移動的選取範圍內
+                const isSourceMoved = this.selectedData.linkIds.has(meta.sourceLinkId);
+                const isDestMoved = this.selectedData.linkIds.has(meta.destLinkId);
+
+                // 如果任一端點被移動，就需要更新線條位置
+                if (isSourceMoved || isDestMoved) {
+                    const srcLink = window.network.links[meta.sourceLinkId];
+                    const dstLink = window.network.links[meta.destLinkId];
+
+                    if (srcLink && dstLink && srcLink.waypoints.length > 0 && dstLink.waypoints.length > 0) {
+                        // 取得更新後的座標：來源路段的末端 -> 目的路段的開頭
+                        const p1 = srcLink.waypoints[srcLink.waypoints.length - 1]; 
+                        const p4 = dstLink.waypoints[0];
+                        
+                        // 更新線條座標
+                        line.points([p1.x, p1.y, p4.x, p4.y]);
+                    }
+                }
+            });
+        }
         
+        // 更新立體交叉
         if (window.updateAllOverpasses) window.updateAllOverpasses();
+        
+        // 批次重繪
         if (window.layer) window.layer.batchDraw();
     },
-
-    // 複製選取區域
+// 複製選取區域
     duplicateSelection: function() {
         if (!window.network) return;
         if (this.selectedData.nodeIds.size === 0 && this.selectedData.linkIds.size === 0) return;
 
-        const idMap = {}; 
-        const newNodes = [];
-        const offsetX = 30; // 稍微增加偏移量，讓複製後的物件更明顯
+        const idMap = {};       // Node 和 Link 的 ID 對照表: OldID -> NewID
+        const connIdMap = {};   // Connection 的 ID 對照表: OldConnID -> NewConnID
+        
+        const newNodes = new Set();
+        const newLinks = new Set();
+        
+        const offsetX = 30; 
         const offsetY = 30;
 
-        // 複製 Nodes
+        // ---------------------------------------------------------
+        // 1. 複製 Nodes
+        // ---------------------------------------------------------
         this.selectedData.nodeIds.forEach(oldId => {
             const oldNode = window.network.nodes[oldId];
             const newNode = window.createNode(oldNode.x + offsetX, oldNode.y + offsetY);
             idMap[oldId] = newNode.id;
-            
-            if (window.network.trafficLights[oldId]) {
-                const oldTfl = window.network.trafficLights[oldId];
-                const newTfl = JSON.parse(JSON.stringify(oldTfl));
-                newTfl.nodeId = newNode.id;
-                newTfl.signalGroups = {}; 
-                window.network.trafficLights[newNode.id] = newTfl;
-            }
-            newNodes.push(newNode.id);
+            newNodes.add(newNode.id);
         });
 
-        // 複製 Links
-        const newLinks = [];
+        // ---------------------------------------------------------
+        // 2. 複製 Links
+        // ---------------------------------------------------------
         this.selectedData.linkIds.forEach(oldId => {
             const oldLink = window.network.links[oldId];
             const newWaypoints = oldLink.waypoints.map(wp => ({ x: wp.x + offsetX, y: wp.y + offsetY }));
-            const laneWidths = oldLink.lanes.map(l => l.width);
             
-            const newLink = window.createLink(newWaypoints, laneWidths);
+            // 複製車道資訊
+            const laneData = oldLink.lanes.map(l => l.width);
+            
+            const newLink = window.createLink(newWaypoints, laneData);
             newLink.name = oldLink.name ? `${oldLink.name}_copy` : `${newLink.id}`;
             idMap[oldId] = newLink.id;
-            newLinks.push(newLink.id);
-
-            // 重建拓撲關係
-            if (oldLink.startNodeId && idMap[oldLink.startNodeId]) {
-                newLink.startNodeId = idMap[oldLink.startNodeId];
-                window.network.nodes[newLink.startNodeId].outgoingLinkIds.add(newLink.id);
-            }
-            if (oldLink.endNodeId && idMap[oldLink.endNodeId]) {
-                newLink.endNodeId = idMap[oldLink.endNodeId];
-                window.network.nodes[newLink.endNodeId].incomingLinkIds.add(newLink.id);
-            }
+            newLinks.add(newLink.id);
         });
 
-        // 複製 Connections
-        Object.values(window.network.connections).forEach(conn => {
-            const newSrcLink = idMap[conn.sourceLinkId];
-            const newDstLink = idMap[conn.destLinkId];
-            const newNodeId = idMap[conn.nodeId]; 
+// ---------------------------------------------------------
+        // 3. 重建 Link 與 Node 的實體端點關係 (依賴 Node 屬性，而非脆弱的 Link 屬性)
+        // ---------------------------------------------------------
+        this.selectedData.nodeIds.forEach(oldId => {
+            const oldNode = window.network.nodes[oldId];
+            const newNode = window.network.nodes[idMap[oldId]];
 
-            if (newSrcLink && newDstLink && newNodeId) {
-                const srcLinkObj = window.network.links[newSrcLink];
-                const dstLinkObj = window.network.links[newDstLink];
-                const nodeObj = window.network.nodes[newNodeId];
+            // 複製 outgoing (離開路口的) 關係
+            oldNode.outgoingLinkIds.forEach(oldLinkId => {
+                if (idMap[oldLinkId]) { // 如果這條路段也被一併複製了
+                    const newLinkId = idMap[oldLinkId];
+                    newNode.outgoingLinkIds.add(newLinkId);
+                    window.network.links[newLinkId].startNodeId = newNode.id; // 順便修復 link 端點
+                }
+            });
+
+            // 複製 incoming (進入路口的) 關係
+            oldNode.incomingLinkIds.forEach(oldLinkId => {
+                if (idMap[oldLinkId]) {
+                    const newLinkId = idMap[oldLinkId];
+                    newNode.incomingLinkIds.add(newLinkId);
+                    window.network.links[newLinkId].endNodeId = newNode.id; // 順便修復 link 端點
+                }
+            });
+        });
+
+        // ---------------------------------------------------------
+        // 4. 複製 Connections (並修復拓撲邏輯)
+        // ---------------------------------------------------------
+        Object.values(window.network.connections).forEach(conn => {
+            const newSrcLinkID = idMap[conn.sourceLinkId];
+            const newDstLinkID = idMap[conn.destLinkId];
+            const newNodeID = idMap[conn.nodeId]; 
+
+            if (newSrcLinkID && newDstLinkID && newNodeID) {
+                const srcLinkObj = window.network.links[newSrcLinkID];
+                const dstLinkObj = window.network.links[newDstLinkID];
+                const nodeObj = window.network.nodes[newNodeID];
 
                 if (window.getLanePath) {
                     const sourceLanePath = window.getLanePath(srcLinkObj, conn.sourceLaneIndex);
@@ -317,25 +385,156 @@ const SubNetworkTool = {
                         const p1 = sourceLanePath[sourceLanePath.length - 1];
                         const p4 = destLanePath[0];
                         
-                        window.createConnection(
+                        const newConn = window.createConnection(
                             srcLinkObj, conn.sourceLaneIndex,
                             dstLinkObj, conn.destLaneIndex,
                             nodeObj, [p1, p4]
                         );
+                        
+                        // 記錄舊 ID 對應新 ID
+                        connIdMap[conn.id] = newConn.id;
+
+                        // ★★★ [關鍵修正] ★★★
+                        // 必須明確告訴 Node 它擁有這些進入與離開的 Link
+                        // 否則模擬器在建立路口拓撲時會找不到對應關係而報錯
+                        if (nodeObj) {
+                            nodeObj.incomingLinkIds.add(newSrcLinkID);
+                            nodeObj.outgoingLinkIds.add(newDstLinkID);
+                        }
                     }
                 }
             }
         });
 
-        // 完成複製：重置選取並選取新物件
+        // ---------------------------------------------------------
+        // 5. 複製轉向比例 (Turning Ratios)
+        // ---------------------------------------------------------
+        this.selectedData.nodeIds.forEach(oldId => {
+            const oldNode = window.network.nodes[oldId];
+            const newNode = window.network.nodes[idMap[oldId]];
+
+            if (oldNode.turningRatios) {
+                newNode.turningRatios = {};
+                Object.keys(oldNode.turningRatios).forEach(fromLinkOldId => {
+                    const fromLinkNewId = idMap[fromLinkOldId];
+                    if (fromLinkNewId) {
+                        newNode.turningRatios[fromLinkNewId] = {};
+                        Object.keys(oldNode.turningRatios[fromLinkOldId]).forEach(toLinkOldId => {
+                            const toLinkNewId = idMap[toLinkOldId];
+                            if (toLinkNewId) {
+                                newNode.turningRatios[fromLinkNewId][toLinkNewId] = oldNode.turningRatios[fromLinkOldId][toLinkOldId];
+                            }
+                        });
+                    }
+                });
+            }
+        });
+
+        // ---------------------------------------------------------
+        // 6. 複製交通號誌 (Traffic Lights) 與 Signal Groups
+        // ---------------------------------------------------------
+        this.selectedData.nodeIds.forEach(oldId => {
+            const oldTfl = window.network.trafficLights[oldId];
+            if (oldTfl) {
+                const newTfl = JSON.parse(JSON.stringify(oldTfl));
+                newTfl.nodeId = idMap[oldId];
+                
+                const newSignalGroups = {};
+                Object.keys(newTfl.signalGroups).forEach(groupName => {
+                    const oldGroup = newTfl.signalGroups[groupName];
+                    const newConnIds = [];
+                    
+                    oldGroup.connIds.forEach(oldConnId => {
+                        if (connIdMap[oldConnId]) {
+                            newConnIds.push(connIdMap[oldConnId]);
+                        }
+                    });
+                    
+                    if (newConnIds.length > 0) {
+                        newSignalGroups[groupName] = {
+                            id: groupName,
+                            connIds: newConnIds
+                        };
+                    }
+                });
+                
+                newTfl.signalGroups = newSignalGroups;
+                window.network.trafficLights[newTfl.nodeId] = newTfl;
+            }
+        });
+
+        // ---------------------------------------------------------
+        // 7. 複製連接群組視覺 (Connection Groups Visuals)
+        // ---------------------------------------------------------
+        if (window.layer) {
+            const existingGroupLines = window.layer.find('.group-connection-visual');
+            existingGroupLines.forEach(line => {
+                const meta = line.getAttr('meta');
+                if (!meta || !meta.connectionIds) return;
+
+                const newGroupConnIds = [];
+                let allExist = true;
+
+                for (let oldConnId of meta.connectionIds) {
+                    if (connIdMap[oldConnId]) {
+                        newGroupConnIds.push(connIdMap[oldConnId]);
+                    } else {
+                        allExist = false; 
+                    }
+                }
+
+                if (allExist && newGroupConnIds.length > 0) {
+                    const newSourceLinkId = idMap[meta.sourceLinkId];
+                    const newDestLinkId = idMap[meta.destLinkId];
+                    const newNodeId = idMap[meta.nodeId];
+
+                    if (newSourceLinkId && newDestLinkId && newNodeId) {
+                        const srcLink = window.network.links[newSourceLinkId];
+                        const dstLink = window.network.links[newDestLinkId];
+                        
+                        const p1 = srcLink.waypoints[srcLink.waypoints.length - 1];
+                        const p4 = dstLink.waypoints[0];
+
+                        const groupLine = new Konva.Line({
+                            points: [p1.x, p1.y, p4.x, p4.y],
+                            stroke: 'darkgreen',
+                            strokeWidth: 2,
+                            hitStrokeWidth: 20,
+                            name: 'group-connection-visual',
+                            listening: true,
+                        });
+
+                        const newMeta = {
+                            type: 'ConnectionGroup',
+                            connectionIds: newGroupConnIds,
+                            nodeId: newNodeId,
+                            sourceLinkId: newSourceLinkId,
+                            destLinkId: newDestLinkId
+                        };
+                        groupLine.setAttr('meta', newMeta);
+                        window.layer.add(groupLine);
+                        groupLine.moveToBottom();
+                        
+                        if (window.network.nodes[newNodeId]) {
+                            window.network.nodes[newNodeId].konvaShape.moveToTop();
+                        }
+                    }
+                }
+            });
+        }
+
+        // ---------------------------------------------------------
+        // 完成
+        // ---------------------------------------------------------
         this.reset();
-        this.selectedData.nodeIds = new Set(newNodes);
-        this.selectedData.linkIds = new Set(newLinks);
+        this.selectedData.nodeIds = newNodes;
+        this.selectedData.linkIds = newLinks;
         
         this.mode = 'selected';
         this.createSelectionOverlay();
         
         if (window.saveState) window.saveState();
+        if (window.layer) window.layer.batchDraw();
     },
 
     isPointInPolygon: function(point, vs) {
