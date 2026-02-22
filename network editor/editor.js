@@ -1345,7 +1345,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- TOOL MANAGEMENT ---
     // --- TOOL MANAGEMENT ---
     // 完整替換此函數
-// 完整替換此函數
+    // 完整替換此函數
     function setTool(toolName) {
         // --- [修正] 將 SubNetworkTool 的重置移到最上方 ---
         // 必須先重置 SubNetworkTool，因為它的 reset() 會寫入 "Active..." 文字到面板。
@@ -1842,7 +1842,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     activeTool !== 'add-parking-lot' &&
                     activeTool !== 'add-parking-gate' &&
                     activeTool !== 'add-intersection' &&
-                    activeTool !== 'subnetwork') { 
+                    activeTool !== 'subnetwork') {
 
                     isPanning = true;
                     lastPointerPosition = stage.getPointerPosition();
@@ -1961,13 +1961,13 @@ document.addEventListener('DOMContentLoaded', () => {
             // --- [修正重點] Connect Box / Merge Box Mode 拖曳範圍更新 ---
             if (activeTool === 'connect-lanes' && (connectMode === 'box' || connectMode === 'merge') && tempShape) {
                 const startPos = tempShape.getAttr('startPos');
-                
+
                 // 計算矩形的新位置與大小 (支援向左/向上拖曳)
                 tempShape.x(Math.min(worldPos.x, startPos.x));
                 tempShape.y(Math.min(worldPos.y, startPos.y));
                 tempShape.width(Math.abs(worldPos.x - startPos.x));
                 tempShape.height(Math.abs(worldPos.y - startPos.y));
-                
+
                 layer.batchDraw();
                 return;
             }
@@ -2944,7 +2944,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // 2. 從資料結構中移除
         delete network.detectors[id];
     }
-    
+
     function deleteNode(nodeId) {
         const node = network.nodes[nodeId];
         if (!node) return;
@@ -3147,6 +3147,7 @@ document.addEventListener('DOMContentLoaded', () => {
             setTool('select');
         }
         else if (activeTool === 'edit-tfl') {
+            const clickedShape = e.target; // <--- 新增這行，取得當前點擊的圖形
             if (clickedShape && clickedShape.id() && network.nodes[clickedShape.id()]) {
                 const node = network.nodes[clickedShape.id()];
                 showTrafficLightEditor(node);
@@ -3177,24 +3178,45 @@ document.addEventListener('DOMContentLoaded', () => {
                 saveState();
                 setTool('select');
             }
-        } else if (activeTool === 'add-flow') {
+} else if (activeTool === 'add-flow') {
+            // [修正] 定義 clickedShape 為事件目標
+            const clickedShape = e.target;
+            
             let linkId = clickedShape.id();
-            if (!linkId && clickedShape.parent) { linkId = clickedShape.parent.id(); }
+            
+            // 如果點擊的形狀本身不是 Link (通常是點到內部的幾何圖形)，則檢查其父群組
+            if (!network.links[linkId] && clickedShape.parent) { 
+                linkId = clickedShape.parent.id(); 
+            }
+            
             const link = network.links[linkId];
+            
             if (link) {
                 const linkLength = getPolylineLength(link.waypoints);
                 const { dist } = projectPointOnPolyline(pos, link.waypoints);
+                
+                // 檢查是否已有 Origin 或 Destination
                 const hasOrigin = Object.values(network.origins).some(o => o.linkId === link.id);
                 const hasDestination = Object.values(network.destinations).some(d => d.linkId === link.id);
+                
+                // 判斷點擊位置在 Link 的前半段還是後半段
                 if (dist < linkLength / 2) {
-                    if (hasOrigin) { alert(I18N.t(`Link ${link.id} already has an Origin.`)); return; }
+                    // 前半段 -> 新增 Origin
+                    if (hasOrigin) { 
+                        alert(I18N.t(`Link ${link.id} already has an Origin.`)); 
+                        return; 
+                    }
                     const originPosition = Math.min(5, linkLength * 0.1);
                     const newOrigin = createOrigin(link, originPosition);
                     selectObject(newOrigin);
                     saveState();
                 }
                 else {
-                    if (hasDestination) { alert(I18N.t(`Link ${link.id} already has a Destination.`)); return; }
+                    // 後半段 -> 新增 Destination
+                    if (hasDestination) { 
+                        alert(I18N.t(`Link ${link.id} already has a Destination.`)); 
+                        return; 
+                    }
                     const destPosition = Math.max(linkLength - 5, linkLength * 0.9);
                     const newDestination = createDestination(link, destPosition);
                     selectObject(newDestination);
@@ -3736,7 +3758,7 @@ document.addEventListener('DOMContentLoaded', () => {
             console.log(`Auto-connected ${connectionCount} lanes.`);
         }
     }
-// --- [新增] 路段合併演算法 (Stitching) ---
+    // --- [新增] 路段合併演算法 (Stitching) ---
     function autoMergeLinksInSelection(rect) {
         console.log("AutoMerge Box:", rect);
         const MERGE_DIST_THRESHOLD = 30; // 允許的接合距離誤差 (公尺)
@@ -3782,7 +3804,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const pEndA = linkA.waypoints[linkA.waypoints.length - 1];
                 const pStartB = linkB.waypoints[0];
                 const dist = Math.sqrt(Math.pow(pEndA.x - pStartB.x, 2) + Math.pow(pEndA.y - pStartB.y, 2));
-                
+
                 if (dist > MERGE_DIST_THRESHOLD) return;
 
                 // 條件 C: 方向一致 (避免銳角接合)
@@ -3791,7 +3813,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const vecB = getVector(pStartB, linkB.waypoints[1]);
                 const angleA = Math.atan2(vecA.y, vecA.x) * (180 / Math.PI);
                 const angleB = Math.atan2(vecB.y, vecB.x) * (180 / Math.PI);
-                
+
                 let angleDiff = Math.abs(angleA - angleB);
                 if (angleDiff > 180) angleDiff = 360 - angleDiff;
 
@@ -3818,15 +3840,15 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-// 執行實際合併動作 (A 吸納 B)
+    // 執行實際合併動作 (A 吸納 B)
     function performLinkMerge(linkA, linkB) {
         const offsetLength = getPolylineLength(linkA.waypoints);
-        
+
         // 1. 合併幾何點
         const pEndA = linkA.waypoints[linkA.waypoints.length - 1];
         const pStartB = linkB.waypoints[0];
         const dist = Math.sqrt(Math.pow(pEndA.x - pStartB.x, 2) + Math.pow(pEndA.y - pStartB.y, 2));
-        
+
         const pointsToAppend = (dist < 1.0) ? linkB.waypoints.slice(1) : linkB.waypoints;
         linkA.waypoints = linkA.waypoints.concat(pointsToAppend);
 
@@ -3871,13 +3893,13 @@ document.addEventListener('DOMContentLoaded', () => {
         // --- ★ [新增] 遷移 Turning Ratios (轉向比例) ---
         Object.values(network.nodes).forEach(node => {
             if (!node.turningRatios) return;
-            
+
             // 如果 B 是進入路段 (從 B 轉向其他)，將其鍵值改為 A
             if (node.turningRatios[linkB.id] !== undefined) {
                 node.turningRatios[linkA.id] = node.turningRatios[linkB.id];
                 delete node.turningRatios[linkB.id];
             }
-            
+
             // 如果 B 是離開路段 (從其他轉向 B)，將目的路段的鍵值改為 A
             Object.keys(node.turningRatios).forEach(fromId => {
                 if (node.turningRatios[fromId][linkB.id] !== undefined) {
@@ -3905,7 +3927,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const midNode = network.nodes[midNodeId];
             midNode.incomingLinkIds.delete(linkA.id);
             midNode.outgoingLinkIds.delete(linkB.id);
-            
+
             // 如果中間節點變成孤立點，則刪除
             if (midNode.incomingLinkIds.size === 0 && midNode.outgoingLinkIds.size === 0) {
                 if (network.trafficLights[midNodeId]) delete network.trafficLights[midNodeId];
@@ -3920,7 +3942,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // 7. 重繪 Link A 與更新附屬物件
         drawLink(linkA);
-        updateConnectionEndpoints(linkA.id); 
+        updateConnectionEndpoints(linkA.id);
     }
 
     // --- [輔助] 繪製/更新群組視覺物件 ---
@@ -4072,10 +4094,10 @@ document.addEventListener('DOMContentLoaded', () => {
         // --- END: 全新的節點合併邏輯 ---
 
 
-// 步驟 3: 更新倖存節點的 Link 關係
+        // 步驟 3: 更新倖存節點的 Link 關係
         survivingNode.incomingLinkIds.add(sourceLink.id);
         survivingNode.outgoingLinkIds.add(destLink.id);
-        
+
         // --- 補上這兩行，確保未來複製與合併不再找不到路口 ---
         sourceLink.endNodeId = survivingNode.id;
         destLink.startNodeId = survivingNode.id;
@@ -5109,11 +5131,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 // --- TAB 1: SETTINGS (Signal Control Only) ---
                 content += `<div id="tab-settings" class="prop-tab-content ${getContentClass('tab-settings')}">`;
 
-                // Signal Control Header
                 content += `<div class="prop-section-header">Signal Control</div>`;
 
                 const tflData = network.trafficLights[obj.id] || { timeShift: 0 };
-                const hasSignal = tflData.schedule && tflData.schedule.length > 0;
+
+                // [修正] 判斷是否有舊版排程或新版排程
+                const hasSignal = (tflData.schedule && tflData.schedule.length > 0) ||
+                    (tflData.advanced && Object.keys(tflData.advanced.schedules).length > 0);
 
                 // 1. Status
                 content += `<div class="prop-row">
@@ -5123,13 +5147,25 @@ document.addEventListener('DOMContentLoaded', () => {
                         : '<span class="prop-status-indicator" style="padding:2px 8px; margin:0; background:#f1f5f9; color:#94a3b8;">No Signal</span>'}
                         </div>`;
 
-                // 2. Time Shift (Moved Up)
+                // [新增] 萃取代表性時差 (與 Export 邏輯一致，抓取週一的第一個時制)
+                let displayTimeShift = tflData.timeShift || 0;
+                if (tflData.advanced && tflData.advanced.weekly) {
+                    const monPlanId = tflData.advanced.weekly[1];
+                    if (monPlanId && tflData.advanced.dailyPlans[monPlanId]) {
+                        const sw = tflData.advanced.dailyPlans[monPlanId].switches.find(s => s.schedId !== 'NONE');
+                        if (sw && tflData.advanced.schedules[sw.schedId]) {
+                            displayTimeShift = tflData.advanced.schedules[sw.schedId].timeShift || 0;
+                        }
+                    }
+                }
+
+                // 2. Time Shift (動態顯示代表性時差)
                 content += `<div class="prop-row">
                             <span class="prop-label">Time Shift (s)</span>
-                            <input type="number" id="prop-tfl-shift" class="prop-input" value="${tflData.timeShift}" min="0" step="1">
+                            <input type="number" id="prop-tfl-shift" class="prop-input" value="${displayTimeShift}" min="0" step="1">
                         </div>`;
 
-                // 3. Edit Button (Moved Down)
+                // 3. Edit Button
                 content += `<button id="edit-tfl-btn" class="btn-action" style="width:100%; margin-top:8px;">
                             <i class="fa-solid fa-traffic-light"></i> Edit Schedule
                         </button>`;
@@ -5328,10 +5364,23 @@ document.addEventListener('DOMContentLoaded', () => {
                     // Ensure profiles exist
                     if (!network.vehicleProfiles) network.vehicleProfiles = {};
                     const profileOptions = Object.keys(network.vehicleProfiles);
+                    // --- [修改開始] 初始化 Car, Motor, Truck/Bus ---
                     if (profileOptions.length === 0) {
-                        network.vehicleProfiles['default'] = { id: 'default', length: 4.5, width: 1.8, maxSpeed: 16.67, maxAcceleration: 1.5, comfortDeceleration: 3.0, minDistance: 2.0, desiredHeadwayTime: 1.5 };
-                        profileOptions.push('default');
+                        network.vehicleProfiles['car'] = {
+                            id: 'car', length: 4.5, width: 1.8, maxSpeed: 16.67,
+                            maxAcceleration: 3.0, comfortDeceleration: 2.5, minDistance: 2.5, desiredHeadwayTime: 1.5
+                        };
+                        network.vehicleProfiles['motor'] = {
+                            id: 'motor', length: 2.0, width: 0.8, maxSpeed: 16.67,
+                            maxAcceleration: 3.5, comfortDeceleration: 3.0, minDistance: 1.0, desiredHeadwayTime: 0.8
+                        };
+                        network.vehicleProfiles['Truck/Bus'] = {
+                            id: 'Truck/Bus', length: 12.0, width: 2.6, maxSpeed: 16.67,
+                            maxAcceleration: 0.8, comfortDeceleration: 1.0, minDistance: 3.0, desiredHeadwayTime: 3.0
+                        };
+                        profileOptions.push('car', 'motor', 'Truck/Bus');
                     }
+                    // --- [修改結束] ---
                     if (!obj.spawnProfiles) obj.spawnProfiles = [];
                     if (obj.spawnProfileId) { // Compatibility migration
                         obj.spawnProfiles.push({ profileId: obj.spawnProfileId, weight: 1.0 });
@@ -6100,8 +6149,24 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!network.trafficLights[obj.id]) {
                 network.trafficLights[obj.id] = { nodeId: obj.id, timeShift: 0, signalGroups: {}, schedule: [] };
             }
+
             document.getElementById('prop-tfl-shift').addEventListener('change', (e) => {
-                network.trafficLights[obj.id].timeShift = parseInt(e.target.value, 10) || 0;
+                const newVal = parseInt(e.target.value, 10) || 0;
+                const tfl = network.trafficLights[obj.id];
+
+                // 1. 更新基礎屬性 (相容舊版)
+                tfl.timeShift = newVal;
+
+                // 2. [新增] 同步更新代表性時制 (Sched_A) 的時差
+                if (tfl.advanced && tfl.advanced.weekly) {
+                    const monPlanId = tfl.advanced.weekly[1];
+                    if (monPlanId && tfl.advanced.dailyPlans[monPlanId]) {
+                        const sw = tfl.advanced.dailyPlans[monPlanId].switches.find(s => s.schedId !== 'NONE');
+                        if (sw && tfl.advanced.schedules[sw.schedId]) {
+                            tfl.advanced.schedules[sw.schedId].timeShift = newVal;
+                        }
+                    }
+                }
                 saveState();
             });
             document.getElementById('edit-tfl-btn').addEventListener('click', () => showTrafficLightEditor(obj));
@@ -6398,8 +6463,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 const addBtn = document.getElementById('btn-add-det-profile');
                 if (addBtn) {
                     addBtn.addEventListener('click', () => {
-                        // 預設加入第一個可用的 profile
-                        const firstKey = Object.keys(network.vehicleProfiles)[0] || 'default';
+                        // [修改] 預設加入第一個可用的 profile，或 'car'
+                        const firstKey = Object.keys(network.vehicleProfiles)[0] || 'car';
                         obj.spawnProfiles.push({ profileId: firstKey, weight: 1.0 });
                         updatePropertiesPanel(obj);
                     });
@@ -7945,18 +8010,364 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Traffic Light Editor ---
     let currentModalNode = null;
+
+    let currentTflPlanId = null;
+    let currentTflScheduleId = null; // <--- 新增這行：記錄目前編輯的時制 ID
     function showTrafficLightEditor(node) {
         currentModalNode = node;
-        document.getElementById('tfl-modal-title').textContent = `Traffic Light Editor for ${node.id}`;
+        document.getElementById('tfl-modal-title').textContent = `Traffic Light Editor for Node ${node.id}`;
 
+        // 1. 如果路口完全沒有號誌資料 (全新建立的路口)，初始化空骨架
         if (!network.trafficLights[node.id]) {
-            network.trafficLights[node.id] = { nodeId: node.id, timeShift: 0, signalGroups: {}, schedule: [] };
+            network.trafficLights[node.id] = {
+                nodeId: node.id,
+                timeShift: 0,
+                signalGroups: {},
+                schedule: []
+            };
         }
 
+        // 2. 【核心修正】向後相容/資料升級邏輯
+        // 如果有號誌資料，但沒有 advanced 屬性 (代表這是從舊版 XML 匯入的)
+        if (!network.trafficLights[node.id].advanced) {
+
+            // 嘗試把舊版的 schedule 備份一份當作預設的 A 時制
+            // 這樣使用者打開舊檔時，原本設定的秒數不會不見
+            const legacySchedule = network.trafficLights[node.id].schedule || [];
+            const legacyTimeShift = network.trafficLights[node.id].timeShift || 0;
+
+            network.trafficLights[node.id].advanced = {
+                schedules: {
+                    // 將舊的時制封裝成 Sched_A
+                    'Sched_A': {
+                        id: 'Sched_A',
+                        name: '舊版預設時制 (A)',
+                        timeShift: legacyTimeShift,
+                        phases: JSON.parse(JSON.stringify(legacySchedule)) // 深拷貝舊排程
+                    }
+                },
+                dailyPlans: {
+                    'Plan_1': {
+                        id: 'Plan_1',
+                        name: '預設日型態',
+                        switches: [{ time: '00:00', schedId: 'Sched_A' }] // 預設 00:00 啟動 A 時制
+                    }
+                },
+                weekly: { 1: 'Plan_1', 2: 'Plan_1', 3: 'Plan_1', 4: 'Plan_1', 5: 'Plan_1', 6: 'Plan_1', 7: 'Plan_1' }
+            };
+        }
+
+        // 3. 取得進階資料 (現在保證絕對不會是 undefined 了)
+        // 取得進階資料
+        const advancedData = network.trafficLights[node.id].advanced;
+
+        currentTflPlanId = Object.keys(advancedData.dailyPlans)[0];
+        currentTflScheduleId = Object.keys(advancedData.schedules)[0];
+
+        // 渲染各個 Tab
         renderTflGroupingTab();
-        renderTflPhasingTab();
+        renderTflLibraryTab();
+        renderTflDailyPlansTab();
+        renderTflWeeklyTab();     // <--- 【關鍵】：解除這行的註解！
+
         document.getElementById('traffic-light-modal').style.display = 'block';
         I18N.translateDOM(document.getElementById('traffic-light-modal'));
+    }
+
+    // 輔助函數：HH:MM 轉分鐘數
+    function timeToMins(timeStr) {
+        const [h, m] = timeStr.split(':').map(Number);
+        return h * 60 + m;
+    }
+
+    // 輔助函數：取得時制對應的顏色 (視覺化用)
+    function getScheduleColor(schedId) {
+        if (schedId === 'NONE') return '#cbd5e1'; // 灰色代表無時制
+        let hash = 0;
+        for (let i = 0; i < schedId.length; i++) hash = schedId.charCodeAt(i) + ((hash << 5) - hash);
+        const c = (hash & 0x00FFFFFF).toString(16).toUpperCase();
+        return '#' + '00000'.substring(0, 6 - c.length) + c;
+    }
+
+    function renderTflDailyPlansTab() {
+        const advancedData = network.trafficLights[currentModalNode.id].advanced;
+
+        // ==========================================
+        // [新增] 1. 頂部控制區 (選擇器與新增按鈕)
+        // ==========================================
+        const selector = document.getElementById('tfl-plan-selector');
+        selector.innerHTML = '';
+
+        // 產生下拉選單選項
+        Object.values(advancedData.dailyPlans).forEach(plan => {
+            const opt = document.createElement('option');
+            opt.value = plan.id;
+            // 如果使用者有改名，顯示名字，否則顯示 ID
+            opt.textContent = plan.name || plan.id;
+            if (plan.id === currentTflPlanId) opt.selected = true;
+            selector.appendChild(opt);
+        });
+
+        // 切換日型態事件
+        selector.onchange = (e) => {
+            currentTflPlanId = e.target.value;
+            renderTflDailyPlansTab(); // 重新渲染下方時間軸與列表
+        };
+
+        // 新增日型態事件
+        document.getElementById('tfl-add-plan-btn').onclick = () => {
+            const newNum = Object.keys(advancedData.dailyPlans).length + 1;
+            const newId = `Plan_${newNum}`;
+
+            // 抓取系統裡第一個可用的時制當作預設值，如果沒有就用 NONE
+            const firstSchedId = Object.keys(advancedData.schedules)[0] || 'NONE';
+
+            advancedData.dailyPlans[newId] = {
+                id: newId,
+                name: `自訂型態 ${newNum}`,
+                // 新型態預設只有一個 00:00 的觸發點
+                switches: [{ time: '00:00', schedId: firstSchedId }]
+            };
+
+            currentTflPlanId = newId;
+            renderTflDailyPlansTab();
+            renderTflWeeklyTab(); // <--- 【補上這行】同步更新週排程的選單
+        };
+
+        // 確保 currentTflPlanId 存在 (防呆)
+        if (!currentTflPlanId || !advancedData.dailyPlans[currentTflPlanId]) return;
+
+        const currentPlan = advancedData.dailyPlans[currentTflPlanId];
+
+        // 2. 確保 Switches 按照時間先後順序排列 (核心防呆)
+        currentPlan.switches.sort((a, b) => timeToMins(a.time) - timeToMins(b.time));
+
+        // ==========================================
+        // 3. 渲染上方：視覺化時間軸 (Timeline Bar)
+        // ==========================================
+        const timelineContainer = document.getElementById('tfl-daily-timeline');
+        let timelineHTML = '';
+
+        for (let i = 0; i < currentPlan.switches.length; i++) {
+            const sw = currentPlan.switches[i];
+            const startMins = timeToMins(sw.time);
+            const endMins = (i + 1 < currentPlan.switches.length) ? timeToMins(currentPlan.switches[i + 1].time) : 1440;
+
+            const widthPct = ((endMins - startMins) / 1440) * 100;
+            const color = getScheduleColor(sw.schedId);
+            const schedName = sw.schedId === 'NONE' ? '無時制 (關閉)' : (advancedData.schedules[sw.schedId]?.name || sw.schedId);
+
+            timelineHTML += `<div class="tfl-timeline-segment" 
+                              style="width: ${widthPct}%; background-color: ${color};" 
+                              title="${sw.time} 起運行: ${schedName}">
+                              ${widthPct > 8 ? `<span class="seg-label">${schedName}</span>` : ''}
+                         </div>`;
+        }
+
+        timelineHTML += `
+        <div class="tfl-timeline-ticks">
+            <span style="left:0%">00:00</span>
+            <span style="left:25%">06:00</span>
+            <span style="left:50%">12:00</span>
+            <span style="left:75%">18:00</span>
+            <span style="left:100%">24:00</span>
+        </div>`;
+        timelineContainer.innerHTML = timelineHTML;
+
+        // ==========================================
+        // 4. 渲染下方：觸發點列表 (Checkpoints)
+        // ==========================================
+        const checkpointsContainer = document.getElementById('tfl-daily-checkpoints');
+        checkpointsContainer.innerHTML = '';
+
+        // 準備時制下拉選項
+        let schedOptionsHTML = `<option value="NONE" style="font-weight:bold; color:#ef4444;">[無時制 / 關閉]</option>`;
+        Object.values(advancedData.schedules).forEach(sched => {
+            schedOptionsHTML += `<option value="${sched.id}">${sched.name}</option>`;
+        });
+
+        currentPlan.switches.forEach((sw, index) => {
+            const isFirst = (index === 0);
+
+            const rowDiv = document.createElement('div');
+            rowDiv.className = 'tfl-checkpoint-row';
+
+            let selectHTML = schedOptionsHTML.replace(`value="${sw.schedId}"`, `value="${sw.schedId}" selected`);
+
+            rowDiv.innerHTML = `
+            <div class="cp-time">
+                <i class="fa-regular fa-clock"></i>
+                <input type="time" class="cp-time-input prop-input" data-index="${index}" 
+                       value="${sw.time}" ${isFirst ? 'disabled' : 'required'}>
+            </div>
+            <div class="cp-action">
+                <i class="fa-solid fa-arrow-right-long" style="color:#cbd5e1;"></i>切換為
+            </div>
+            <div class="cp-schedule">
+                <select class="cp-sched-select prop-select" data-index="${index}">
+                    ${selectHTML}
+                </select>
+            </div>
+            <div class="cp-delete">
+                ${!isFirst ? `<button class="btn-mini btn-mini-danger cp-del-btn" data-index="${index}"><i class="fa-solid fa-trash-can"></i></button>` : `<div style="width:28px;"></div>`}
+            </div>
+        `;
+            checkpointsContainer.appendChild(rowDiv);
+        });
+
+        // ==========================================
+        // 5. 綁定列表事件
+        // ==========================================
+
+        // 修改時間 (觸發排序)
+        checkpointsContainer.querySelectorAll('.cp-time-input').forEach(input => {
+            input.addEventListener('change', (e) => {
+                const idx = parseInt(e.target.dataset.index);
+                let newTime = e.target.value;
+                if (!newTime) newTime = "00:00";
+
+                const isDuplicate = currentPlan.switches.some((s, i) => i !== idx && s.time === newTime);
+                if (isDuplicate) {
+                    alert("該時間點已存在設定，請選擇其他時間。");
+                    renderTflDailyPlansTab();
+                    return;
+                }
+
+                currentPlan.switches[idx].time = newTime;
+                renderTflDailyPlansTab();
+                saveState();
+            });
+        });
+
+        // 修改時制
+        checkpointsContainer.querySelectorAll('.cp-sched-select').forEach(select => {
+            select.addEventListener('change', (e) => {
+                const idx = parseInt(e.target.dataset.index);
+                currentPlan.switches[idx].schedId = e.target.value;
+                renderTflDailyPlansTab();
+                saveState();
+            });
+        });
+
+        // 刪除觸發點
+        checkpointsContainer.querySelectorAll('.cp-del-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const idx = parseInt(e.currentTarget.dataset.index);
+                currentPlan.switches.splice(idx, 1);
+                renderTflDailyPlansTab();
+                saveState();
+            });
+        });
+
+        // 新增觸發點
+        document.getElementById('tfl-add-checkpoint-btn').onclick = () => {
+            let newTime = "12:00";
+            while (currentPlan.switches.some(s => s.time === newTime)) {
+                let m = timeToMins(newTime) + 60;
+                if (m >= 1440) m = 60;
+                const h = Math.floor(m / 60).toString().padStart(2, '0');
+                const min = (m % 60).toString().padStart(2, '0');
+                newTime = `${h}:${min}`;
+            }
+            currentPlan.switches.push({ time: newTime, schedId: 'NONE' });
+            renderTflDailyPlansTab();
+        };
+    }
+
+    // ==========================================
+    // Tab 4: 週排程渲染 (Weekly Assignment)
+    // ==========================================
+    function renderTflWeeklyTab() {
+        const tflData = network.trafficLights[currentModalNode.id];
+        // 確保 advanced 和 weekly 資料存在 (防呆)
+        if (!tflData || !tflData.advanced || !tflData.advanced.weekly) return;
+
+        const advancedData = tflData.advanced;
+        const weeklyContainer = document.getElementById('tfl-weekly-list');
+
+        // 清空舊內容
+        weeklyContainer.innerHTML = '';
+
+        // 1. 產生下拉選單的選項 (選項來自日型態)
+        let planOptionsHTML = '';
+        Object.values(advancedData.dailyPlans).forEach(plan => {
+            // 使用者如果有自訂名稱就顯示名稱，否則顯示 ID
+            const displayName = plan.name || plan.id;
+            planOptionsHTML += `<option value="${plan.id}">${displayName}</option>`;
+        });
+
+        // 2. 建立星期一到星期日的定義陣列
+        // 在大部分交通系統中，1=週一，7=週日
+        const daysOfWeek = [
+            { id: 1, name: 'Monday (週一)', icon: 'fa-calendar-day' },
+            { id: 2, name: 'Tuesday (週二)', icon: 'fa-calendar-day' },
+            { id: 3, name: 'Wednesday (週三)', icon: 'fa-calendar-day' },
+            { id: 4, name: 'Thursday (週四)', icon: 'fa-calendar-day' },
+            { id: 5, name: 'Friday (週五)', icon: 'fa-calendar-day' },
+            { id: 6, name: 'Saturday (週六)', icon: 'fa-calendar-check', color: '#3b82f6' }, // 週末用不同顏色標示
+            { id: 7, name: 'Sunday (週日)', icon: 'fa-calendar-check', color: '#ef4444' }
+        ];
+
+        // 3. 渲染 UI
+        // 使用一個卡片式容器來包裝這 7 天
+        const wrapper = document.createElement('div');
+        wrapper.className = 'prop-card';
+        wrapper.style.padding = '15px';
+
+        // 加入標題提示
+        wrapper.innerHTML = `
+        <div class="prop-section-header" style="margin-top:0;">Weekly Assignment</div>
+        <div class="prop-hint" style="margin-top:0; margin-bottom:15px;">
+            <i class="fa-solid fa-circle-info"></i> 將定義好的「日型態 (Daily Plans)」分配給每週的不同日子。
+        </div>
+    `;
+
+        // 產生 7 列設定
+        daysOfWeek.forEach(day => {
+            // 取得該天目前設定的 Plan ID
+            const currentPlanForDay = advancedData.weekly[day.id];
+
+            // 替換 HTML 讓目前的 Plan 呈現 selected 狀態
+            let selectHTML = planOptionsHTML;
+            if (currentPlanForDay) {
+                selectHTML = selectHTML.replace(`value="${currentPlanForDay}"`, `value="${currentPlanForDay}" selected`);
+            }
+
+            const row = document.createElement('div');
+            row.className = 'prop-row';
+            row.style.marginBottom = '12px';
+            row.style.borderBottom = '1px dashed var(--border-light)';
+            row.style.paddingBottom = '8px';
+
+            row.innerHTML = `
+            <span class="prop-label" style="font-weight:600; color:${day.color || 'var(--text-main)'}; width: 130px;">
+                <i class="fa-solid ${day.icon}" style="margin-right:8px; opacity:0.7;"></i>${day.name}
+            </span>
+            <select class="prop-select weekly-plan-select" data-day="${day.id}">
+                ${selectHTML}
+            </select>
+        `;
+
+            wrapper.appendChild(row);
+        });
+
+        weeklyContainer.appendChild(wrapper);
+
+        // ==========================================
+        // 4. 綁定事件：當下拉選單改變時，更新資料模型
+        // ==========================================
+        weeklyContainer.querySelectorAll('.weekly-plan-select').forEach(select => {
+            select.addEventListener('change', (e) => {
+                const dayId = parseInt(e.target.dataset.day, 10);
+                const selectedPlanId = e.target.value;
+
+                // 更新資料模型
+                advancedData.weekly[dayId] = selectedPlanId;
+
+                // 觸發全域儲存 (Undo/Redo 追蹤)
+                saveState();
+            });
+        });
     }
 
     function renderTflGroupingTab() {
@@ -8028,103 +8439,165 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    function renderTflPhasingTab() {
+    function renderTflLibraryTab() {
         const tflData = network.trafficLights[currentModalNode.id];
+        const advancedData = tflData.advanced;
+        if (!currentTflScheduleId || !advancedData.schedules[currentTflScheduleId]) return;
+
+        // ==========================================
+        // 1. 頂部控制區 (選擇器、時差、新增、刪除)
+        // ==========================================
+        const selector = document.getElementById('tfl-schedule-selector');
+        selector.innerHTML = '';
+
+        Object.values(advancedData.schedules).forEach(sched => {
+            const opt = document.createElement('option');
+            opt.value = sched.id;
+            opt.textContent = sched.name;
+            if (sched.id === currentTflScheduleId) opt.selected = true;
+            selector.appendChild(opt);
+        });
+
+        selector.onchange = (e) => {
+            currentTflScheduleId = e.target.value;
+            renderTflLibraryTab();
+        };
+
+        // [新增] 時差綁定與反向同步
+        const currentSchedule = advancedData.schedules[currentTflScheduleId];
+        const shiftInput = document.getElementById('tfl-schedule-timeshift');
+        shiftInput.value = currentSchedule.timeShift || 0;
+
+        shiftInput.onchange = (e) => {
+            const newVal = parseInt(e.target.value, 10) || 0;
+            currentSchedule.timeShift = newVal;
+
+            // 檢查目前編輯的時制，是否就是「代表性時制」
+            // 如果是，則同步更新右側屬性面板的 UI 與基礎資料
+            if (advancedData.weekly) {
+                const monPlanId = advancedData.weekly[1];
+                if (monPlanId && advancedData.dailyPlans[monPlanId]) {
+                    const sw = advancedData.dailyPlans[monPlanId].switches.find(s => s.schedId !== 'NONE');
+                    if (sw && sw.schedId === currentTflScheduleId) {
+
+                        // 同步底層資料
+                        tflData.timeShift = newVal;
+
+                        // 若右側面板正好開啟此路口，即時更新輸入框數值
+                        const propShiftInput = document.getElementById('prop-tfl-shift');
+                        if (propShiftInput && selectedObject && selectedObject.id === currentModalNode.id) {
+                            propShiftInput.value = newVal;
+                        }
+                    }
+                }
+            }
+            saveState();
+        };
+
+        // 新增時制
+        document.getElementById('tfl-add-schedule-btn').onclick = () => {
+            let newNum = 1;
+            while (advancedData.schedules[`Sched_${newNum}`]) newNum++;
+
+            const newId = `Sched_${newNum}`;
+            advancedData.schedules[newId] = {
+                id: newId, name: `自訂時制[${newNum}]`, timeShift: 0, phases: []
+            };
+            currentTflScheduleId = newId;
+            renderTflLibraryTab();
+            renderTflDailyPlansTab();
+            saveState();
+        };
+
+        // [新增] 刪除時制
+        document.getElementById('tfl-delete-schedule-btn').onclick = () => {
+            const schedKeys = Object.keys(advancedData.schedules);
+            if (schedKeys.length <= 1) {
+                alert(I18N.t("必須保留至少一個時制 (At least one schedule must remain)."));
+                return;
+            }
+
+            if (confirm(I18N.t(`確定要刪除時制 [${currentSchedule.name}] 嗎？`))) {
+                // 清理依賴：將日型態中有用到這個時制的時段改為「無時制(NONE)」
+                Object.values(advancedData.dailyPlans).forEach(plan => {
+                    plan.switches.forEach(sw => {
+                        if (sw.schedId === currentTflScheduleId) sw.schedId = 'NONE';
+                    });
+                });
+
+                delete advancedData.schedules[currentTflScheduleId];
+                // 自動選取剩餘的第一個時制
+                currentTflScheduleId = Object.keys(advancedData.schedules)[0];
+
+                renderTflLibraryTab();
+                renderTflDailyPlansTab(); // 重新渲染日型態 (因為有選項變成了 NONE)
+                saveState();
+            }
+        };
+
+        // ==========================================
+        // 2. 時制表格區 (Phasing Schedule)
+        // ==========================================
         const tableHead = document.querySelector('#tfl-schedule-table thead');
         const tableBody = document.querySelector('#tfl-schedule-table tbody');
-
-        tableHead.innerHTML = '';
-        tableBody.innerHTML = '';
+        tableHead.innerHTML = ''; tableBody.innerHTML = '';
 
         const signalGroupIds = Object.keys(tflData.signalGroups);
 
-        // 渲染表頭
-        // --- 修正表頭生成 ---
-        // 移除多餘的 inline style，讓 CSS 控制對齊
         let headerHtml = '<tr><th style="width: 100px;">Duration (s)</th>';
-
-        // 生成多個 Group Name 表頭
-        signalGroupIds.forEach(id => {
-            headerHtml += `<th>${id}</th>`;
-        });
-
+        signalGroupIds.forEach(id => { headerHtml += `<th>${id}</th>`; });
         headerHtml += '<th style="width: 80px;">Actions</th></tr>';
         tableHead.innerHTML = headerHtml;
 
-        // 渲染表格內容
         let bodyHtml = '';
-        tflData.schedule.forEach((phase, phaseIndex) => {
+        currentSchedule.phases.forEach((phase, phaseIndex) => {
             bodyHtml += `<tr>`;
-
-            // Duration Input
             bodyHtml += `<td><input type="number" class="tfl-duration-input prop-input" data-phase="${phaseIndex}" value="${phase.duration}" min="1" style="text-align:center;"></td>`;
 
-            // Signal Blocks (修改處)
             signalGroupIds.forEach(id => {
                 const signal = phase.signals[id] || 'Red';
-                // 將文字轉換為 CSS class
                 const colorClass = `signal-${signal.toLowerCase()}`;
-
-                bodyHtml += `<td>
-                                <div class="signal-block ${colorClass}" 
-                                     data-phase="${phaseIndex}" 
-                                     data-group-id="${id}" 
-                                     title="Current: ${signal} (Click to toggle)">
-                                </div>
-                             </td>`;
+                bodyHtml += `<td><div class="signal-block ${colorClass}" data-phase="${phaseIndex}" data-group-id="${id}" title="Current: ${signal}"></div></td>`;
             });
 
-            // Delete Button
             bodyHtml += `<td><button class="tfl-delete-phase-btn btn-danger-outline" data-phase="${phaseIndex}" style="padding: 4px 8px; font-size: 0.8rem; margin:0 auto;">Delete</button></td></tr>`;
         });
         tableBody.innerHTML = bodyHtml;
 
-        // 綁定事件：Duration 變更
+        // 表格內部事件綁定...
         tableBody.querySelectorAll('.tfl-duration-input').forEach(input => {
             input.onchange = (e) => {
-                const phaseIndex = e.target.dataset.phase;
-                tflData.schedule[phaseIndex].duration = parseInt(e.target.value, 10) || 30;
+                currentSchedule.phases[e.target.dataset.phase].duration = parseInt(e.target.value, 10) || 30;
+                saveState();
             };
         });
 
-        // 綁定事件：點擊色塊切換燈號 (修改處)
         tableBody.querySelectorAll('.signal-block').forEach(block => {
             block.onclick = (e) => {
                 const phaseIndex = e.target.dataset.phase;
                 const groupId = e.target.dataset.groupId;
-
-                // 定義切換順序：紅 -> 綠 -> 黃 -> 紅
                 const signals = ['Green', 'Yellow', 'Red'];
-                const currentSignal = tflData.schedule[phaseIndex].signals[groupId] || 'Red';
+                const currentSignal = currentSchedule.phases[phaseIndex].signals[groupId] || 'Red';
 
-                // 找到下一個顏色
-                // 如果目前是 Red (index -1 or 2)，下一個是 Green (index 0)
-                // 如果目前是 Green (index 0)，下一個是 Yellow (index 1)
-                let nextIndex = 0;
-                if (currentSignal === 'Green') nextIndex = 1; // -> Yellow
-                else if (currentSignal === 'Yellow') nextIndex = 2; // -> Red
-                else nextIndex = 0; // -> Green (Red or undefined goes to Green)
-
-                tflData.schedule[phaseIndex].signals[groupId] = signals[nextIndex];
-
-                // 重新渲染以更新視圖
-                renderTflPhasingTab();
+                let nextIndex = (currentSignal === 'Green') ? 1 : (currentSignal === 'Yellow' ? 2 : 0);
+                currentSchedule.phases[phaseIndex].signals[groupId] = signals[nextIndex];
+                renderTflLibraryTab();
+                saveState();
             };
         });
 
-        // 綁定事件：刪除 Phase
         tableBody.querySelectorAll('.tfl-delete-phase-btn').forEach(btn => {
             btn.onclick = (e) => {
-                const phaseIndex = e.target.dataset.phase;
-                tflData.schedule.splice(phaseIndex, 1);
-                renderTflPhasingTab();
+                currentSchedule.phases.splice(e.target.dataset.phase, 1);
+                renderTflLibraryTab();
+                saveState();
             };
         });
 
-        // Add Phase 按鈕邏輯保持不變
         document.getElementById('tfl-add-phase-btn').onclick = () => {
-            tflData.schedule.push({ duration: 30, signals: {} });
-            renderTflPhasingTab();
+            currentSchedule.phases.push({ duration: 30, signals: {} });
+            renderTflLibraryTab();
+            saveState();
         };
     }
 
@@ -8139,10 +8612,22 @@ document.addEventListener('DOMContentLoaded', () => {
         currentModalOrigin = origin;
         document.getElementById('spawner-modal-title').textContent = `Vehicle Spawner Editor for ${origin.id}`;
 
-        if (!origin.periods) { origin.periods = []; }
+        // --- [修改開始] 初始化 Car, Motor, Truck/Bus ---
         if (Object.keys(network.vehicleProfiles).length === 0) {
-            network.vehicleProfiles['default'] = { id: 'default', length: 4.5, width: 1.8, maxSpeed: 16.67, maxAcceleration: 1.5, comfortDeceleration: 3.0, minDistance: 2.0, desiredHeadwayTime: 1.5, };
+            network.vehicleProfiles['car'] = {
+                id: 'car', length: 4.5, width: 1.8, maxSpeed: 16.67,
+                maxAcceleration: 3.0, comfortDeceleration: 2.5, minDistance: 2.5, desiredHeadwayTime: 1.5
+            };
+            network.vehicleProfiles['motor'] = {
+                id: 'motor', length: 2.0, width: 0.8, maxSpeed: 16.67,
+                maxAcceleration: 3.5, comfortDeceleration: 3.0, minDistance: 1.0, desiredHeadwayTime: 0.8
+            };
+            network.vehicleProfiles['Truck/Bus'] = {
+                id: 'Truck/Bus', length: 12.0, width: 2.6, maxSpeed: 16.67,
+                maxAcceleration: 0.8, comfortDeceleration: 1.0, minDistance: 3.0, desiredHeadwayTime: 3.0
+            };
         }
+        // --- [修改結束] ---
 
         renderSpawnerPeriodsTab();
         renderSpawnerProfilesTab();
@@ -8362,10 +8847,12 @@ document.addEventListener('DOMContentLoaded', () => {
             };
         });
 
+        // 在 renderSpawnerPeriodsTab 函數內找到 .add-prof-btn 的事件監聽
         periodsList.querySelectorAll('.add-prof-btn').forEach(btn => {
             btn.onclick = () => {
                 spawnerData.periods = readPeriodsFromUI();
-                (spawnerData.periods[btn.dataset.index].profiles ??= []).push({ profileId: 'default', weight: 1 });
+                // [修改] 將 'default' 改為 'car'
+                (spawnerData.periods[btn.dataset.index].profiles ??= []).push({ profileId: 'car', weight: 1 });
                 renderSpawnerPeriodsTab();
             };
         });
@@ -8461,7 +8948,9 @@ document.addEventListener('DOMContentLoaded', () => {
         // 綁定事件
         document.getElementById('spawner-add-profile-btn').onclick = () => {
             const newId = `profile_${Object.keys(network.vehicleProfiles).length}`;
-            network.vehicleProfiles[newId] = { ...network.vehicleProfiles['default'], id: newId };
+            // [修改] 複製來源改為 'car'，若 'car' 不存在（極少見）則複製第一個存在的
+            const templateProfile = network.vehicleProfiles['car'] || Object.values(network.vehicleProfiles)[0];
+            network.vehicleProfiles[newId] = { ...templateProfile, id: newId };
             renderSpawnerProfilesTab();
         };
 
@@ -9021,8 +9510,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     tflData.signalGroups[groupName] = { id: groupName, connIds: internalConnIds };
                 });
 
+                // --- 解析舊版 (相容) Schedule ---
                 const scheduleEl = getChildrenByLocalName(tflEl, "Schedule")[0];
-                const periodsEl = getChildrenByLocalName(scheduleEl, "TimePeriods")[0];
+                const periodsEl = scheduleEl ? getChildrenByLocalName(scheduleEl, "TimePeriods")[0] : null;
                 if (periodsEl) {
                     getChildrenByLocalName(periodsEl, "TimePeriod").forEach(periodEl => {
                         const phase = {
@@ -9038,6 +9528,83 @@ document.addEventListener('DOMContentLoaded', () => {
                         });
                         tflData.schedule.push(phase);
                     });
+                }
+
+                // ----------------------------------------------------
+                // 【進階排程讀取】解析 AdvancedScheduling 標籤
+                // ----------------------------------------------------
+                const advEl = getChildrenByLocalName(tflEl, "AdvancedScheduling")[0];
+                if (advEl && advEl.getAttribute("enabled") === "true") {
+                    tflData.advanced = { schedules: {}, dailyPlans: {}, weekly: {} };
+
+                    // 1. 解析時制庫
+                    const schedsEl = getChildrenByLocalName(advEl, "Schedules")[0];
+                    if (schedsEl) {
+                        getChildrenByLocalName(schedsEl, "ScheduleDef").forEach(sDef => {
+                            const sId = sDef.getAttribute("id");
+                            const sName = sDef.getAttribute("name");
+                            const sShift = parseInt(sDef.getAttribute("timeShift"), 10) || 0;
+                            const phases = [];
+
+                            const phasesEl = getChildrenByLocalName(sDef, "Phases")[0];
+                            if (phasesEl) {
+                                getChildrenByLocalName(phasesEl, "Phase").forEach(pEl => {
+                                    const duration = parseInt(pEl.getAttribute("duration"), 10);
+                                    const signals = {};
+                                    getChildrenByLocalName(pEl, "Signal").forEach(sigEl => {
+                                        const numericId = sigEl.getAttribute("groupId");
+                                        // 轉換 XML 的數字 ID 回系統用的 Group Name
+                                        const groupInfo = groupDefinitions.get(numericId);
+                                        if (groupInfo) signals[groupInfo.name] = sigEl.getAttribute("state");
+                                    });
+                                    phases.push({ duration, signals });
+                                });
+                            }
+                            tflData.advanced.schedules[sId] = { id: sId, name: sName, timeShift: sShift, phases };
+                        });
+                    }
+
+                    // 2. 解析日型態
+                    const plansEl = getChildrenByLocalName(advEl, "DailyPlans")[0];
+                    if (plansEl) {
+                        getChildrenByLocalName(plansEl, "Plan").forEach(planEl => {
+                            const pId = planEl.getAttribute("id");
+                            const pName = planEl.getAttribute("name");
+                            const switches = [];
+                            getChildrenByLocalName(planEl, "TimeSwitch").forEach(swEl => {
+                                switches.push({ time: swEl.getAttribute("time"), schedId: swEl.getAttribute("scheduleId") });
+                            });
+                            tflData.advanced.dailyPlans[pId] = { id: pId, name: pName, switches };
+                        });
+                    }
+
+                    // 3. 解析週排程
+                    const weeklyEl = getChildrenByLocalName(advEl, "WeeklyAssignment")[0];
+                    if (weeklyEl) {
+                        getChildrenByLocalName(weeklyEl, "Day").forEach(dayEl => {
+                            const day = dayEl.getAttribute("dayOfWeek");
+                            const pId = dayEl.getAttribute("planId");
+                            tflData.advanced.weekly[day] = pId;
+                        });
+                    }
+                } else {
+                    // ----------------------------------------------------
+                    // 【向後相容 Migration】如果是讀舊檔，在背景自動升級結構
+                    // ----------------------------------------------------
+                    tflData.advanced = {
+                        schedules: {
+                            'Sched_A': {
+                                id: 'Sched_A',
+                                name: '預設時制[0]',
+                                timeShift: tflData.timeShift || 0,
+                                phases: JSON.parse(JSON.stringify(tflData.schedule)) // 從剛才讀到的舊排程深拷貝
+                            }
+                        },
+                        dailyPlans: {
+                            'Plan_1': { id: 'Plan_1', name: '預設日型態', switches: [{ time: '00:00', schedId: 'Sched_A' }] }
+                        },
+                        weekly: { 1: 'Plan_1', 2: 'Plan_1', 3: 'Plan_1', 4: 'Plan_1', 5: 'Plan_1', 6: 'Plan_1', 7: 'Plan_1' }
+                    };
                 }
             });
 
@@ -9127,9 +9694,22 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // 若完全沒有設定 Profile，給一個預設值
+        // --- [修改開始] 初始化 Car, Motor, Truck/Bus ---
         if (Object.keys(network.vehicleProfiles).length === 0) {
-            network.vehicleProfiles['default'] = { id: 'default', length: 4.5, width: 1.8, maxSpeed: 16.67, maxAcceleration: 1.5, comfortDeceleration: 3.0, minDistance: 2.0, desiredHeadwayTime: 1.5 };
+            network.vehicleProfiles['car'] = {
+                id: 'car', length: 4.5, width: 1.8, maxSpeed: 16.67,
+                maxAcceleration: 3.0, comfortDeceleration: 2.5, minDistance: 2.5, desiredHeadwayTime: 1.5
+            };
+            network.vehicleProfiles['motor'] = {
+                id: 'motor', length: 2.0, width: 0.8, maxSpeed: 16.67,
+                maxAcceleration: 3.5, comfortDeceleration: 3.0, minDistance: 1.0, desiredHeadwayTime: 0.8
+            };
+            network.vehicleProfiles['Truck/Bus'] = {
+                id: 'Truck/Bus', length: 12.0, width: 2.6, maxSpeed: 16.67,
+                maxAcceleration: 0.8, comfortDeceleration: 1.0, minDistance: 3.0, desiredHeadwayTime: 3.0
+            };
         }
+        // --- [修改結束] ---
 
         // --- 6. Parking Lots ---
         const plContainer = xmlDoc.getElementsByTagName("ParkingLots")[0] || xmlDoc.getElementsByTagName("tm:ParkingLots")[0];
@@ -9801,18 +10381,51 @@ document.addEventListener('DOMContentLoaded', () => {
         xml += '  <tm:Agents>\n';
         xml += '    <tm:TrafficLightNetworks>\n';
         for (const tfl of Object.values(network.trafficLights)) {
-            if (!tfl.schedule || tfl.schedule.length === 0) continue;
-            const nodeNumId = regularNodeIdMap.get(tfl.nodeId); if (nodeNumId === undefined) continue;
+            // [修正] 檢查是否有舊版排程，或是有新版進階排程，擇一存在即匯出
+            const hasLegacySchedule = tfl.schedule && tfl.schedule.length > 0;
+            const hasAdvancedSchedule = tfl.advanced && tfl.advanced.schedules && Object.keys(tfl.advanced.schedules).length > 0;
+
+            if (!hasLegacySchedule && !hasAdvancedSchedule) continue;
+
+            const nodeNumId = regularNodeIdMap.get(tfl.nodeId);
+            if (nodeNumId === undefined) continue;
+
             xml += `      <tm:RegularTrafficLightNetwork><tm:regularNodeId>${nodeNumId}</tm:regularNodeId>\n`;
+
             const groupMap = tflGroupMappings[tfl.nodeId];
             if (groupMap) {
                 xml += '        <tm:TrafficLights>\n';
-                Object.entries(groupMap).forEach(([groupName, numericTurnTRGroupId]) => { xml += `          <tm:TrafficLight><tm:id>${numericTurnTRGroupId}</tm:id><tm:name>${groupName}</tm:name><tm:Placement><tm:turnTRGroupId>${numericTurnTRGroupId}</tm:turnTRGroupId></tm:Placement></tm:TrafficLight>\n`; });
+                Object.entries(groupMap).forEach(([groupName, numericTurnTRGroupId]) => {
+                    xml += `          <tm:TrafficLight><tm:id>${numericTurnTRGroupId}</tm:id><tm:name>${groupName}</tm:name><tm:Placement><tm:turnTRGroupId>${numericTurnTRGroupId}</tm:turnTRGroupId></tm:Placement></tm:TrafficLight>\n`;
+                });
                 xml += '        </tm:TrafficLights>\n';
             }
-            xml += `        <tm:scheduleTimeShift>${tfl.timeShift || 0}</tm:scheduleTimeShift>\n`;
+
+            // ----------------------------------------------------
+            // 【向下相容】萃取代表性時制 (取週一第一個非 NONE 的時制)
+            // ----------------------------------------------------
+            let legacyTimeShift = tfl.timeShift || 0;
+            let legacyPhases = tfl.schedule || [];
+
+            if (tfl.advanced && tfl.advanced.weekly && tfl.advanced.dailyPlans && tfl.advanced.schedules) {
+                const monPlanId = tfl.advanced.weekly[1];
+                const monPlan = tfl.advanced.dailyPlans[monPlanId];
+                if (monPlan && monPlan.switches) {
+                    const firstValidSwitch = monPlan.switches.find(s => s.schedId !== 'NONE');
+                    if (firstValidSwitch) {
+                        const repSched = tfl.advanced.schedules[firstValidSwitch.schedId];
+                        if (repSched) {
+                            legacyTimeShift = repSched.timeShift || 0;
+                            legacyPhases = repSched.phases || [];
+                        }
+                    }
+                }
+            }
+
+            // 輸出舊版相容標籤
+            xml += `        <tm:scheduleTimeShift>${legacyTimeShift}</tm:scheduleTimeShift>\n`;
             xml += '        <tm:Schedule><tm:TimePeriods>\n';
-            tfl.schedule.forEach(phase => {
+            legacyPhases.forEach(phase => {
                 xml += `          <tm:TimePeriod><tm:duration>${phase.duration}</tm:duration>\n`;
                 if (groupMap) {
                     Object.values(tfl.signalGroups).forEach(group => {
@@ -9825,7 +10438,56 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 xml += '          </tm:TimePeriod>\n';
             });
-            xml += '        </tm:TimePeriods></tm:Schedule>\n      </tm:RegularTrafficLightNetwork>\n';
+            xml += '        </tm:TimePeriods></tm:Schedule>\n';
+
+            // ----------------------------------------------------
+            // 【進階排程】輸出供新版模擬器讀取的標籤
+            // ----------------------------------------------------
+            if (tfl.advanced) {
+                xml += '        <tm:AdvancedScheduling enabled="true">\n';
+
+                // 1. Schedules (時制庫)
+                xml += '          <tm:Schedules>\n';
+                Object.values(tfl.advanced.schedules).forEach(sched => {
+                    xml += `            <tm:ScheduleDef id="${sched.id}" name="${sched.name || sched.id}" timeShift="${sched.timeShift || 0}">\n`;
+                    xml += '              <tm:Phases>\n';
+                    sched.phases.forEach(phase => {
+                        xml += `                <tm:Phase duration="${phase.duration}">\n`;
+                        Object.entries(phase.signals).forEach(([gId, state]) => {
+                            const numericGroupId = groupMap ? groupMap[gId] : undefined;
+                            if (numericGroupId !== undefined) {
+                                xml += `                  <tm:Signal groupId="${numericGroupId}" state="${state}"/>\n`;
+                            }
+                        });
+                        xml += `                </tm:Phase>\n`;
+                    });
+                    xml += '              </tm:Phases>\n';
+                    xml += `            </tm:ScheduleDef>\n`;
+                });
+                xml += '          </tm:Schedules>\n';
+
+                // 2. Daily Plans (日型態)
+                xml += '          <tm:DailyPlans>\n';
+                Object.values(tfl.advanced.dailyPlans).forEach(plan => {
+                    xml += `            <tm:Plan id="${plan.id}" name="${plan.name || plan.id}">\n`;
+                    plan.switches.forEach(sw => {
+                        xml += `              <tm:TimeSwitch time="${sw.time}" scheduleId="${sw.schedId}"/>\n`;
+                    });
+                    xml += `            </tm:Plan>\n`;
+                });
+                xml += '          </tm:DailyPlans>\n';
+
+                // 3. Weekly Assignment (週排程)
+                xml += '          <tm:WeeklyAssignment>\n';
+                Object.entries(tfl.advanced.weekly).forEach(([day, planId]) => {
+                    xml += `            <tm:Day dayOfWeek="${day}" planId="${planId}"/>\n`;
+                });
+                xml += '          </tm:WeeklyAssignment>\n';
+
+                xml += '        </tm:AdvancedScheduling>\n';
+            }
+
+            xml += '      </tm:RegularTrafficLightNetwork>\n';
         }
         xml += '    </tm:TrafficLightNetworks>\n';
 

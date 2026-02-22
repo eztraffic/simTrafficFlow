@@ -208,17 +208,22 @@
     </main>
 
     <!-- Modals -->
+    <!-- Traffic Light Modal -->
     <div id="traffic-light-modal" class="modal">
-        <div class="modal-content">
+        <div class="modal-content large"> <!-- 稍微加大以容納複雜介面 -->
             <div class="modal-header">
                 <h2 id="tfl-modal-title">Traffic Light Editor</h2>
                 <span class="close-button">×</span>
             </div>
             <div class="modal-body">
                 <div class="tabs">
-                    <button class="tab-link active" data-tab="tfl-grouping">Signal Groups</button>
-                    <button class="tab-link" data-tab="tfl-phasing">Phasing Schedule</button>
+                    <button class="tab-link active" data-tab="tfl-grouping">Signal Groups (硬體群組)</button>
+                    <button class="tab-link" data-tab="tfl-library">Schedule Library (時制庫)</button>
+                    <button class="tab-link" data-tab="tfl-daily">Daily Plans (日型態)</button>
+                    <button class="tab-link" data-tab="tfl-weekly">Weekly (週排程)</button>
                 </div>
+
+                <!-- Tab 1: 號誌群組 (保留原有邏輯) -->
                 <div id="tfl-grouping" class="tab-content active">
                     <div class="tfl-column">
                         <h4>Manage Groups</h4>
@@ -229,8 +234,26 @@
                         </div>
                     </div>
                 </div>
-                <div id="tfl-phasing" class="tab-content">
-                    <h4>Phasing Schedule</h4>
+
+                <!-- Tab 2: 時制庫 (Schedule Library) -->
+                <div id="tfl-library" class="tab-content">
+                    <div style="display:flex; justify-content:space-between; margin-bottom:10px; align-items:center;">
+                        <!-- 左側：下拉選單與時差輸入 -->
+                        <div style="display:flex; gap:10px; align-items:center;">
+                            <select id="tfl-schedule-selector" class="prop-select" style="width: 150px;"></select>
+                            <label class="prop-label" style="margin:0; min-width:auto;">Time Shift (s):</label>
+                            <input type="number" id="tfl-schedule-timeshift" class="prop-input"
+                                style="width: 60px; padding:4px;" min="0">
+                        </div>
+                        <!-- 右側：新增與刪除按鈕 -->
+                        <div style="display:flex; gap:8px;">
+                            <button id="tfl-add-schedule-btn" class="btn-secondary">+ Add</button>
+                            <button id="tfl-delete-schedule-btn" class="btn-secondary"
+                                style="color:#ef4444; border-color:#fecaca;" title="Delete Schedule">
+                                <i class="fa-solid fa-trash-can"></i>
+                            </button>
+                        </div>
+                    </div>
                     <div id="tfl-schedule-table-container">
                         <table id="tfl-schedule-table">
                             <thead></thead>
@@ -239,6 +262,34 @@
                     </div>
                     <button id="tfl-add-phase-btn" class="btn-secondary" style="margin-top:10px;">+ Add Phase</button>
                 </div>
+
+                <!-- Tab 3: 日型態 (Daily Plans) - 本次核心 -->
+                <div id="tfl-daily" class="tab-content">
+                    <div style="display:flex; justify-content:space-between; margin-bottom:10px;">
+                        <select id="tfl-plan-selector" class="prop-select" style="width: 200px;"></select>
+                        <button id="tfl-add-plan-btn" class="btn-secondary">+ Add Daily Plan</button>
+                    </div>
+
+                    <!-- 視覺化時間軸 (Visual Timeline) -->
+                    <div id="tfl-daily-timeline" class="tfl-timeline-container">
+                        <!-- JS 動態生成色塊 -->
+                    </div>
+
+                    <!-- 觸發點列表 (Checkpoints) -->
+                    <div id="tfl-daily-checkpoints">
+                        <!-- JS 動態生成列表 -->
+                    </div>
+                    <button id="tfl-add-checkpoint-btn" class="btn-secondary dashed"
+                        style="width:100%; margin-top:10px;">+ Add Transition Time</button>
+                </div>
+
+                <!-- Tab 4: 週排程 (Weekly) -->
+                <div id="tfl-weekly" class="tab-content">
+                    <div id="tfl-weekly-list">
+                        <!-- JS 動態生成週一到週日下拉選單 -->
+                    </div>
+                </div>
+
             </div>
             <div class="modal-footer">
                 <button id="tfl-save-btn" class="btn-primary">Done</button>
@@ -373,10 +424,10 @@
             </div>
         </div>
     </div>
-    
+
     <script src="subnetwork_tool.js"></script>
     <script src="editor.js"></script>
-    
+
 </body>
 
 </html>
