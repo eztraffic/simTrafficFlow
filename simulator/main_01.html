@@ -41,11 +41,19 @@
                     <input type="file" id="xmlFileInput" accept=".sim,.xml">
                 </label>
 
-                <!-- 修正後：只有一層 label -->
+                <!-- 既有：場景按鈕 -->
                 <label class="btn-input secondary" title="Load Scene (.xml)">
                     <i class="fa-solid fa-cube"></i>
                     <span data-i18n="loadSceneLabel">場景</span>
                     <input type="file" id="sceneFileInput" accept=".xml">
+                </label>
+
+                <!-- ★★★ 新增：數位孿生選項 ★★★ -->
+                <label class="mini-switch" title="與真實時間同步的數位孿生模擬"
+                    style="background: rgba(0,0,0,0.2); padding: 5px 10px; border-radius: 4px; margin-left: 10px;">
+                    <input type="checkbox" id="digitalTwinToggle">
+                    <span class="switch-label" style="color: #06b6d4; font-weight: bold;"><i
+                            class="fa-solid fa-clock"></i> 數位孿生</span>
                 </label>
             </div>
 
@@ -392,6 +400,8 @@
     <script src="script_drive.js"></script>
     <script src="script_opt_iterator.js"></script>
     <script src="script_opt.js"></script>
+    <!-- ★★★ 新增：數位孿生邏輯 ★★★ -->
+    <script src="script_digital_twin.js"></script>
     <script src="script02.js"></script>
     <script>
         window.ENABLE_LEFT_TURN_YIELD = true;

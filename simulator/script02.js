@@ -328,6 +328,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // --- DOM Elements ---
+    const digitalTwinToggle = document.getElementById('digitalTwinToggle');
+    let isDigitalTwinMode = false;
     const langSelector = document.getElementById('langSelector');
     const fileInput = document.getElementById('xmlFileInput');
     const canvasContainer = document.getElementById('canvas-container');
@@ -472,6 +474,27 @@ document.addEventListener('DOMContentLoaded', () => {
     </svg>`;
 
     // --- Event Listeners ---
+    if (digitalTwinToggle) {
+        digitalTwinToggle.addEventListener('change', (e) => {
+            isDigitalTwinMode = e.target.checked;
+            
+            if (isDigitalTwinMode) {
+                // 開啟數位孿生：強制 1 倍速，鎖定滑桿
+                speedSlider.value = 1;
+                speedSlider.disabled = true;
+                simulationSpeed = 1;
+                speedValueSpan.textContent = `1x (Live)`;
+                simTimeSpan.parentElement.querySelector('.label').textContent = "實時";
+            } else {
+                // 關閉數位孿生：解鎖滑桿，時間歸零
+                speedSlider.disabled = false;
+                simTimeSpan.parentElement.querySelector('.label').textContent = translations[currentLang].simTimeLabel;
+                if (simulation) simulation.time = 0; // 重新起算
+                simTimeSpan.textContent = "0.00";
+            }
+        });
+    }
+
     const aiShowInfoToggle = document.getElementById('aiShowInfoToggle');
     if (aiShowInfoToggle) {
         aiShowInfoToggle.addEventListener('change', (e) => {
@@ -5439,7 +5462,13 @@ document.addEventListener('DOMContentLoaded', () => {
             // 3. 更新模擬核心
             simulation.update(simulationDt);
             simTimeSpan.textContent = simulation.time.toFixed(2);
-
+            // ★ 新增：數位孿生時間顯示邏輯
+            if (isDigitalTwinMode && typeof DigitalTwinLogic !== 'undefined') {
+                simTimeSpan.textContent = DigitalTwinLogic.formatTime(); // 顯示 14:35:22 格式
+            } else {
+                simTimeSpan.textContent = simulation.time.toFixed(2); // 顯示傳統秒數
+            }
+            
             // [新增] 優化器更新 (處理採樣計時器)
             if (typeof optimizerController !== 'undefined') {
                 optimizerController.update(simulationDt);
@@ -5902,12 +5931,20 @@ document.addEventListener('DOMContentLoaded', () => {
             this.schedule = config.schedule;
             this.lights = config.lights;
             this.timeShift = config.timeShift || 0;
+            this.advancedConfig = config.advancedConfig; // ★ 新增
+            this.allGroupIds = config.allGroupIds || []; // ★ 新增
             this.cycleDuration = this.schedule.reduce((sum, p) => sum + p.duration, 0);
             this.turnGroupStates = {};
         }
 
         update(time) {
-            // ... (保持原樣) ...
+            // ★ 如果啟動數位孿生且具有進階排程，則交給 DigitalTwinLogic 處理
+            if (isDigitalTwinMode && this.advancedConfig && typeof DigitalTwinLogic !== 'undefined') {
+                this.turnGroupStates = DigitalTwinLogic.updateTrafficLight(this.advancedConfig, this.allGroupIds);
+                return;
+            }
+
+            // 傳統邏輯
             if (this.cycleDuration <= 0) return;
             const effectiveTime = time - this.timeShift;
             let timeInCycle = ((effectiveTime % this.cycleDuration) + this.cycleDuration) % this.cycleDuration;
@@ -8922,16 +8959,29 @@ document.addEventListener('DOMContentLoaded', () => {
             // --- 4. 解析 Traffic Lights ---
             xmlDoc.querySelectorAll('RegularTrafficLightNetwork').forEach(netEl => {
                 const nodeId = netEl.querySelector('regularNodeId').textContent;
-                const config = { nodeId: nodeId, schedule: [], lights: {}, timeShift: 0 };
+                const config = { nodeId: nodeId, schedule: [], lights: {}, timeShift: 0, advancedConfig: null };
+                
+                // 檢查是否包含 AdvancedScheduling
+                if (typeof DigitalTwinLogic !== 'undefined') {
+                    config.advancedConfig = DigitalTwinLogic.parseAdvancedScheduling(netEl);
+                }
+
                 const timeShiftEl = netEl.querySelector('scheduleTimeShift');
                 if (timeShiftEl) {
                     config.timeShift = parseFloat(timeShiftEl.textContent) || 0;
                 }
+                
+                // 提取所有 Group IDs
+                const allGroupIds = new Set();
                 netEl.querySelectorAll('TrafficLight').forEach(lightEl => {
                     const lightId = lightEl.querySelector('id').textContent;
                     const turnTRGroupIds = Array.from(lightEl.querySelectorAll('turnTRGroupId')).map(id => id.textContent);
                     config.lights[lightId] = { id: lightId, turnTRGroupIds: turnTRGroupIds };
+                    turnTRGroupIds.forEach(id => allGroupIds.add(id));
                 });
+                config.allGroupIds = Array.from(allGroupIds); // 保存供數位孿生使用
+
+                // 傳統 Schedule 解析 (如果沒有啟用 Advanced 或當作 fallback)
                 netEl.querySelectorAll('Schedule > TimePeriods > TimePeriod').forEach(periodEl => {
                     const period = { duration: parseFloat(periodEl.querySelector('duration').textContent), signals: {} };
                     periodEl.querySelectorAll('TrafficLightSignal').forEach(sigEl => {
