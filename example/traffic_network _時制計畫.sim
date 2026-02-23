@@ -1,0 +1,386 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<tm:TrafficModel parserVersion="1.2" xmlns:tm="TrafficModelDefinitionFile0.1">
+  <tm:ModelParameters>
+    <tm:randomSeed>14495</tm:randomSeed>
+    <tm:immutableVehiclesPercent>70</tm:immutableVehiclesPercent>
+    <tm:NavigationMode>HYBRID</tm:NavigationMode>
+  </tm:ModelParameters>
+  <tm:GlobalVehicleProfiles>
+    <tm:VehicleProfile id="car">
+      <tm:RegularVehicle>
+        <tm:length>4.5</tm:length><tm:width>1.8</tm:width>
+        <tm:CompositeDriver><tm:Parameters>
+          <tm:maxSpeed>16.67</tm:maxSpeed>
+          <tm:maxAcceleration>3</tm:maxAcceleration>
+          <tm:comfortDeceleration>2.5</tm:comfortDeceleration>
+          <tm:minDistance>2.5</tm:minDistance>
+          <tm:desiredHeadwayTime>1.5</tm:desiredHeadwayTime>
+        </tm:Parameters></tm:CompositeDriver>
+      </tm:RegularVehicle>
+    </tm:VehicleProfile>
+    <tm:VehicleProfile id="motor">
+      <tm:RegularVehicle>
+        <tm:length>2</tm:length><tm:width>0.8</tm:width>
+        <tm:CompositeDriver><tm:Parameters>
+          <tm:maxSpeed>16.67</tm:maxSpeed>
+          <tm:maxAcceleration>3.5</tm:maxAcceleration>
+          <tm:comfortDeceleration>3</tm:comfortDeceleration>
+          <tm:minDistance>1</tm:minDistance>
+          <tm:desiredHeadwayTime>0.8</tm:desiredHeadwayTime>
+        </tm:Parameters></tm:CompositeDriver>
+      </tm:RegularVehicle>
+    </tm:VehicleProfile>
+    <tm:VehicleProfile id="Truck/Bus">
+      <tm:RegularVehicle>
+        <tm:length>12</tm:length><tm:width>2.6</tm:width>
+        <tm:CompositeDriver><tm:Parameters>
+          <tm:maxSpeed>16.67</tm:maxSpeed>
+          <tm:maxAcceleration>0.8</tm:maxAcceleration>
+          <tm:comfortDeceleration>1</tm:comfortDeceleration>
+          <tm:minDistance>3</tm:minDistance>
+          <tm:desiredHeadwayTime>3</tm:desiredHeadwayTime>
+        </tm:Parameters></tm:CompositeDriver>
+      </tm:RegularVehicle>
+    </tm:VehicleProfile>
+  </tm:GlobalVehicleProfiles>
+  <tm:RoadNetwork>
+    <tm:Links>
+      <tm:Link>
+        <tm:id>0</tm:id>
+        <tm:name>link_1_In</tm:name>
+        <tm:sourceNodeId>-1</tm:sourceNodeId>
+        <tm:destinationNodeId>0</tm:destinationNodeId>
+        <tm:length>197.9419</tm:length>
+        <tm:Segments>
+          <tm:TrapeziumSegment>
+             <tm:id>0</tm:id><tm:length>197.9419</tm:length><tm:prevSegmentId>-1</tm:prevSegmentId><tm:nextSegmentId>-1</tm:nextSegmentId><tm:startWaypointId>0</tm:startWaypointId><tm:endWaypointId>1</tm:endWaypointId>
+            <tm:Lanes>
+              <tm:Lane><tm:index>0</tm:index><tm:length>197.9419</tm:length><tm:width>3.50</tm:width><tm:prevLaneIndex>-1</tm:prevLaneIndex><tm:nextLaneIndex>-1</tm:nextLaneIndex></tm:Lane>
+            </tm:Lanes>
+            <tm:trapeziumShift>0</tm:trapeziumShift>
+            <tm:TrapeziumGeometry>
+              <tm:LeftSide><tm:Start><tm:x>250.9955</tm:x><tm:y>-206.7500</tm:y></tm:Start><tm:End><tm:x>448.9367</tm:x><tm:y>-207.2641</tm:y></tm:End></tm:LeftSide>
+              <tm:RightSide><tm:Start><tm:x>251.0045</tm:x><tm:y>-203.2500</tm:y></tm:Start><tm:End><tm:x>448.9457</tm:x><tm:y>-203.7641</tm:y></tm:End></tm:RightSide>
+            </tm:TrapeziumGeometry>
+          </tm:TrapeziumSegment>
+        </tm:Segments>
+        <tm:Waypoints>
+          <tm:Waypoint><tm:id>0</tm:id><tm:x>251.0000</tm:x><tm:y>-205.0000</tm:y></tm:Waypoint>
+          <tm:Waypoint><tm:id>1</tm:id><tm:x>448.9412</tm:x><tm:y>-205.5141</tm:y></tm:Waypoint>
+        </tm:Waypoints>
+      </tm:Link>
+      <tm:Link>
+        <tm:id>1</tm:id>
+        <tm:name>link_1_Out</tm:name>
+        <tm:sourceNodeId>0</tm:sourceNodeId>
+        <tm:destinationNodeId>-1</tm:destinationNodeId>
+        <tm:length>177.0594</tm:length>
+        <tm:Segments>
+          <tm:TrapeziumSegment>
+             <tm:id>0</tm:id><tm:length>177.0594</tm:length><tm:prevSegmentId>-1</tm:prevSegmentId><tm:nextSegmentId>-1</tm:nextSegmentId><tm:startWaypointId>0</tm:startWaypointId><tm:endWaypointId>1</tm:endWaypointId>
+            <tm:Lanes>
+              <tm:Lane><tm:index>0</tm:index><tm:length>177.0594</tm:length><tm:width>3.50</tm:width><tm:prevLaneIndex>-1</tm:prevLaneIndex><tm:nextLaneIndex>-1</tm:nextLaneIndex></tm:Lane>
+            </tm:Lanes>
+            <tm:trapeziumShift>0</tm:trapeziumShift>
+            <tm:TrapeziumGeometry>
+              <tm:LeftSide><tm:Start><tm:x>458.9367</tm:x><tm:y>-207.2901</tm:y></tm:Start><tm:End><tm:x>635.9955</tm:x><tm:y>-207.7500</tm:y></tm:End></tm:LeftSide>
+              <tm:RightSide><tm:Start><tm:x>458.9457</tm:x><tm:y>-203.7901</tm:y></tm:Start><tm:End><tm:x>636.0045</tm:x><tm:y>-204.2500</tm:y></tm:End></tm:RightSide>
+            </tm:TrapeziumGeometry>
+          </tm:TrapeziumSegment>
+        </tm:Segments>
+        <tm:Waypoints>
+          <tm:Waypoint><tm:id>0</tm:id><tm:x>458.9412</tm:x><tm:y>-205.5401</tm:y></tm:Waypoint>
+          <tm:Waypoint><tm:id>1</tm:id><tm:x>636.0000</tm:x><tm:y>-206.0000</tm:y></tm:Waypoint>
+        </tm:Waypoints>
+      </tm:Link>
+      <tm:Link>
+        <tm:id>2</tm:id>
+        <tm:name>link_2_In</tm:name>
+        <tm:sourceNodeId>-1</tm:sourceNodeId>
+        <tm:destinationNodeId>0</tm:destinationNodeId>
+        <tm:length>113.5649</tm:length>
+        <tm:Segments>
+          <tm:TrapeziumSegment>
+             <tm:id>0</tm:id><tm:length>113.5649</tm:length><tm:prevSegmentId>-1</tm:prevSegmentId><tm:nextSegmentId>-1</tm:nextSegmentId><tm:startWaypointId>0</tm:startWaypointId><tm:endWaypointId>1</tm:endWaypointId>
+            <tm:Lanes>
+              <tm:Lane><tm:index>0</tm:index><tm:length>113.5649</tm:length><tm:width>3.50</tm:width><tm:prevLaneIndex>-1</tm:prevLaneIndex><tm:nextLaneIndex>-1</tm:nextLaneIndex></tm:Lane>
+            </tm:Lanes>
+            <tm:trapeziumShift>0</tm:trapeziumShift>
+            <tm:TrapeziumGeometry>
+              <tm:LeftSide><tm:Start><tm:x>455.2506</tm:x><tm:y>-86.9549</tm:y></tm:Start><tm:End><tm:x>452.3209</tm:x><tm:y>-200.4820</tm:y></tm:End></tm:LeftSide>
+              <tm:RightSide><tm:Start><tm:x>458.7494</tm:x><tm:y>-87.0451</tm:y></tm:Start><tm:End><tm:x>455.8197</tm:x><tm:y>-200.5722</tm:y></tm:End></tm:RightSide>
+            </tm:TrapeziumGeometry>
+          </tm:TrapeziumSegment>
+        </tm:Segments>
+        <tm:Waypoints>
+          <tm:Waypoint><tm:id>0</tm:id><tm:x>457.0000</tm:x><tm:y>-87.0000</tm:y></tm:Waypoint>
+          <tm:Waypoint><tm:id>1</tm:id><tm:x>454.0703</tm:x><tm:y>-200.5271</tm:y></tm:Waypoint>
+        </tm:Waypoints>
+      </tm:Link>
+      <tm:Link>
+        <tm:id>3</tm:id>
+        <tm:name>link_2_Out</tm:name>
+        <tm:sourceNodeId>0</tm:sourceNodeId>
+        <tm:destinationNodeId>-1</tm:destinationNodeId>
+        <tm:length>186.5350</tm:length>
+        <tm:Segments>
+          <tm:TrapeziumSegment>
+             <tm:id>0</tm:id><tm:length>186.5350</tm:length><tm:prevSegmentId>-1</tm:prevSegmentId><tm:nextSegmentId>-1</tm:nextSegmentId><tm:startWaypointId>0</tm:startWaypointId><tm:endWaypointId>1</tm:endWaypointId>
+            <tm:Lanes>
+              <tm:Lane><tm:index>0</tm:index><tm:length>186.5350</tm:length><tm:width>3.50</tm:width><tm:prevLaneIndex>-1</tm:prevLaneIndex><tm:nextLaneIndex>-1</tm:nextLaneIndex></tm:Lane>
+            </tm:Lanes>
+            <tm:trapeziumShift>0</tm:trapeziumShift>
+            <tm:TrapeziumGeometry>
+              <tm:LeftSide><tm:Start><tm:x>452.0628</tm:x><tm:y>-210.4820</tm:y></tm:Start><tm:End><tm:x>447.2506</tm:x><tm:y>-396.9549</tm:y></tm:End></tm:LeftSide>
+              <tm:RightSide><tm:Start><tm:x>455.5616</tm:x><tm:y>-210.5722</tm:y></tm:Start><tm:End><tm:x>450.7494</tm:x><tm:y>-397.0451</tm:y></tm:End></tm:RightSide>
+            </tm:TrapeziumGeometry>
+          </tm:TrapeziumSegment>
+        </tm:Segments>
+        <tm:Waypoints>
+          <tm:Waypoint><tm:id>0</tm:id><tm:x>453.8122</tm:x><tm:y>-210.5271</tm:y></tm:Waypoint>
+          <tm:Waypoint><tm:id>1</tm:id><tm:x>449.0000</tm:x><tm:y>-397.0000</tm:y></tm:Waypoint>
+        </tm:Waypoints>
+      </tm:Link>
+    </tm:Links>
+    <tm:Nodes>
+      <tm:RegularNode><tm:id>0</tm:id><tm:name></tm:name>
+        <tm:TurningRatios>
+          <tm:IncomingLink id="0">
+            <tm:TurnTo linkId="1" probability="1.0000" />
+          </tm:IncomingLink>
+          <tm:IncomingLink id="2">
+            <tm:TurnTo linkId="3" probability="1.0000" />
+          </tm:IncomingLink>
+        </tm:TurningRatios>
+        <tm:TransitionRules>
+          <tm:TransitionRule><tm:id>0</tm:id><tm:length>10.0000</tm:length><tm:width>3.50</tm:width><tm:sourceLinkId>0</tm:sourceLinkId><tm:sourceLaneIndex>0</tm:sourceLaneIndex><tm:destinationLinkId>1</tm:destinationLinkId><tm:destinationLaneIndex>0</tm:destinationLaneIndex>
+            <tm:EditorGroupId>editor_group_0</tm:EditorGroupId>
+            <tm:BezierCurveGeometry><tm:ReferencePoints>
+              <tm:Point><tm:x>448.9412</tm:x><tm:y>-205.5141</tm:y></tm:Point>
+              <tm:Point><tm:x>452.9412</tm:x><tm:y>-205.5245</tm:y></tm:Point>
+              <tm:Point><tm:x>454.9412</tm:x><tm:y>-205.5297</tm:y></tm:Point>
+              <tm:Point><tm:x>458.9412</tm:x><tm:y>-205.5401</tm:y></tm:Point>
+            </tm:ReferencePoints></tm:BezierCurveGeometry>
+          </tm:TransitionRule>
+          <tm:TransitionRule><tm:id>1</tm:id><tm:length>8.6737</tm:length><tm:width>3.50</tm:width><tm:sourceLinkId>0</tm:sourceLinkId><tm:sourceLaneIndex>0</tm:sourceLaneIndex><tm:destinationLinkId>3</tm:destinationLinkId><tm:destinationLaneIndex>0</tm:destinationLaneIndex>
+            <tm:EditorGroupId>editor_group_1</tm:EditorGroupId>
+            <tm:BezierCurveGeometry><tm:ReferencePoints>
+              <tm:Point><tm:x>448.9412</tm:x><tm:y>-205.5141</tm:y></tm:Point>
+              <tm:Point><tm:x>451.7371</tm:x><tm:y>-205.5214</tm:y></tm:Point>
+              <tm:Point><tm:x>453.8843</tm:x><tm:y>-207.7321</tm:y></tm:Point>
+              <tm:Point><tm:x>453.8122</tm:x><tm:y>-210.5271</tm:y></tm:Point>
+            </tm:ReferencePoints></tm:BezierCurveGeometry>
+          </tm:TransitionRule>
+          <tm:TransitionRule><tm:id>2</tm:id><tm:length>8.6736</tm:length><tm:width>3.50</tm:width><tm:sourceLinkId>2</tm:sourceLinkId><tm:sourceLaneIndex>0</tm:sourceLaneIndex><tm:destinationLinkId>1</tm:destinationLinkId><tm:destinationLaneIndex>0</tm:destinationLaneIndex>
+            <tm:EditorGroupId>editor_group_2</tm:EditorGroupId>
+            <tm:BezierCurveGeometry><tm:ReferencePoints>
+              <tm:Point><tm:x>454.0703</tm:x><tm:y>-200.5271</tm:y></tm:Point>
+              <tm:Point><tm:x>453.9982</tm:x><tm:y>-203.3220</tm:y></tm:Point>
+              <tm:Point><tm:x>456.1453</tm:x><tm:y>-205.5328</tm:y></tm:Point>
+              <tm:Point><tm:x>458.9412</tm:x><tm:y>-205.5401</tm:y></tm:Point>
+            </tm:ReferencePoints></tm:BezierCurveGeometry>
+          </tm:TransitionRule>
+          <tm:TransitionRule><tm:id>3</tm:id><tm:length>10.0033</tm:length><tm:width>3.50</tm:width><tm:sourceLinkId>2</tm:sourceLinkId><tm:sourceLaneIndex>0</tm:sourceLaneIndex><tm:destinationLinkId>3</tm:destinationLinkId><tm:destinationLaneIndex>0</tm:destinationLaneIndex>
+            <tm:EditorGroupId>editor_group_3</tm:EditorGroupId>
+            <tm:BezierCurveGeometry><tm:ReferencePoints>
+              <tm:Point><tm:x>454.0703</tm:x><tm:y>-200.5271</tm:y></tm:Point>
+              <tm:Point><tm:x>453.9671</tm:x><tm:y>-204.5271</tm:y></tm:Point>
+              <tm:Point><tm:x>453.9154</tm:x><tm:y>-206.5271</tm:y></tm:Point>
+              <tm:Point><tm:x>453.8122</tm:x><tm:y>-210.5271</tm:y></tm:Point>
+            </tm:ReferencePoints></tm:BezierCurveGeometry>
+          </tm:TransitionRule>
+        </tm:TransitionRules>
+        <tm:TurnTRGroups>
+          <tm:TurnTRGroup><tm:id>0</tm:id><tm:name>E</tm:name>
+            <tm:BaseBezierCurve><tm:ReferencePoints>
+              <tm:Point><tm:x>448.9412</tm:x><tm:y>-205.5141</tm:y></tm:Point>
+              <tm:Point><tm:x>451.9412</tm:x><tm:y>-205.5219</tm:y></tm:Point>
+              <tm:Point><tm:x>455.9412</tm:x><tm:y>-205.5323</tm:y></tm:Point>
+              <tm:Point><tm:x>458.9412</tm:x><tm:y>-205.5401</tm:y></tm:Point>
+            </tm:ReferencePoints></tm:BaseBezierCurve>
+            <tm:TransitionRules>
+              <tm:TransitionRule><tm:transitionRuleId>0</tm:transitionRuleId></tm:TransitionRule>
+            </tm:TransitionRules>
+          </tm:TurnTRGroup>
+          <tm:TurnTRGroup><tm:id>1</tm:id><tm:name>S</tm:name>
+            <tm:BaseBezierCurve><tm:ReferencePoints>
+              <tm:Point><tm:x>454.0703</tm:x><tm:y>-200.5271</tm:y></tm:Point>
+              <tm:Point><tm:x>453.9929</tm:x><tm:y>-203.5271</tm:y></tm:Point>
+              <tm:Point><tm:x>453.8896</tm:x><tm:y>-207.5271</tm:y></tm:Point>
+              <tm:Point><tm:x>453.8122</tm:x><tm:y>-210.5271</tm:y></tm:Point>
+            </tm:ReferencePoints></tm:BaseBezierCurve>
+            <tm:TransitionRules>
+              <tm:TransitionRule><tm:transitionRuleId>3</tm:transitionRuleId></tm:TransitionRule>
+            </tm:TransitionRules>
+          </tm:TurnTRGroup>
+        </tm:TurnTRGroups>
+        <tm:PolygonGeometry>
+          <tm:Point><tm:x>448.9457</tm:x><tm:y>-203.7641</tm:y></tm:Point>
+          <tm:Point><tm:x>452.3209</tm:x><tm:y>-200.4820</tm:y></tm:Point>
+          <tm:Point><tm:x>455.8197</tm:x><tm:y>-200.5722</tm:y></tm:Point>
+          <tm:Point><tm:x>458.9457</tm:x><tm:y>-203.7901</tm:y></tm:Point>
+          <tm:Point><tm:x>458.9367</tm:x><tm:y>-207.2901</tm:y></tm:Point>
+          <tm:Point><tm:x>455.5616</tm:x><tm:y>-210.5722</tm:y></tm:Point>
+          <tm:Point><tm:x>452.0628</tm:x><tm:y>-210.4820</tm:y></tm:Point>
+          <tm:Point><tm:x>448.9367</tm:x><tm:y>-207.2641</tm:y></tm:Point>
+        </tm:PolygonGeometry>
+      </tm:RegularNode>
+    </tm:Nodes>
+  </tm:RoadNetwork>
+  <tm:Agents>
+    <tm:TrafficLightNetworks>
+      <tm:RegularTrafficLightNetwork><tm:regularNodeId>0</tm:regularNodeId>
+        <tm:TrafficLights>
+          <tm:TrafficLight><tm:id>0</tm:id><tm:name>E</tm:name><tm:Placement><tm:turnTRGroupId>0</tm:turnTRGroupId></tm:Placement></tm:TrafficLight>
+          <tm:TrafficLight><tm:id>1</tm:id><tm:name>S</tm:name><tm:Placement><tm:turnTRGroupId>1</tm:turnTRGroupId></tm:Placement></tm:TrafficLight>
+        </tm:TrafficLights>
+        <tm:scheduleTimeShift>5</tm:scheduleTimeShift>
+        <tm:Schedule><tm:TimePeriods>
+          <tm:TimePeriod><tm:duration>10</tm:duration>
+            <tm:TrafficLightSignal><tm:trafficLightId>0</tm:trafficLightId><tm:signal>Green</tm:signal></tm:TrafficLightSignal>
+            <tm:TrafficLightSignal><tm:trafficLightId>1</tm:trafficLightId><tm:signal>Red</tm:signal></tm:TrafficLightSignal>
+          </tm:TimePeriod>
+          <tm:TimePeriod><tm:duration>3</tm:duration>
+            <tm:TrafficLightSignal><tm:trafficLightId>0</tm:trafficLightId><tm:signal>Yellow</tm:signal></tm:TrafficLightSignal>
+            <tm:TrafficLightSignal><tm:trafficLightId>1</tm:trafficLightId><tm:signal>Red</tm:signal></tm:TrafficLightSignal>
+          </tm:TimePeriod>
+          <tm:TimePeriod><tm:duration>2</tm:duration>
+            <tm:TrafficLightSignal><tm:trafficLightId>0</tm:trafficLightId><tm:signal>Red</tm:signal></tm:TrafficLightSignal>
+            <tm:TrafficLightSignal><tm:trafficLightId>1</tm:trafficLightId><tm:signal>Red</tm:signal></tm:TrafficLightSignal>
+          </tm:TimePeriod>
+          <tm:TimePeriod><tm:duration>10</tm:duration>
+            <tm:TrafficLightSignal><tm:trafficLightId>0</tm:trafficLightId><tm:signal>Red</tm:signal></tm:TrafficLightSignal>
+            <tm:TrafficLightSignal><tm:trafficLightId>1</tm:trafficLightId><tm:signal>Green</tm:signal></tm:TrafficLightSignal>
+          </tm:TimePeriod>
+          <tm:TimePeriod><tm:duration>3</tm:duration>
+            <tm:TrafficLightSignal><tm:trafficLightId>0</tm:trafficLightId><tm:signal>Red</tm:signal></tm:TrafficLightSignal>
+            <tm:TrafficLightSignal><tm:trafficLightId>1</tm:trafficLightId><tm:signal>Yellow</tm:signal></tm:TrafficLightSignal>
+          </tm:TimePeriod>
+          <tm:TimePeriod><tm:duration>2</tm:duration>
+            <tm:TrafficLightSignal><tm:trafficLightId>0</tm:trafficLightId><tm:signal>Red</tm:signal></tm:TrafficLightSignal>
+            <tm:TrafficLightSignal><tm:trafficLightId>1</tm:trafficLightId><tm:signal>Red</tm:signal></tm:TrafficLightSignal>
+          </tm:TimePeriod>
+        </tm:TimePeriods></tm:Schedule>
+        <tm:AdvancedScheduling enabled="true">
+          <tm:Schedules>
+            <tm:ScheduleDef id="Sched_A" name="舊版預設時制 (A)" timeShift="5">
+              <tm:Phases>
+                <tm:Phase duration="30">
+                  <tm:Signal groupId="0" state="Green"/>
+                </tm:Phase>
+                <tm:Phase duration="3">
+                  <tm:Signal groupId="1" state="Red"/>
+                  <tm:Signal groupId="0" state="Yellow"/>
+                </tm:Phase>
+                <tm:Phase duration="2">
+                </tm:Phase>
+                <tm:Phase duration="30">
+                  <tm:Signal groupId="1" state="Green"/>
+                </tm:Phase>
+                <tm:Phase duration="2">
+                  <tm:Signal groupId="1" state="Yellow"/>
+                </tm:Phase>
+                <tm:Phase duration="3">
+                </tm:Phase>
+              </tm:Phases>
+            </tm:ScheduleDef>
+            <tm:ScheduleDef id="Sched_1" name="自訂時制[1]" timeShift="5">
+              <tm:Phases>
+                <tm:Phase duration="10">
+                  <tm:Signal groupId="0" state="Green"/>
+                  <tm:Signal groupId="1" state="Red"/>
+                </tm:Phase>
+                <tm:Phase duration="3">
+                  <tm:Signal groupId="1" state="Red"/>
+                  <tm:Signal groupId="0" state="Yellow"/>
+                </tm:Phase>
+                <tm:Phase duration="2">
+                </tm:Phase>
+                <tm:Phase duration="10">
+                  <tm:Signal groupId="1" state="Green"/>
+                </tm:Phase>
+                <tm:Phase duration="3">
+                  <tm:Signal groupId="1" state="Yellow"/>
+                </tm:Phase>
+                <tm:Phase duration="2">
+                </tm:Phase>
+              </tm:Phases>
+            </tm:ScheduleDef>
+            <tm:ScheduleDef id="Sched_2" name="自訂時制[2]" timeShift="5">
+              <tm:Phases>
+                <tm:Phase duration="20">
+                  <tm:Signal groupId="0" state="Green"/>
+                </tm:Phase>
+                <tm:Phase duration="3">
+                  <tm:Signal groupId="1" state="Red"/>
+                  <tm:Signal groupId="0" state="Yellow"/>
+                </tm:Phase>
+                <tm:Phase duration="2">
+                </tm:Phase>
+                <tm:Phase duration="20">
+                  <tm:Signal groupId="0" state="Red"/>
+                  <tm:Signal groupId="1" state="Green"/>
+                </tm:Phase>
+                <tm:Phase duration="3">
+                  <tm:Signal groupId="0" state="Red"/>
+                  <tm:Signal groupId="1" state="Yellow"/>
+                </tm:Phase>
+                <tm:Phase duration="2">
+                </tm:Phase>
+              </tm:Phases>
+            </tm:ScheduleDef>
+            <tm:ScheduleDef id="Sched_3" name="自訂時制[3]" timeShift="5">
+              <tm:Phases>
+                <tm:Phase duration="30">
+                  <tm:Signal groupId="0" state="Green"/>
+                  <tm:Signal groupId="1" state="Red"/>
+                </tm:Phase>
+                <tm:Phase duration="3">
+                  <tm:Signal groupId="0" state="Yellow"/>
+                  <tm:Signal groupId="1" state="Red"/>
+                </tm:Phase>
+                <tm:Phase duration="2">
+                </tm:Phase>
+                <tm:Phase duration="30">
+                  <tm:Signal groupId="1" state="Green"/>
+                </tm:Phase>
+                <tm:Phase duration="3">
+                  <tm:Signal groupId="1" state="Yellow"/>
+                </tm:Phase>
+                <tm:Phase duration="2">
+                </tm:Phase>
+              </tm:Phases>
+            </tm:ScheduleDef>
+          </tm:Schedules>
+          <tm:DailyPlans>
+            <tm:Plan id="Plan_1" name="預設日型態">
+              <tm:TimeSwitch time="00:00" scheduleId="Sched_1"/>
+              <tm:TimeSwitch time="12:00" scheduleId="Sched_1"/>
+              <tm:TimeSwitch time="13:00" scheduleId="Sched_2"/>
+              <tm:TimeSwitch time="20:10" scheduleId="Sched_3"/>
+            </tm:Plan>
+            <tm:Plan id="Plan_2" name="自訂型態 2">
+              <tm:TimeSwitch time="00:00" scheduleId="Sched_2"/>
+            </tm:Plan>
+            <tm:Plan id="Plan_3" name="自訂型態 3">
+              <tm:TimeSwitch time="00:00" scheduleId="Sched_3"/>
+            </tm:Plan>
+          </tm:DailyPlans>
+          <tm:WeeklyAssignment>
+            <tm:Day dayOfWeek="1" planId="Plan_1"/>
+            <tm:Day dayOfWeek="2" planId="Plan_1"/>
+            <tm:Day dayOfWeek="3" planId="Plan_1"/>
+            <tm:Day dayOfWeek="4" planId="Plan_1"/>
+            <tm:Day dayOfWeek="5" planId="Plan_1"/>
+            <tm:Day dayOfWeek="6" planId="Plan_2"/>
+            <tm:Day dayOfWeek="7" planId="Plan_3"/>
+          </tm:WeeklyAssignment>
+        </tm:AdvancedScheduling>
+      </tm:RegularTrafficLightNetwork>
+    </tm:TrafficLightNetworks>
+    <tm:Origins>
+    </tm:Origins>
+  </tm:Agents>
+  <tm:Meters>
+  </tm:Meters>
+</tm:TrafficModel>
