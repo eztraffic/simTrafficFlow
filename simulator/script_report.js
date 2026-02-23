@@ -41,20 +41,20 @@ class SignalReportGenerator {
 
             /* 表格與分頁樣式 */
             .page-break {
-                page-break-after: always; /* 列印時強制換頁 */
+                page-break-after: always; 
                 break-after: page;
                 margin-bottom: 40px;
                 padding-bottom: 20px;
                 border-bottom: 2px dashed #aaa;
             }
-            .page-break:last-child { border-bottom: none; page-break-after: auto; break-after: auto; margin-bottom: 0; }
+            .page-break:last-child { border-bottom: none; page-break-after: auto; break-after: auto; margin-bottom: 0; padding-bottom: 0; }
             
-            table.timing-table { width: 100%; border-collapse: collapse; border: 3px solid black; text-align: center; font-size: 14px; }
+            table.timing-table { width: 100%; border-collapse: collapse; border: 3px solid black; text-align: center; font-size: 13px; }
             table.timing-table th, table.timing-table td { border: 1px solid black; padding: 6px 4px; }
             table.timing-table th { background-color: #f2f2f2; font-weight: bold; }
             table.timing-table .section-title { writing-mode: vertical-rl; text-orientation: upright; letter-spacing: 5px; font-weight: bold; width: 30px; }
             table.timing-table .bold-border { border-bottom: 3px solid black; }
-            .phase-diagram-container { width: 100px; height: 100px; margin: 0 auto; border: 1px solid #ccc; background: #fafafa;}
+            .phase-diagram-container { width: 130px; height: 130px; margin: 0 auto; border: 1px solid #ccc; background: #fafafa; display: block; }
             
             @media print {
                 body > *:not(#report-modal) { display: none !important; }
@@ -78,32 +78,28 @@ class SignalReportGenerator {
                     </div>
                 </div>
                 
-                <!-- 選擇器區塊 (列印時隱藏) -->
                 <div class="report-controls report-actions">
                     <div class="report-controls-top">
                         <span style="font-weight: bold;"><i class="fa-solid fa-filter"></i> 選擇要匯出的路口：</span>
                         <div>
                             <button class="btn-mini-action" onclick="SignalReportGenerator.selectAll(true)">全選</button>
                             <button class="btn-mini-action" onclick="SignalReportGenerator.selectAll(false)">全不選</button>
-                            <button class="btn-render" onclick="SignalReportGenerator.renderSelected()" style="margin-left: 10px;"><i class="fa-solid fa-rotate-right"></i> 重新生成報表</button>
+                            <button class="btn-render" onclick="SignalReportGenerator.renderSelected()" style="margin-left: 10px;"><i class="fa-solid fa-rotate-right"></i> 重新生成</button>
                         </div>
                     </div>
                     <div id="node-selector-list" class="node-selector-container"></div>
                 </div>
 
-                <!-- 報表內容渲染區 -->
                 <div id="report-content"></div>
             </div>
         `;
         document.body.appendChild(modal);
     }
 
-    // 全選/全不選輔助函式
     static selectAll(checked) {
         document.querySelectorAll('.node-checkbox').forEach(cb => cb.checked = checked);
     }
 
-    // 啟動 Modal 並載入路口清單
     static showModal(networkData, defaultSelectedNodeId = null) {
         this.init();
         this.networkData = networkData;
@@ -114,7 +110,6 @@ class SignalReportGenerator {
             return;
         }
 
-        // 產生 Checkbox 清單
         const selectorList = document.getElementById('node-selector-list');
         selectorList.innerHTML = '';
         
@@ -127,16 +122,12 @@ class SignalReportGenerator {
         });
 
         document.getElementById('report-modal').style.display = 'flex';
-        
-        // 立即渲染一次
         this.renderSelected();
     }
 
-    // 收集被選取的路口並執行批次渲染
     static renderSelected() {
         const checkboxes = document.querySelectorAll('.node-checkbox:checked');
         const selectedIds = Array.from(checkboxes).map(cb => cb.value);
-        
         const contentDiv = document.getElementById('report-content');
 
         if(selectedIds.length === 0) {
@@ -145,16 +136,14 @@ class SignalReportGenerator {
         }
 
         let combinedHtml = '';
-        this.drawingQueue = []; // 重置繪圖佇列
+        this.drawingQueue = [];
 
-        // 遍歷選取的路口，組合 HTML
         selectedIds.forEach(nodeId => {
             combinedHtml += this.generateSingleNodeHTML(nodeId, this.networkData);
         });
 
         contentDiv.innerHTML = combinedHtml;
 
-        // 等待 DOM 渲染完畢後，執行 Canvas 繪製
         setTimeout(() => {
             this.drawingQueue.forEach(task => {
                 this.drawPhaseDiagram(task.canvasId, task.nodeId, task.greenGroups, this.networkData);
@@ -162,7 +151,6 @@ class SignalReportGenerator {
         }, 150);
     }
 
-    // --- 核心資料轉換邏輯 ---
     static extractPhases(scheduleDef) {
         let phases = [];
         let currentPhase = { G: 0, Y: 0, R: 0, greenGroups: [] };
@@ -203,7 +191,6 @@ class SignalReportGenerator {
         return `${h}:${m}`;
     }
 
-    // --- 產生單一路口的 HTML ---
     static generateSingleNodeHTML(nodeId, networkData) {
         const tflCtrl = networkData.trafficLights.find(t => t.nodeId === nodeId);
         if (!tflCtrl) return '';
@@ -211,35 +198,51 @@ class SignalReportGenerator {
         const advConfig = tflCtrl.advancedConfig;
         let plans = [];
         let maxPhasesCount = 0;
-        let dailyPlansMapping = [];
-        let weeklyMapping = {1:'A', 2:'A', 3:'A', 4:'A', 5:'A', 6:'B', 7:'B'};
+        
+        // ★★★ 解析所有型態 (A, B, C...) 的時段資料 ★★★
+        let planKeys = [];
+        let plansData = {};
+        let maxTimeSegments = 0;
+        let weeklyMapping = {1:'A', 2:'A', 3:'A', 4:'A', 5:'A', 6:'B', 7:'B'}; // 預設值
 
         if (advConfig && Object.keys(advConfig.schedules).length > 0) {
+            // 解析時相秒數
             Object.values(advConfig.schedules).forEach(sched => {
                 const extractedPhases = this.extractPhases(sched);
                 maxPhasesCount = Math.max(maxPhasesCount, extractedPhases.length);
                 plans.push({ id: sched.id, cycle: sched.cycleDuration, offset: sched.timeShift, phases: extractedPhases });
             });
+
+            // 解析時段計畫 (多型態)
             if (Object.keys(advConfig.dailyPlans).length > 0) {
-                const firstPlanKey = Object.keys(advConfig.dailyPlans)[0];
-                const switches = advConfig.dailyPlans[firstPlanKey];
-                for(let i=0; i<switches.length; i++) {
-                    const st = this.formatTime(switches[i].startSeconds);
-                    const ed = (i < switches.length - 1) ? this.formatTime(switches[i+1].startSeconds) : '24:00';
-                    dailyPlansMapping.push({ id: i+1, time: `${st} - ${ed}`, planId: switches[i].scheduleId });
-                }
+                planKeys = Object.keys(advConfig.dailyPlans);
+                planKeys.forEach(pk => {
+                    const switches = advConfig.dailyPlans[pk];
+                    maxTimeSegments = Math.max(maxTimeSegments, switches.length);
+                    
+                    plansData[pk] = switches.map((sw, i) => {
+                        const st = this.formatTime(sw.startSeconds);
+                        const ed = (i < switches.length - 1) ? this.formatTime(switches[i+1].startSeconds) : '24:00';
+                        return { time: `${st} - ${ed}`, scheduleId: sw.scheduleId };
+                    });
+                });
             }
             if (Object.keys(advConfig.weekly).length > 0) weeklyMapping = advConfig.weekly;
         } else {
+            // 單一時制容錯
             const extractedPhases = this.extractPhases(tflCtrl.schedule);
             maxPhasesCount = extractedPhases.length;
             plans.push({ id: '1', cycle: tflCtrl.cycleDuration, offset: tflCtrl.timeShift, phases: extractedPhases });
-            dailyPlansMapping.push({ id: 1, time: '00:00 - 24:00', planId: '1' });
+            
+            planKeys = ['A'];
+            maxTimeSegments = 1;
+            plansData['A'] = [{ time: '00:00 - 24:00', scheduleId: '1' }];
         }
 
-        // 加上 page-break class 進行分頁
         let html = `<div class="page-break">`;
         html += `<div style="margin-bottom: 10px; font-size: 18px;"><b>路口編號：</b> ${nodeId}</div>`;
+        
+        // --- 報表上半部：時相秒數 ---
         html += `
             <table class="timing-table">
                 <tr>
@@ -281,68 +284,78 @@ class SignalReportGenerator {
         }
         html += `</table>`;
 
+        // --- 報表下半部：時相行車簡圖 + 多型態時段管制 ---
         const refPhases = plans[0].phases;
-        const lowerRowCount = Math.max(7, maxPhasesCount);
+        const dayMap = {0: '一', 1: '二', 2: '三', 3: '四', 4: '五', 5: '六', 6: '日'};
+        
+        // 算出總行數需求：時相數 vs 每日時段數 vs 星期天數(7) 取最大值
+        const maxRows = Math.max(maxPhasesCount, maxTimeSegments, 7);
 
         html += `
             <table class="timing-table" style="border-top: none;">
                 <tr>
-                    <td rowspan="${lowerRowCount + 1}" class="section-title" style="border-top: none; border-bottom: none;">時相行車簡圖</td>
-                    <th>時相</th>
-                    <th colspan="2">行車簡圖 (自動化生成)</th>
-                    <th colspan="3">時段管制計畫</th>
-                    <th>星期</th>
-                    <th>型態</th>
+                    <td rowspan="${maxRows + 2}" class="section-title" style="border-top: none; border-bottom: none;">時相行車簡圖</td>
+                    <th rowspan="2">時相</th>
+                    <th rowspan="2" style="width: 140px;">行車簡圖 (自動生成)</th>
+                    
+                    <td rowspan="${maxRows + 2}" class="section-title" style="border-top: none; border-bottom: none; width:30px;">時段管制計畫</td>
+                    <th rowspan="2">時段</th>
+                    ${planKeys.map(k => `<th colspan="2">型態 ${k}</th>`).join('')}
+                    
+                    <th rowspan="2">星期</th>
+                    <th rowspan="2">型態</th>
+                </tr>
+                <tr>
+                    ${planKeys.map(k => `<th>時間</th><th>時制</th>`).join('')}
                 </tr>
         `;
 
-        for (let i = 0; i < maxPhasesCount; i++) {
-            const timePlanRow = dailyPlansMapping[i] || { id: '', time: '', planId: '' };
-            const dayMap = {0: '一', 1: '二', 2: '三', 3: '四', 4: '五', 5: '六', 6: '日'};
-            const dayType = weeklyMapping[i+1] || '-';
+        for (let r = 0; r < maxRows; r++) {
+            html += `<tr>`;
             
-            // 獨立的 Canvas ID
-            const canvasId = `phase-canvas-${nodeId}-${i}`;
-
-            html += `
-                <tr>
-                    <th>G${i+1}</th>
-                    <td colspan="2"><canvas id="${canvasId}" class="phase-diagram-container" width="200" height="200"></canvas></td>
-                    <td>${timePlanRow.id}</td>
-                    <td>${timePlanRow.time}</td>
-                    <td>${timePlanRow.planId}</td>
-                    <td>${dayMap[i] || ''}</td>
-                    <td>${dayType}</td>
-                </tr>
-            `;
-
-            // 將畫圖任務加入佇列
-            if (refPhases[i]) {
-                this.drawingQueue.push({ canvasId, nodeId, greenGroups: refPhases[i].greenGroups });
+            // 左側：時相簡圖
+            if (r < maxPhasesCount) {
+                const canvasId = `phase-canvas-${nodeId}-${r}`;
+                html += `<th>G${r+1}</th><td style="padding: 10px 0;"><canvas id="${canvasId}" class="phase-diagram-container" width="200" height="200"></canvas></td>`;
+                if (refPhases[r]) {
+                    this.drawingQueue.push({ canvasId, nodeId, greenGroups: refPhases[r].greenGroups });
+                }
+            } else {
+                // 空白時相欄位 (隱藏邊界)
+                html += `<td colspan="2" style="border-top: none; border-bottom: none; border-left: none; border-right: 1px solid black;"></td>`;
             }
-        }
-        
-        for(let i = maxPhasesCount; i < lowerRowCount; i++) {
-            const timePlanRow = dailyPlansMapping[i] || { id: '', time: '', planId: '' };
-            const dayMap = {0: '一', 1: '二', 2: '三', 3: '四', 4: '五', 5: '六', 6: '日'};
-            const dayType = weeklyMapping[i+1] || '-';
-            html += `
-                <tr>
-                    <td colspan="3" style="border-top: none; border-bottom: none; border-left: none; border-right: 1px solid black;"></td>
-                    <td>${timePlanRow.id}</td>
-                    <td>${timePlanRow.time}</td>
-                    <td>${timePlanRow.planId}</td>
-                    <td>${dayMap[i] || ''}</td>
-                    <td>${dayType}</td>
-                </tr>
-            `;
+
+            // 中間：時段
+            if (r < maxTimeSegments) {
+                html += `<td>${r+1}</td>`;
+            } else {
+                html += `<td></td>`; // 保留格線
+            }
+
+            // 右側區塊一：各型態計畫的時段
+            planKeys.forEach(pk => {
+                const step = plansData[pk][r];
+                if (step) {
+                    html += `<td>${step.time}</td><td>${step.scheduleId}</td>`;
+                } else {
+                    html += `<td></td><td></td>`; // 保留格線
+                }
+            });
+
+            // 右側區塊二：每週型態指定
+            if (r < 7) {
+                html += `<td>${dayMap[r]}</td><td>${weeklyMapping[r+1] || '-'}</td>`;
+            } else {
+                html += `<td></td><td></td>`; // 保留格線
+            }
+
+            html += `</tr>`;
         }
 
-        html += `</table></div>`; // 結束 page-break div
+        html += `</table></div>`;
         return html;
     }
 
-    // --- Canvas 繪圖邏輯 ---
     static drawPhaseDiagram(canvasId, nodeId, greenGroups, networkData) {
         const canvas = document.getElementById(canvasId);
         if (!canvas) return;
