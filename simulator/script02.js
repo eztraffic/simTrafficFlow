@@ -359,6 +359,57 @@ document.addEventListener('DOMContentLoaded', () => {
     const droneToggle = document.getElementById('droneToggle');
     const layerSelector = document.getElementById('layerSelector'); // 新增
 
+// =================================================================
+    // ★★★ 新增：自動產出時制計畫書按鈕 (支援多選與分頁) ★★★
+    // =================================================================
+    const layerControlsRow = document.querySelector('.layer-controls .toggles-row');
+    if (layerControlsRow) {
+        const divLine = document.createElement('div');
+        divLine.className = 'divider-v';
+        layerControlsRow.appendChild(divLine);
+
+        const reportBtn = document.createElement('button');
+        reportBtn.className = 'btn-mini';
+        reportBtn.innerHTML = '<i class="fa-solid fa-file-pdf"></i> 時制表';
+        reportBtn.title = "自動產出路口時制計畫書 (可多選)";
+        reportBtn.style.cursor = "pointer";
+        reportBtn.style.padding = "4px 8px";
+        reportBtn.style.background = "#06b6d4";
+        reportBtn.style.color = "#fff";
+        reportBtn.style.border = "none";
+        reportBtn.style.borderRadius = "4px";
+        reportBtn.style.fontWeight = "bold";
+
+        reportBtn.addEventListener('click', () => {
+            if (!simulation || !networkData) {
+                alert("請先載入路網檔案 (.xml)！");
+                return;
+            }
+            if (networkData.trafficLights.length === 0) {
+                alert("目前載入的路網中沒有包含任何號誌路口！");
+                return;
+            }
+
+            // 預設路口邏輯：若員警模式有選取，預設勾選該路口；否則預設全選或選取第一個
+            let targetNodeId = null;
+            if (typeof policeController !== 'undefined' && policeController.selectedNodeId) {
+                targetNodeId = policeController.selectedNodeId;
+            } else {
+                targetNodeId = networkData.trafficLights[0].nodeId; // 預設提供第一個做為焦點
+            }
+
+            // 呼叫支援多選的 Modal
+            if (typeof SignalReportGenerator !== 'undefined') {
+                SignalReportGenerator.showModal(networkData, targetNodeId);
+            } else {
+                alert("找不到報表生成模組 (script_report.js 未正確載入)");
+            }
+        });
+
+        layerControlsRow.appendChild(reportBtn);
+    }
+    // =================================================================
+
     // --- State Variables ---
     let simulation = null;
     let networkData = null;
