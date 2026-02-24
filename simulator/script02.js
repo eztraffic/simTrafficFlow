@@ -2785,6 +2785,78 @@ document.addEventListener('DOMContentLoaded', () => {
         return group;
     }
 
+// ===================================================================
+    // 3D 懸浮文字面板 (HUD Sprite) 產生與更新工具
+    // ===================================================================
+    // ===================================================================
+    // 3D 懸浮文字面板 (HUD Sprite) 產生與更新工具
+    // ===================================================================
+    function createMeterSprite(title, speedText, colorHex) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 256;
+        canvas.height = 128;
+        const ctx = canvas.getContext('2d');
+
+        // 將繪圖邏輯獨立，方便後續更新
+        drawMeterCanvas(ctx, title, speedText, colorHex);
+
+        const texture = new THREE.CanvasTexture(canvas);
+        texture.minFilter = THREE.LinearFilter;
+        
+        const spriteMaterial = new THREE.SpriteMaterial({ 
+            map: texture, 
+            transparent: true,
+            // 【修正關鍵 1】開啟深度測試。這樣如果前方有建築物(寫入深度緩衝)，面板就會被正確遮住
+            depthTest: true 
+        });
+        
+        const sprite = new THREE.Sprite(spriteMaterial);
+        sprite.scale.set(8, 4, 1); // 調整在 3D 世界中的大小
+        
+        // 【修正關鍵 2】移除強制的最上層渲染順序 (刪除 renderOrder = 999)
+        // 讓 Three.js 依照原本透明物件的深度演算法自動排序即可
+
+        // 將 Context 與 Texture 存入 userData，以便每秒更新而不用重新建立物件
+        sprite.userData = { canvas, ctx, texture, colorHex, title };
+        return sprite;
+    }
+
+    function drawMeterCanvas(ctx, title, speedText, colorHex) {
+        ctx.clearRect(0, 0, 256, 128);
+
+        // 畫半透明科技感背景框
+        ctx.fillStyle = 'rgba(10, 20, 30, 0.7)';
+        ctx.beginPath();
+        ctx.roundRect(10, 10, 236, 108, 10); // 若舊瀏覽器不支援 roundRect，可改用 fillRect
+        ctx.fill();
+
+        // 畫發光邊框
+        ctx.strokeStyle = colorHex;
+        ctx.lineWidth = 3;
+        ctx.shadowColor = colorHex;
+        ctx.shadowBlur = 10;
+        ctx.stroke();
+        ctx.shadowBlur = 0; // 重置陰影以免影響文字
+
+        // 寫入標題 (VD-1, AVI-2 等)
+        ctx.font = 'bold 24px "Microsoft JhengHei", Arial';
+        ctx.fillStyle = '#AAAAAA';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(title, 128, 40);
+
+        // 寫入車速
+        ctx.font = 'bold 42px "Microsoft JhengHei", Arial';
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillText(speedText, 128, 85);
+    }
+
+    function updateMeterSprite(sprite, speedText) {
+        if (!sprite || !sprite.userData) return;
+        const { ctx, texture, colorHex, title } = sprite.userData;
+        drawMeterCanvas(ctx, title, speedText, colorHex);
+        texture.needsUpdate = true; // 標記為需要更新至 WebGL
+    }
 
     function buildNetwork3D(netData) {
         networkGroup.clear();
@@ -3407,27 +3479,88 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
 
-        // --- 5. Debug Meters ---
+       // =================================================================
+        // --- 5. 科技感偵測器 (Meters) ---
+        // =================================================================
+        
+        // --- A. 定點偵測器 (方案 C：路面科技光圈 + 懸浮面板) ---
         if (netData.speedMeters) {
-            const boxGeo = new THREE.BoxGeometry(2, 6, 2);
+            // 建立一個扁平的光圈幾何體
+            const ringGeo = new THREE.RingGeometry(1.2, 2.0, 32);
+            // 科技藍綠色 (Cyan)
+            const vdColor = '#00FFFF';
+            const techMat = new THREE.MeshBasicMaterial({ 
+                color: 0x00FFFF, 
+                transparent: true, 
+                opacity: 0.6, 
+                side: THREE.DoubleSide,
+                depthWrite: false // 避免與路面產生 Z-Fighting
+            });
+
             netData.speedMeters.forEach(meter => {
-                const mesh = new THREE.Mesh(boxGeo, meterMat);
-                mesh.position.set(meter.x, 3, meter.y);
-                mesh.name = `meter_point_${meter.id}`;
-                debugGroup.add(mesh);
+                const group = new THREE.Group();
+                group.name = `meter_point_${meter.id}`;
+                
+                // 1. 地面光圈
+                const ring = new THREE.Mesh(ringGeo, techMat);
+                ring.rotation.x = -Math.PI / 2;
+                ring.position.set(meter.x, 0.15, meter.y); // 略高於路面
+                group.add(ring);
+
+                // 2. 懸浮面板 (HUD)
+                const sprite = createMeterSprite(`VD ${meter.id}`, "-- km/h", vdColor);
+                sprite.position.set(meter.x, 4.5, meter.y); // 懸浮於 4.5 米高空
+                group.add(sprite);
+
+                // 將 Sprite 參考存入 meter 資料中，方便後續更新
+                meter.spriteRef = sprite;
+                debugGroup.add(group);
             });
         }
+
+        // --- B. 區間偵測器 (方案 C：立桿 + 雷射連線 + 懸浮面板) ---
         if (netData.sectionMeters) {
-            const boxGeo = new THREE.BoxGeometry(2, 6, 2);
+            const poleGeo = new THREE.CylinderGeometry(0.15, 0.2, 6, 8);
+            const poleMat = new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.8 });
+            
+            // 科技紫紅色 (Magenta)
+            const aviColor = '#FF00FF';
+            const laserMat = new THREE.LineBasicMaterial({ color: 0xFF00FF, transparent: true, opacity: 0.8, linewidth: 3 });
+
             netData.sectionMeters.forEach(meter => {
-                const startMesh = new THREE.Mesh(boxGeo, sectionMat);
-                startMesh.position.set(meter.startX, 3, meter.startY);
-                startMesh.name = `meter_section_${meter.id}_start`;
-                debugGroup.add(startMesh);
-                const endMesh = new THREE.Mesh(boxGeo, sectionMat);
-                endMesh.position.set(meter.endX, 3, meter.endY);
-                endMesh.name = `meter_section_${meter.id}_end`;
-                debugGroup.add(endMesh);
+                const group = new THREE.Group();
+                group.name = `meter_section_${meter.id}`;
+
+                // 1. 起點與終點立桿
+                const startPole = new THREE.Mesh(poleGeo, poleMat);
+                startPole.position.set(meter.startX, 3, meter.startY); // 高度一半
+                startPole.castShadow = true;
+                group.add(startPole);
+
+                const endPole = new THREE.Mesh(poleGeo, poleMat);
+                endPole.position.set(meter.endX, 3, meter.endY);
+                endPole.castShadow = true;
+                group.add(endPole);
+
+                // 2. 空中雷射連線 (高度 5.8m)
+                const laserGeo = new THREE.BufferGeometry().setFromPoints([
+                    new THREE.Vector3(meter.startX, 5.8, meter.startY),
+                    new THREE.Vector3(meter.endX, 5.8, meter.endY)
+                ]);
+                const laserLine = new THREE.Line(laserGeo, laserMat);
+                group.add(laserLine);
+
+                // 3. 懸浮面板 (HUD) - 放在區間的正中間
+                const midX = (meter.startX + meter.endX) / 2;
+                const midY = (meter.startY + meter.endY) / 2;
+                
+                const sprite = createMeterSprite(`AVI ${meter.id}`, "-- km/h", aviColor);
+                sprite.position.set(midX, 7.5, midY); // 懸浮於雷射線上方
+                group.add(sprite);
+
+                // 將 Sprite 參考存入 meter 資料中
+                meter.spriteRef = sprite;
+                debugGroup.add(group);
             });
         }
 
@@ -8649,9 +8782,105 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     function updateStatistics(time) {
         if (!simulation) return;
-        const vehicles = simulation.vehicles; const vehicleCount = vehicles.length; let avgSpeedKmh = 0; if (vehicleCount > 0) { const totalSpeed = vehicles.reduce((sum, v) => sum + v.speed, 0); avgSpeedKmh = (totalSpeed / vehicleCount) * 3.6; } maxVehicleCount = Math.max(maxVehicleCount, vehicleCount); maxAvgSpeed = Math.max(maxAvgSpeed, avgSpeedKmh); const newData = { time, count: vehicleCount, speed: avgSpeedKmh }; if (!statsData.some(d => d.time === time)) { statsData.push(newData); } updateStatsUI(newData);
-        simulation.speedMeters.forEach(meter => { const chart = meterCharts[meter.id]; if (!chart) return; const dict = translations[currentLang]; let currentMaxSpeed = 0; for (const key in meter.readings) { const readings = meter.readings[key]; if (readings.length > 0) { const totalSpeed = readings.reduce((sum, s) => sum + s, 0); const avgSpeedMs = totalSpeed / readings.length; const meterAvgSpeedKmh = avgSpeedMs * 3.6; currentMaxSpeed = Math.max(currentMaxSpeed, meterAvgSpeedKmh); const label = (key === 'all') ? dict.allLanesLabel : `${dict.laneLabel} ${key}`; const dataset = chart.data.datasets.find(d => d.label === label); if (dataset) { dataset.data.push({ x: time, y: meterAvgSpeedKmh }); } } } meter.maxAvgSpeed = Math.max(meter.maxAvgSpeed, currentMaxSpeed); chart.options.scales.y.max = meter.maxAvgSpeed > 10 ? Math.ceil(meter.maxAvgSpeed * 1.1) : 60; chart.update('none'); meter.readings = {}; });
-        simulation.sectionMeters.forEach(meter => { const chart = sectionMeterCharts[meter.id]; if (!chart) return; if (meter.completedVehicles.length > 0) { const totalSpeed = meter.completedVehicles.reduce((sum, v) => sum + v.speed, 0); const avgSpeed = totalSpeed / meter.completedVehicles.length; chart.data.datasets[0].data.push({ x: time, y: avgSpeed }); meter.lastAvgSpeed = avgSpeed; meter.maxAvgSpeed = Math.max(meter.maxAvgSpeed, avgSpeed); } else if (meter.lastAvgSpeed !== null) { chart.data.datasets[0].data.push({ x: time, y: meter.lastAvgSpeed }); } chart.options.scales.y.max = meter.maxAvgSpeed > 10 ? Math.ceil(meter.maxAvgSpeed * 1.1) : 60; chart.update('none'); meter.completedVehicles = []; });
+        const vehicles = simulation.vehicles; 
+        const vehicleCount = vehicles.length; 
+        let avgSpeedKmh = 0; 
+        if (vehicleCount > 0) { 
+            const totalSpeed = vehicles.reduce((sum, v) => sum + v.speed, 0); 
+            avgSpeedKmh = (totalSpeed / vehicleCount) * 3.6; 
+        } 
+        maxVehicleCount = Math.max(maxVehicleCount, vehicleCount); 
+        maxAvgSpeed = Math.max(maxAvgSpeed, avgSpeedKmh); 
+        const newData = { time, count: vehicleCount, speed: avgSpeedKmh }; 
+        if (!statsData.some(d => d.time === time)) { statsData.push(newData); } 
+        updateStatsUI(newData);
+
+        // --- 1. 更新定點偵測器 (Point Meters) ---
+        simulation.speedMeters.forEach(meter => { 
+            const chart = meterCharts[meter.id]; 
+            const dict = translations[currentLang]; 
+            let currentMaxSpeed = 0; 
+            
+            // 【修正關鍵 1】從 networkData 抓回帶有 spriteRef 的原始物件
+            const netMeter = networkData.speedMeters.find(m => m.id === meter.id);
+            
+            let displaySpeedText = "--";
+
+            for (const key in meter.readings) { 
+                const readings = meter.readings[key]; 
+                if (readings.length > 0) { 
+                    const totalSpeed = readings.reduce((sum, s) => sum + s, 0); 
+                    const avgSpeedMs = totalSpeed / readings.length; 
+                    const meterAvgSpeedKmh = avgSpeedMs * 3.6; 
+                    currentMaxSpeed = Math.max(currentMaxSpeed, meterAvgSpeedKmh); 
+                    
+                    if (chart) {
+                        const label = (key === 'all') ? dict.allLanesLabel : `${dict.laneLabel} ${key}`; 
+                        const dataset = chart.data.datasets.find(d => d.label === label); 
+                        if (dataset) { dataset.data.push({ x: time, y: meterAvgSpeedKmh }); }
+                    }
+
+                    // 抓取 'all' 的平均速度，並記錄下來防止閃爍
+                    if (key === 'all') {
+                        displaySpeedText = meterAvgSpeedKmh.toFixed(1);
+                        meter.lastAvgSpeed = meterAvgSpeedKmh; // 紀錄最後車速
+                    }
+                } 
+            } 
+
+            // 如果這秒沒車經過，就顯示最後一次的車速，避免變成 --
+            if (displaySpeedText === "--" && meter.lastAvgSpeed !== undefined) {
+                displaySpeedText = meter.lastAvgSpeed.toFixed(1);
+            }
+
+            // ★ 同步更新 3D 面板文字 (使用 netMeter.spriteRef)
+            if (netMeter && netMeter.spriteRef) {
+                const finalString = displaySpeedText === "--" ? "-- km/h" : `${displaySpeedText} km/h`;
+                updateMeterSprite(netMeter.spriteRef, finalString);
+            }
+
+            if (chart) {
+                meter.maxAvgSpeed = Math.max(meter.maxAvgSpeed, currentMaxSpeed); 
+                chart.options.scales.y.max = meter.maxAvgSpeed > 10 ? Math.ceil(meter.maxAvgSpeed * 1.1) : 60; 
+                chart.update('none'); 
+            }
+            meter.readings = {}; 
+        });
+
+        // --- 2. 更新區間偵測器 (Section Meters) ---
+        simulation.sectionMeters.forEach(meter => { 
+            const chart = sectionMeterCharts[meter.id]; 
+            
+            // 【修正關鍵 2】從 networkData 抓回帶有 spriteRef 的原始物件
+            const netMeter = networkData.sectionMeters.find(m => m.id === meter.id);
+            let displaySpeedText = "--";
+
+            if (meter.completedVehicles.length > 0) { 
+                const totalSpeed = meter.completedVehicles.reduce((sum, v) => sum + v.speed, 0); 
+                const avgSpeed = totalSpeed / meter.completedVehicles.length; 
+                if (chart) chart.data.datasets[0].data.push({ x: time, y: avgSpeed }); 
+                
+                meter.lastAvgSpeed = avgSpeed; 
+                meter.maxAvgSpeed = Math.max(meter.maxAvgSpeed, avgSpeed); 
+                displaySpeedText = avgSpeed.toFixed(1);
+            } else if (meter.lastAvgSpeed !== null) { 
+                if (chart) chart.data.datasets[0].data.push({ x: time, y: meter.lastAvgSpeed }); 
+                
+                displaySpeedText = meter.lastAvgSpeed.toFixed(1);
+            } 
+
+            // ★ 同步更新 3D 面板文字 (使用 netMeter.spriteRef)
+            if (netMeter && netMeter.spriteRef) {
+                const finalString = displaySpeedText === "--" ? "-- km/h" : `${displaySpeedText} km/h`;
+                updateMeterSprite(netMeter.spriteRef, finalString);
+            }
+
+            if (chart) {
+                chart.options.scales.y.max = meter.maxAvgSpeed > 10 ? Math.ceil(meter.maxAvgSpeed * 1.1) : 60; 
+                chart.update('none'); 
+            }
+            meter.completedVehicles = []; 
+        });
     }
     function updateStatsUI(data, isRepopulating = false) { if (!isRepopulating) { const newRow = statsTableBody.insertRow(0); newRow.insertCell(0).textContent = data.time; newRow.insertCell(1).textContent = data.count; newRow.insertCell(2).textContent = data.speed.toFixed(2); if (statsTableBody.rows.length > 200) statsTableBody.deleteRow(-1); } if (vehicleCountChart && !vehicleCountChart.data.labels.includes(data.time)) { vehicleCountChart.data.labels.push(data.time); vehicleCountChart.data.datasets[0].data.push(data.count); vehicleCountChart.options.scales.y.max = maxVehicleCount > 10 ? Math.ceil(maxVehicleCount * 1.1) : 10; vehicleCountChart.update('none'); } if (avgSpeedChart && !avgSpeedChart.data.labels.includes(data.time)) { avgSpeedChart.data.labels.push(data.time); avgSpeedChart.data.datasets[0].data.push(data.speed); avgSpeedChart.options.scales.y.max = maxAvgSpeed > 10 ? Math.ceil(maxAvgSpeed * 1.1) : 10; avgSpeedChart.update('none'); } }
     function resetStatistics() { statsData = []; lastLoggedIntegerTime = -1; maxVehicleCount = 0; maxAvgSpeed = 0; statsTableBody.innerHTML = ''; initializeCharts(); meterChartsContainer.innerHTML = ''; meterCharts = {}; sectionMeterChartsContainer.innerHTML = ''; sectionMeterCharts = {}; }
