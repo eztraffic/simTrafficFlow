@@ -120,6 +120,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
+
     let currentLang = 'zh-Hant';
     let currentViewMode = '2D';
 
@@ -264,6 +265,11 @@ document.addEventListener('DOMContentLoaded', () => {
             pegman.style.display = (isDisplay2D && networkData && !isDisplay3D) ? 'block' : 'none';
         }
 
+        // --- ★ 新增：切換 3D 時隱藏經緯度 ---
+        if (coordDisplay) {
+            coordDisplay.style.display = 'none';
+        }
+
         currentViewMode = isDisplay3D ? '3D' : '2D';
 
         if (!isDisplay3D) {
@@ -333,6 +339,28 @@ document.addEventListener('DOMContentLoaded', () => {
     const langSelector = document.getElementById('langSelector');
     const fileInput = document.getElementById('xmlFileInput');
     const canvasContainer = document.getElementById('canvas-container');
+
+    // ==========================================
+    // ★★★ 新增：經緯度顯示 UI 元素 ★★★
+    // ==========================================
+    const coordDisplay = document.createElement('div');
+    coordDisplay.id = 'coord-display';
+    coordDisplay.style.position = 'absolute';
+    coordDisplay.style.bottom = '5px'; // 放在黃色小人 (bottom:30px) 的下方
+    coordDisplay.style.right = '30px';
+    coordDisplay.style.backgroundColor = 'rgba(0, 0, 0, 0.6)';
+    coordDisplay.style.color = '#00FFFF'; // 科技感青色
+    coordDisplay.style.padding = '4px 8px';
+    coordDisplay.style.borderRadius = '4px';
+    coordDisplay.style.fontSize = '12px';
+    coordDisplay.style.fontFamily = "'Roboto Mono', monospace";
+    coordDisplay.style.pointerEvents = 'none'; // 滑鼠穿透
+    coordDisplay.style.zIndex = '1000';
+    coordDisplay.style.display = 'none';
+    canvasContainer.appendChild(coordDisplay);
+    // ==========================================
+
+    
     const placeholderText = document.getElementById('placeholder-text');
     const canvas2D = document.getElementById('networkCanvas');
     const ctx2D = canvas2D.getContext('2d');
@@ -359,7 +387,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const droneToggle = document.getElementById('droneToggle');
     const layerSelector = document.getElementById('layerSelector'); // 新增
 
-// =================================================================
+    // =================================================================
     // ★★★ 新增：自動產出時制計畫書按鈕 (支援多選與分頁) ★★★
     // =================================================================
     const layerControlsRow = document.querySelector('.layer-controls .toggles-row');
@@ -528,7 +556,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (digitalTwinToggle) {
         digitalTwinToggle.addEventListener('change', (e) => {
             isDigitalTwinMode = e.target.checked;
-            
+
             if (isDigitalTwinMode) {
                 // 開啟數位孿生：強制 1 倍速，鎖定滑桿
                 speedSlider.value = 1;
@@ -689,18 +717,30 @@ document.addEventListener('DOMContentLoaded', () => {
         const mouseX = e.clientX - rect.left;
         const mouseY = e.clientY - rect.top;
 
-        // ★★★ [新增] 處理 Overlay 拖曳移動 ★★★
+        // ★★★ [新增] 更新經緯度顯示 ★★★
+        if (isDisplay2D && networkData && networkData.geoAnchors && networkData.geoAnchors.length >= 2) {
+            const worldPos = screenToWorld2D(mouseX, mouseY);
+            const latLon = worldToLatLon(worldPos.x, worldPos.y, networkData.geoAnchors);
+            if (latLon) {
+                //coordDisplay.innerHTML = `Lat: ${latLon.lat.toFixed(6)}<br>Lon: ${latLon.lon.toFixed(6)}`;
+                coordDisplay.innerHTML = `Lat: ${latLon.lat.toFixed(6)} Lon: ${latLon.lon.toFixed(6)}`;
+                coordDisplay.style.display = 'block';
+            }
+        } else {
+            coordDisplay.style.display = 'none';
+        }
+
+        // --- 以下保持原有的 Overlay 與地圖拖曳邏輯 ---
         if (typeof optimizerController !== 'undefined' && optimizerController.isActive) {
             if (optimizerController.handleOverlayMouseMove(mouseX, mouseY)) {
                 return;
             }
         }
 
-        // ★★★ 優先檢查：是否正在拖曳 AI 資訊浮窗？ ★★★
         if (aiController && aiController.isActive) {
             if (aiController.handleMouseMove(mouseX, mouseY)) {
-                if (!isRunning) redraw2D(); // 暫停時需手動重繪以顯示拖曳效果
-                return; // 阻止地圖移動
+                if (!isRunning) redraw2D();
+                return;
             }
         }
 
@@ -724,7 +764,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     canvas2D.addEventListener('mousemove', handlePanMove2D);
     canvas2D.addEventListener('mouseup', handlePanEnd2D);
-    canvas2D.addEventListener('mouseleave', handlePanEnd2D);
+    // 替換原有的 mouseleave 事件
+    canvas2D.addEventListener('mouseleave', (e) => {
+        // ★★★ [新增] 滑鼠移出時隱藏經緯度 ★★★
+        if (coordDisplay) coordDisplay.style.display = 'none';
+        handlePanEnd2D(e);
+    });
     canvas2D.addEventListener('click', handle2DVehiclePick);
 
     // --- Layer Selector ---
@@ -1774,6 +1819,27 @@ document.addEventListener('DOMContentLoaded', () => {
 
         return { x: wx, y: wy };
     }
+    // --- 新增：內部座標轉經緯度 (線性插值) ---
+    function worldToLatLon(worldX, worldY, anchors) {
+        if (!anchors || anchors.length < 2) return null;
+
+        const a1 = anchors[0];
+        const a2 = anchors[1];
+
+        const dx = a2.x - a1.x;
+        const dy = a2.y - a1.y;
+        const dLat = a2.lat - a1.lat;
+        const dLon = a2.lon - a1.lon;
+
+        // 避免除以零的極端情況
+        if (dx === 0 || dy === 0) return null;
+
+        // X 對應 Longitude，Y 對應 Latitude (假設地圖無嚴重旋轉)
+        const lon = a1.lon + (worldX - a1.x) * (dLon / dx);
+        const lat = a1.lat + (worldY - a1.y) * (dLat / dy);
+
+        return { lat, lon };
+    }
 
     function pickVehicle2D(worldX, worldY) {
         if (!simulation || !simulation.vehicles) return null;
@@ -2785,7 +2851,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return group;
     }
 
-// ===================================================================
+    // ===================================================================
     // 3D 懸浮文字面板 (HUD Sprite) 產生與更新工具
     // ===================================================================
     // ===================================================================
@@ -2802,17 +2868,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const texture = new THREE.CanvasTexture(canvas);
         texture.minFilter = THREE.LinearFilter;
-        
-        const spriteMaterial = new THREE.SpriteMaterial({ 
-            map: texture, 
+
+        const spriteMaterial = new THREE.SpriteMaterial({
+            map: texture,
             transparent: true,
             // 【修正關鍵 1】開啟深度測試。這樣如果前方有建築物(寫入深度緩衝)，面板就會被正確遮住
-            depthTest: true 
+            depthTest: true
         });
-        
+
         const sprite = new THREE.Sprite(spriteMaterial);
         sprite.scale.set(8, 4, 1); // 調整在 3D 世界中的大小
-        
+
         // 【修正關鍵 2】移除強制的最上層渲染順序 (刪除 renderOrder = 999)
         // 讓 Three.js 依照原本透明物件的深度演算法自動排序即可
 
@@ -3479,20 +3545,20 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
 
-       // =================================================================
+        // =================================================================
         // --- 5. 科技感偵測器 (Meters) ---
         // =================================================================
-        
+
         // --- A. 定點偵測器 (方案 C：路面科技光圈 + 懸浮面板) ---
         if (netData.speedMeters) {
             // 建立一個扁平的光圈幾何體
             const ringGeo = new THREE.RingGeometry(1.2, 2.0, 32);
             // 科技藍綠色 (Cyan)
             const vdColor = '#00FFFF';
-            const techMat = new THREE.MeshBasicMaterial({ 
-                color: 0x00FFFF, 
-                transparent: true, 
-                opacity: 0.6, 
+            const techMat = new THREE.MeshBasicMaterial({
+                color: 0x00FFFF,
+                transparent: true,
+                opacity: 0.6,
                 side: THREE.DoubleSide,
                 depthWrite: false // 避免與路面產生 Z-Fighting
             });
@@ -3500,7 +3566,7 @@ document.addEventListener('DOMContentLoaded', () => {
             netData.speedMeters.forEach(meter => {
                 const group = new THREE.Group();
                 group.name = `meter_point_${meter.id}`;
-                
+
                 // 1. 地面光圈
                 const ring = new THREE.Mesh(ringGeo, techMat);
                 ring.rotation.x = -Math.PI / 2;
@@ -3522,7 +3588,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (netData.sectionMeters) {
             const poleGeo = new THREE.CylinderGeometry(0.15, 0.2, 6, 8);
             const poleMat = new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.8 });
-            
+
             // 科技紫紅色 (Magenta)
             const aviColor = '#FF00FF';
             const laserMat = new THREE.LineBasicMaterial({ color: 0xFF00FF, transparent: true, opacity: 0.8, linewidth: 3 });
@@ -3553,7 +3619,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 // 3. 懸浮面板 (HUD) - 放在區間的正中間
                 const midX = (meter.startX + meter.endX) / 2;
                 const midY = (meter.startY + meter.endY) / 2;
-                
+
                 const sprite = createMeterSprite(`AVI ${meter.id}`, "-- km/h", aviColor);
                 sprite.position.set(midX, 7.5, midY); // 懸浮於雷射線上方
                 group.add(sprite);
@@ -4102,12 +4168,12 @@ document.addEventListener('DOMContentLoaded', () => {
         carGroup.add(br);
 
         // --- 5. 方向燈 (Indicators) ---
-                // --- 5. 方向燈 (Indicators) [修正版] ---
+        // --- 5. 方向燈 (Indicators) [修正版] ---
         const indGeo = new THREE.BoxGeometry(0.15, 0.25, 0.15);
-        
+
         // [修正] 使用 Standard 材質以支援自發光 (Emissive)
         // 預設顏色為暗色，emissive 為黑色(不發光)
-        const indMatBase = new THREE.MeshStandardMaterial({ 
+        const indMatBase = new THREE.MeshStandardMaterial({
             color: 0x331100,
             emissive: 0x000000,
             roughness: 0.2,
@@ -4116,11 +4182,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // 稍微往外推一點 (+0.08)，避免被車體遮住
         const indX = length / 2;
-        const indZ = (width / 2) + 0.08; 
+        const indZ = (width / 2) + 0.08;
 
         // 左前 (Front Left)
         const indFL = new THREE.Mesh(indGeo, indMatBase.clone());
-        indFL.position.set(indX, lightY, -indZ); 
+        indFL.position.set(indX, lightY, -indZ);
         carGroup.add(indFL);
 
         // 右前 (Front Right)
@@ -4130,7 +4196,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // 左後 (Back Left)
         const indBL = new THREE.Mesh(indGeo, indMatBase.clone());
-        indBL.position.set(-indX, lightY, -indZ); 
+        indBL.position.set(-indX, lightY, -indZ);
         carGroup.add(indBL);
 
         // 右後 (Back Right)
@@ -4239,12 +4305,12 @@ document.addEventListener('DOMContentLoaded', () => {
         headLight.position.set(length * 0.3, wheelRadius + 0.45, 0);
         bikeGroup.add(headLight);
 
-// --- 方向燈 (Indicators) ---
-                // --- 方向燈 (Indicators) [修正版] ---
+        // --- 方向燈 (Indicators) ---
+        // --- 方向燈 (Indicators) [修正版] ---
         const indGeo = new THREE.BoxGeometry(0.08, 0.08, 0.08);
-        
+
         // [修正] 同樣改用自發光材質
-        const indMatBase = new THREE.MeshStandardMaterial({ 
+        const indMatBase = new THREE.MeshStandardMaterial({
             color: 0x331100,
             emissive: 0x000000,
             roughness: 0.2
@@ -4324,7 +4390,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     inds.forEach(ind => {
                         if (isActive && isBlinkOn) {
                             // 亮起：亮橘色 + 強烈自發光
-                            ind.material.color.setHex(0xffaa00); 
+                            ind.material.color.setHex(0xffaa00);
                             ind.material.emissive.setHex(0xff6600); // 發光核心色
                             ind.material.emissiveIntensity = 2.0;   // 強度
                         } else {
@@ -5652,7 +5718,7 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 simTimeSpan.textContent = simulation.time.toFixed(2); // 顯示傳統秒數
             }
-            
+
             // [新增] 優化器更新 (處理採樣計時器)
             if (typeof optimizerController !== 'undefined') {
                 optimizerController.update(simulationDt);
@@ -6077,37 +6143,37 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    class Pathfinder { 
-        constructor(links, nodes) { 
-            this.adj = new Map(); 
-            for (const linkId in links) { 
-                const link = links[linkId]; 
-                if (!this.adj.has(link.source)) this.adj.set(link.source, []); 
-                this.adj.get(link.source).push({ linkId: link.id, toNode: link.destination }); 
-            } 
-        } 
-        findRoute(startNodeId, endNodeId) { 
-            if (!startNodeId || !endNodeId) return null; 
-            const q = [[startNodeId, []]]; 
-            const visited = new Set([startNodeId]); 
-            while (q.length > 0) { 
-                const [currentNodeId, path] = q.shift(); 
-                if (currentNodeId === endNodeId) return path; 
-                const neighbors = this.adj.get(currentNodeId) || []; 
-                for (const neighbor of neighbors) { 
-                    
+    class Pathfinder {
+        constructor(links, nodes) {
+            this.adj = new Map();
+            for (const linkId in links) {
+                const link = links[linkId];
+                if (!this.adj.has(link.source)) this.adj.set(link.source, []);
+                this.adj.get(link.source).push({ linkId: link.id, toNode: link.destination });
+            }
+        }
+        findRoute(startNodeId, endNodeId) {
+            if (!startNodeId || !endNodeId) return null;
+            const q = [[startNodeId, []]];
+            const visited = new Set([startNodeId]);
+            while (q.length > 0) {
+                const [currentNodeId, path] = q.shift();
+                if (currentNodeId === endNodeId) return path;
+                const neighbors = this.adj.get(currentNodeId) || [];
+                for (const neighbor of neighbors) {
+
                     // ★★★ [新增] 防止 -1 蟲洞現象 ★★★
                     if (neighbor.toNode === '-1' || neighbor.toNode === -1) continue;
 
-                    if (!visited.has(neighbor.toNode)) { 
-                        visited.add(neighbor.toNode); 
-                        const newPath = [...path, neighbor.linkId]; 
-                        q.push([neighbor.toNode, newPath]); 
-                    } 
-                } 
-            } 
-            return null; 
-        } 
+                    if (!visited.has(neighbor.toNode)) {
+                        visited.add(neighbor.toNode);
+                        const newPath = [...path, neighbor.linkId];
+                        q.push([neighbor.toNode, newPath]);
+                    }
+                }
+            }
+            return null;
+        }
     }
     class TrafficLightController {
         constructor(config) {
@@ -6432,7 +6498,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // ==========================================
             // 決定方向燈狀態 (Turn Signal Logic)
             // ==========================================
-                        // ==========================================
+            // ==========================================
             // 決定方向燈狀態 (Turn Signal Logic) - [修正後代碼]
             // ==========================================
             this.blinker = 'none';
@@ -6456,7 +6522,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     const angleStart = Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x);
                     // 計算離開角度
                     const angleEnd = Math.atan2(pts[3].y - pts[2].y, pts[3].x - pts[2].x);
-                    
+
                     let diff = angleEnd - angleStart;
                     // 角度正規化 (-PI ~ PI)
                     while (diff <= -Math.PI) diff += Math.PI * 2;
@@ -7338,9 +7404,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
                                 // ★★★ [新增] 主動降低極速，模擬進站減速行為 ★★★
                                 // 設定為約 20 km/h (5.5 m/s)，確保它不會嘗試加速衝進格子
-                                this.maxSpeed = 20 / 3.6; 
+                                this.maxSpeed = 20 / 3.6;
                                 // 重置加速度，避免帶著上一幀的急加速衝進來
-                                this.accel = 0; 
+                                this.accel = 0;
                                 // 排隊計數
                                 if (typeof targetBox.waitingCount === 'undefined') targetBox.waitingCount = 0;
                                 const idx = targetBox.waitingCount;
@@ -8116,7 +8182,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const inSameIntersection = (this.state === 'inIntersection' && other.state === 'inIntersection' && this.currentTransition?.id === other.currentTransition?.id);
 
                 if (onSameLink || inSameIntersection) {
-                    
+
                     // 情況 A：實體已經在同一車道 (同車道 或 正在切入且物理上佔據)
                     if (other.currentLaneIndex === this.currentLaneIndex ||
                         (other.laneChangeState && other.laneChangeState.toLaneIndex === this.currentLaneIndex)) {
@@ -8124,11 +8190,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                     // 情況 B (協作讓道)：他還在隔壁車道，但在我前方，且有切入意圖
                     else if (other.distanceOnPath > this.distanceOnPath) {
-                        
+
                         // ★★★ [新增] 方向燈意圖判斷 (Visual Intent) ★★★
                         // 判斷對方的燈號是否指向我的車道
                         let visualIntentToMerge = false;
-                        
+
                         // 假設 laneIndex 越大越靠右 (0:最左, N:最右)
                         // 如果他在我左邊 (Lane - 1) 且打右燈 ('right') -> 想切進來
                         if (other.currentLaneIndex === this.currentLaneIndex - 1 && other.blinker === 'right') {
@@ -8159,7 +8225,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 // 當偵測到對方打方向燈想切入時：
                                 // 我們「人為縮短」感知的距離。
                                 // IDM 算式會以為前車很近，進而鬆油門或煞車，製造出空隙讓對方切入。
-                                
+
                                 // 調整幅度：原本減 3.0，現在可以根據相對速度微調
                                 // 如果我比他快很多，要減更多 gap 來強迫煞車
                                 const speedRel = this.speed - other.speed;
@@ -8782,41 +8848,41 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     function updateStatistics(time) {
         if (!simulation) return;
-        const vehicles = simulation.vehicles; 
-        const vehicleCount = vehicles.length; 
-        let avgSpeedKmh = 0; 
-        if (vehicleCount > 0) { 
-            const totalSpeed = vehicles.reduce((sum, v) => sum + v.speed, 0); 
-            avgSpeedKmh = (totalSpeed / vehicleCount) * 3.6; 
-        } 
-        maxVehicleCount = Math.max(maxVehicleCount, vehicleCount); 
-        maxAvgSpeed = Math.max(maxAvgSpeed, avgSpeedKmh); 
-        const newData = { time, count: vehicleCount, speed: avgSpeedKmh }; 
-        if (!statsData.some(d => d.time === time)) { statsData.push(newData); } 
+        const vehicles = simulation.vehicles;
+        const vehicleCount = vehicles.length;
+        let avgSpeedKmh = 0;
+        if (vehicleCount > 0) {
+            const totalSpeed = vehicles.reduce((sum, v) => sum + v.speed, 0);
+            avgSpeedKmh = (totalSpeed / vehicleCount) * 3.6;
+        }
+        maxVehicleCount = Math.max(maxVehicleCount, vehicleCount);
+        maxAvgSpeed = Math.max(maxAvgSpeed, avgSpeedKmh);
+        const newData = { time, count: vehicleCount, speed: avgSpeedKmh };
+        if (!statsData.some(d => d.time === time)) { statsData.push(newData); }
         updateStatsUI(newData);
 
         // --- 1. 更新定點偵測器 (Point Meters) ---
-        simulation.speedMeters.forEach(meter => { 
-            const chart = meterCharts[meter.id]; 
-            const dict = translations[currentLang]; 
-            let currentMaxSpeed = 0; 
-            
+        simulation.speedMeters.forEach(meter => {
+            const chart = meterCharts[meter.id];
+            const dict = translations[currentLang];
+            let currentMaxSpeed = 0;
+
             // 【修正關鍵 1】從 networkData 抓回帶有 spriteRef 的原始物件
             const netMeter = networkData.speedMeters.find(m => m.id === meter.id);
-            
+
             let displaySpeedText = "--";
 
-            for (const key in meter.readings) { 
-                const readings = meter.readings[key]; 
-                if (readings.length > 0) { 
-                    const totalSpeed = readings.reduce((sum, s) => sum + s, 0); 
-                    const avgSpeedMs = totalSpeed / readings.length; 
-                    const meterAvgSpeedKmh = avgSpeedMs * 3.6; 
-                    currentMaxSpeed = Math.max(currentMaxSpeed, meterAvgSpeedKmh); 
-                    
+            for (const key in meter.readings) {
+                const readings = meter.readings[key];
+                if (readings.length > 0) {
+                    const totalSpeed = readings.reduce((sum, s) => sum + s, 0);
+                    const avgSpeedMs = totalSpeed / readings.length;
+                    const meterAvgSpeedKmh = avgSpeedMs * 3.6;
+                    currentMaxSpeed = Math.max(currentMaxSpeed, meterAvgSpeedKmh);
+
                     if (chart) {
-                        const label = (key === 'all') ? dict.allLanesLabel : `${dict.laneLabel} ${key}`; 
-                        const dataset = chart.data.datasets.find(d => d.label === label); 
+                        const label = (key === 'all') ? dict.allLanesLabel : `${dict.laneLabel} ${key}`;
+                        const dataset = chart.data.datasets.find(d => d.label === label);
                         if (dataset) { dataset.data.push({ x: time, y: meterAvgSpeedKmh }); }
                     }
 
@@ -8825,8 +8891,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         displaySpeedText = meterAvgSpeedKmh.toFixed(1);
                         meter.lastAvgSpeed = meterAvgSpeedKmh; // 紀錄最後車速
                     }
-                } 
-            } 
+                }
+            }
 
             // 如果這秒沒車經過，就顯示最後一次的車速，避免變成 --
             if (displaySpeedText === "--" && meter.lastAvgSpeed !== undefined) {
@@ -8840,34 +8906,34 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             if (chart) {
-                meter.maxAvgSpeed = Math.max(meter.maxAvgSpeed, currentMaxSpeed); 
-                chart.options.scales.y.max = meter.maxAvgSpeed > 10 ? Math.ceil(meter.maxAvgSpeed * 1.1) : 60; 
-                chart.update('none'); 
+                meter.maxAvgSpeed = Math.max(meter.maxAvgSpeed, currentMaxSpeed);
+                chart.options.scales.y.max = meter.maxAvgSpeed > 10 ? Math.ceil(meter.maxAvgSpeed * 1.1) : 60;
+                chart.update('none');
             }
-            meter.readings = {}; 
+            meter.readings = {};
         });
 
         // --- 2. 更新區間偵測器 (Section Meters) ---
-        simulation.sectionMeters.forEach(meter => { 
-            const chart = sectionMeterCharts[meter.id]; 
-            
+        simulation.sectionMeters.forEach(meter => {
+            const chart = sectionMeterCharts[meter.id];
+
             // 【修正關鍵 2】從 networkData 抓回帶有 spriteRef 的原始物件
             const netMeter = networkData.sectionMeters.find(m => m.id === meter.id);
             let displaySpeedText = "--";
 
-            if (meter.completedVehicles.length > 0) { 
-                const totalSpeed = meter.completedVehicles.reduce((sum, v) => sum + v.speed, 0); 
-                const avgSpeed = totalSpeed / meter.completedVehicles.length; 
-                if (chart) chart.data.datasets[0].data.push({ x: time, y: avgSpeed }); 
-                
-                meter.lastAvgSpeed = avgSpeed; 
-                meter.maxAvgSpeed = Math.max(meter.maxAvgSpeed, avgSpeed); 
+            if (meter.completedVehicles.length > 0) {
+                const totalSpeed = meter.completedVehicles.reduce((sum, v) => sum + v.speed, 0);
+                const avgSpeed = totalSpeed / meter.completedVehicles.length;
+                if (chart) chart.data.datasets[0].data.push({ x: time, y: avgSpeed });
+
+                meter.lastAvgSpeed = avgSpeed;
+                meter.maxAvgSpeed = Math.max(meter.maxAvgSpeed, avgSpeed);
                 displaySpeedText = avgSpeed.toFixed(1);
-            } else if (meter.lastAvgSpeed !== null) { 
-                if (chart) chart.data.datasets[0].data.push({ x: time, y: meter.lastAvgSpeed }); 
-                
+            } else if (meter.lastAvgSpeed !== null) {
+                if (chart) chart.data.datasets[0].data.push({ x: time, y: meter.lastAvgSpeed });
+
                 displaySpeedText = meter.lastAvgSpeed.toFixed(1);
-            } 
+            }
 
             // ★ 同步更新 3D 面板文字 (使用 netMeter.spriteRef)
             if (netMeter && netMeter.spriteRef) {
@@ -8876,10 +8942,10 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             if (chart) {
-                chart.options.scales.y.max = meter.maxAvgSpeed > 10 ? Math.ceil(meter.maxAvgSpeed * 1.1) : 60; 
-                chart.update('none'); 
+                chart.options.scales.y.max = meter.maxAvgSpeed > 10 ? Math.ceil(meter.maxAvgSpeed * 1.1) : 60;
+                chart.update('none');
             }
-            meter.completedVehicles = []; 
+            meter.completedVehicles = [];
         });
     }
     function updateStatsUI(data, isRepopulating = false) { if (!isRepopulating) { const newRow = statsTableBody.insertRow(0); newRow.insertCell(0).textContent = data.time; newRow.insertCell(1).textContent = data.count; newRow.insertCell(2).textContent = data.speed.toFixed(2); if (statsTableBody.rows.length > 200) statsTableBody.deleteRow(-1); } if (vehicleCountChart && !vehicleCountChart.data.labels.includes(data.time)) { vehicleCountChart.data.labels.push(data.time); vehicleCountChart.data.datasets[0].data.push(data.count); vehicleCountChart.options.scales.y.max = maxVehicleCount > 10 ? Math.ceil(maxVehicleCount * 1.1) : 10; vehicleCountChart.update('none'); } if (avgSpeedChart && !avgSpeedChart.data.labels.includes(data.time)) { avgSpeedChart.data.labels.push(data.time); avgSpeedChart.data.datasets[0].data.push(data.speed); avgSpeedChart.options.scales.y.max = maxAvgSpeed > 10 ? Math.ceil(maxAvgSpeed * 1.1) : 10; avgSpeedChart.update('none'); } }
@@ -9240,7 +9306,7 @@ document.addEventListener('DOMContentLoaded', () => {
             xmlDoc.querySelectorAll('RegularTrafficLightNetwork').forEach(netEl => {
                 const nodeId = netEl.querySelector('regularNodeId').textContent;
                 const config = { nodeId: nodeId, schedule: [], lights: {}, timeShift: 0, advancedConfig: null };
-                
+
                 // 檢查是否包含 AdvancedScheduling
                 if (typeof DigitalTwinLogic !== 'undefined') {
                     config.advancedConfig = DigitalTwinLogic.parseAdvancedScheduling(netEl);
@@ -9250,7 +9316,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (timeShiftEl) {
                     config.timeShift = parseFloat(timeShiftEl.textContent) || 0;
                 }
-                
+
                 // 提取所有 Group IDs
                 const allGroupIds = new Set();
                 netEl.querySelectorAll('TrafficLight').forEach(lightEl => {
@@ -9697,11 +9763,11 @@ document.addEventListener('DOMContentLoaded', () => {
             // 解決編輯器複製或合併時可能造成的端點遺失 (-1) 問題
             // =========================================================
             Object.values(links).forEach(link => {
-                const lanes = Object.values(link.lanes).sort((a,b) => a.index - b.index);
+                const lanes = Object.values(link.lanes).sort((a, b) => a.index - b.index);
                 if (lanes.length === 0) return;
-                const path = lanes[Math.floor(lanes.length/2)].path; // 取中間車道作為參考
+                const path = lanes[Math.floor(lanes.length / 2)].path; // 取中間車道作為參考
                 if (path.length < 2) return;
-                
+
                 const startPoint = path[0];
                 const endPoint = path[path.length - 1];
 
@@ -9734,7 +9800,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         console.log(`[Self-Healing] Restored destination of Link ${link.id} to Node ${recoveredId}`);
                     }
                 }
-                
+
                 // 若起點遺失，利用幾何位置強行找回並綁定
                 if (!link.source || link.source === '-1' || link.source === -1) {
                     const recoveredId = findBestNode(startPoint);
@@ -9745,6 +9811,37 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
             // =========================================================
+// --- 10. (新增) 解析 GeoAnchors (無痛解析版) ---
+            const geoAnchors = [];
+            try {
+                // 使用 getElementsByTagNameNS("*", ...) 能夠無視 tm: 前綴，強制抓取所有 Anchor 標籤
+                const anchors = xmlDoc.getElementsByTagNameNS("*", "Anchor");
+                console.warn(`★★ 系統偵測到 ${anchors.length} 個 Anchor 節點 ★★`);
+                
+                for (let i = 0; i < anchors.length; i++) {
+                    const el = anchors[i];
+                    // 輔助函式：無視前綴抓取數值
+                    const getVal = (tagName) => {
+                        const child = el.getElementsByTagNameNS("*", tagName)[0];
+                        return child && child.textContent ? parseFloat(child.textContent) : 0;
+                    };
+
+                    const x = getVal("x");
+                    const y = -getVal("y"); // ★ 關鍵：反轉 Y 軸以符合內部畫布座標系
+                    const lat = getVal("lat");
+                    const lon = getVal("lon");
+
+                    if (lat !== 0 && lon !== 0) {
+                        geoAnchors.push({ x, y, lat, lon });
+                    }
+                }
+                console.warn("★★ 成功建立 GeoAnchors:", geoAnchors);
+            } catch (err) {
+                console.error("★★ 解析 GeoAnchors 時發生錯誤:", err);
+            }
+
+            // =========================================================            
+
             Promise.all(imagePromises).then(() => {
                 resolve({
                     links,
@@ -9755,7 +9852,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     speedMeters,
                     sectionMeters,
                     parkingLots,
-                    roadMarkings, // <--- 加入這行
+                    roadMarkings, 
+                    geoAnchors, // ★★★ 最重要的一行：必須把 geoAnchors 放進這裡，滑鼠事件才讀得到！ ★★★
                     bounds: { minX, minY, maxX, maxY },
                     pathfinder: new Pathfinder(links, nodes),
                     backgroundTiles,
