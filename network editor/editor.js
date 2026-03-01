@@ -3840,7 +3840,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // 執行實際合併動作 (A 吸納 B)
+// 執行實際合併動作 (A 吸納 B)
     function performLinkMerge(linkA, linkB) {
         const offsetLength = getPolylineLength(linkA.waypoints);
 
@@ -3869,38 +3869,30 @@ document.addEventListener('DOMContentLoaded', () => {
             if (d.linkId === linkB.id) { d.linkId = linkA.id; d.position += offsetLength; drawDestination(d); }
         });
 
-        // --- [修正重點] 3. 修復拓撲 (Topology) 採用全域掃描防呆 ---
+        // 3. 修復拓撲 (Topology) 採用全域掃描防呆
         let midNodeId = null;
         let finalNodeId = null;
 
         Object.values(network.nodes).forEach(node => {
-            // 如果某個節點的「離開」是 B，表示這是 B 的上游節點 (即我們要消除的中間節點)
             if (node.outgoingLinkIds.has(linkB.id)) midNodeId = node.id;
-            // 如果某個節點的「進入」是 B，表示這是 B 的下游節點 (即合併後 A 的新終點)
             if (node.incomingLinkIds.has(linkB.id)) finalNodeId = node.id;
         });
 
-        // 更新 Link A 的終點為 Link B 原本的終點
         linkA.endNodeId = finalNodeId;
 
-        // 如果 Link B 有終點 Node，更新該 Node 的 incomingLinks 換成 A
         if (finalNodeId && network.nodes[finalNodeId]) {
             const finalNode = network.nodes[finalNodeId];
             finalNode.incomingLinkIds.delete(linkB.id);
             finalNode.incomingLinkIds.add(linkA.id);
         }
 
-        // --- ★ [新增] 遷移 Turning Ratios (轉向比例) ---
+        // 遷移 Turning Ratios (轉向比例)
         Object.values(network.nodes).forEach(node => {
             if (!node.turningRatios) return;
-
-            // 如果 B 是進入路段 (從 B 轉向其他)，將其鍵值改為 A
             if (node.turningRatios[linkB.id] !== undefined) {
                 node.turningRatios[linkA.id] = node.turningRatios[linkB.id];
                 delete node.turningRatios[linkB.id];
             }
-
-            // 如果 B 是離開路段 (從其他轉向 B)，將目的路段的鍵值改為 A
             Object.keys(node.turningRatios).forEach(fromId => {
                 if (node.turningRatios[fromId][linkB.id] !== undefined) {
                     node.turningRatios[fromId][linkA.id] = node.turningRatios[fromId][linkB.id];
@@ -3908,19 +3900,73 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
         });
-        // -------------------------------------------
 
-        // 4. 更新連接線 (Connections)
+        // =========================================================
+        // [修正重點開始] 4. 更新連接線與群組視覺物件 (Connections & Groups)
+        // =========================================================
+        const connsToDelete = [];
         Object.values(network.connections).forEach(conn => {
-            if (conn.sourceLinkId === linkB.id) {
-                conn.sourceLinkId = linkA.id;
-            }
-            if (conn.destLinkId === linkB.id && conn.sourceLinkId === linkA.id) {
-                deleteConnection(conn.id);
-            } else if (conn.destLinkId === linkB.id) {
-                conn.destLinkId = linkA.id;
+            if (conn.sourceLinkId === linkA.id && conn.destLinkId === linkB.id) {
+                // 這條是連接著 A 和 B 中間的內部線，合併後應該消失
+                connsToDelete.push(conn.id);
+            } else {
+                // 遷移 B 的連接給 A
+                if (conn.sourceLinkId === linkB.id) conn.sourceLinkId = linkA.id;
+                if (conn.destLinkId === linkB.id) conn.destLinkId = linkA.id;
             }
         });
+
+        // 刪除多餘的內部連接
+        connsToDelete.forEach(id => deleteConnection(id));
+
+        // 更新視覺群組 (綠色粗線)
+        const groupsToRemove = [];
+        layer.find('.group-connection-visual').forEach(groupLine => {
+            const meta = groupLine.getAttr('meta');
+            if (!meta) return;
+
+            // 如果這個群組剛好是連接著 A 到 B 的 (中間節點)，將其移除
+            if (meta.sourceLinkId === linkA.id && meta.destLinkId === linkB.id) {
+                groupsToRemove.push(groupLine);
+                return;
+            }
+
+            let changed = false;
+            // 修正 Meta 資料：將原本屬於 B 的 ID 換成 A
+            if (meta.sourceLinkId === linkB.id) {
+                meta.sourceLinkId = linkA.id;
+                changed = true;
+            }
+            if (meta.destLinkId === linkB.id) {
+                meta.destLinkId = linkA.id;
+                changed = true;
+            }
+
+            if (changed) {
+                // 過濾掉可能已被刪除的內部連接 ID
+                meta.connectionIds = meta.connectionIds.filter(id => !connsToDelete.includes(id));
+                
+                if (meta.connectionIds.length === 0) {
+                    groupsToRemove.push(groupLine);
+                } else {
+                    groupLine.setAttr('meta', meta);
+                    // 同步更新綠色粗線在畫布上的端點座標
+                    const srcLink = network.links[meta.sourceLinkId];
+                    const dstLink = network.links[meta.destLinkId];
+                    if (srcLink && dstLink && srcLink.waypoints.length > 0 && dstLink.waypoints.length > 0) {
+                        const p1 = srcLink.waypoints[srcLink.waypoints.length - 1];
+                        const p4 = dstLink.waypoints[0];
+                        groupLine.points([p1.x, p1.y, p4.x, p4.y]);
+                    }
+                }
+            }
+        });
+        
+        // 清理無效的群組線
+        groupsToRemove.forEach(g => g.destroy());
+        // =========================================================
+        // [修正重點結束]
+        // =========================================================
 
         // 5. 處理中間節點刪除
         if (midNodeId && network.nodes[midNodeId]) {
@@ -3928,7 +3974,6 @@ document.addEventListener('DOMContentLoaded', () => {
             midNode.incomingLinkIds.delete(linkA.id);
             midNode.outgoingLinkIds.delete(linkB.id);
 
-            // 如果中間節點變成孤立點，則刪除
             if (midNode.incomingLinkIds.size === 0 && midNode.outgoingLinkIds.size === 0) {
                 if (network.trafficLights[midNodeId]) delete network.trafficLights[midNodeId];
                 midNode.konvaShape.destroy();
@@ -5387,7 +5432,10 @@ document.addEventListener('DOMContentLoaded', () => {
                         delete obj.spawnProfileId;
                     }
                     if (obj.spawnProfiles.length === 0) {
-                        obj.spawnProfiles.push({ profileId: 'default', weight: 1.0 });
+                        // [修正] 動態獲取目前存在的車種，避免寫死 'car' 導致模擬器找不到
+                        const availableProfiles = Object.keys(network.vehicleProfiles);
+                        const defaultProfId = availableProfiles.length > 0 ? availableProfiles[0] : 'car';
+                        obj.spawnProfiles.push({ profileId: defaultProfId, weight: 1.0 });
                     }
 
                     content += `<label class="prop-label" style="margin-bottom:6px; display:block;">Vehicle Mix (Weighted)</label>`;
