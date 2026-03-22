@@ -360,7 +360,7 @@ document.addEventListener('DOMContentLoaded', () => {
     canvasContainer.appendChild(coordDisplay);
     // ==========================================
 
-    
+
     const placeholderText = document.getElementById('placeholder-text');
     const canvas2D = document.getElementById('networkCanvas');
     const ctx2D = canvas2D.getContext('2d');
@@ -557,6 +557,9 @@ document.addEventListener('DOMContentLoaded', () => {
         digitalTwinToggle.addEventListener('change', (e) => {
             isDigitalTwinMode = e.target.checked;
 
+            const viewModeGrid = document.getElementById('viewModeGrid');
+            const vdUpdateFreqContainer = document.getElementById('vdUpdateFreqContainer');
+
             if (isDigitalTwinMode) {
                 // 開啟數位孿生：強制 1 倍速，鎖定滑桿
                 speedSlider.value = 1;
@@ -564,12 +567,31 @@ document.addEventListener('DOMContentLoaded', () => {
                 simulationSpeed = 1;
                 speedValueSpan.textContent = `1x (Live)`;
                 simTimeSpan.parentElement.querySelector('.label').textContent = "實時";
+
+                // ★ 隱藏一般模式，顯示頻率選單
+                if (viewModeGrid) viewModeGrid.style.display = 'none';
+                if (vdUpdateFreqContainer) vdUpdateFreqContainer.style.display = 'flex';
+
+                // ★ 通知 VD API Manager 啟動
+                if (typeof VDApiManager !== 'undefined') {
+                    VDApiManager.start(simulation, networkData);
+                }
+
             } else {
                 // 關閉數位孿生：解鎖滑桿，時間歸零
                 speedSlider.disabled = false;
                 simTimeSpan.parentElement.querySelector('.label').textContent = translations[currentLang].simTimeLabel;
                 if (simulation) simulation.time = 0; // 重新起算
                 simTimeSpan.textContent = "0.00";
+
+                // ★ 恢復一般模式
+                if (viewModeGrid) viewModeGrid.style.display = 'grid'; // 原始是 grid
+                if (vdUpdateFreqContainer) vdUpdateFreqContainer.style.display = 'none';
+
+                // ★ 通知 VD API Manager 關閉並還原資料
+                if (typeof VDApiManager !== 'undefined') {
+                    VDApiManager.stop(simulation);
+                }
             }
         });
     }
@@ -2158,6 +2180,86 @@ document.addEventListener('DOMContentLoaded', () => {
         return [pFrontLeft, pFrontRight, pBackRight, pBackLeft];
     }
 
+    // [新增] 計算斑馬線中心線的兩個端點與寬度
+    function calculateCrosswalkLine(mark, netData) {
+        if (mark.isFree || mark.nodeId || (!mark.linkId && mark.x !== 0)) {
+            const cx = mark.x;
+            const cy = mark.y;
+            const rectWidth = mark.length || 3; // 斑馬線縱向寬度
+            const rectHeight = mark.width || 10; // 橫跨長度
+            const rot = mark.rotation * (Math.PI / 180);
+            const cos = Math.cos(rot);
+            const sin = Math.sin(rot);
+
+            // 旋轉並換算端點 (Y-Down 座標系)
+            const halfH = rectHeight / 2;
+            return {
+                p1: { x: cx + halfH * sin, y: cy - halfH * cos },
+                p2: { x: cx - halfH * sin, y: cy + halfH * cos },
+                width: rectWidth
+            };
+        }
+
+        const link = netData.links[mark.linkId];
+        if (!link || !link.lanes) return null;
+        const lanes = Object.values(link.lanes).sort((a, b) => a.index - b.index);
+        if (lanes.length === 0) return null;
+
+        const posData = getPointAtDistanceAlongPath(lanes[0].path, mark.position);
+        if (!posData) return null;
+
+        let totalWidth = 0;
+        lanes.forEach(l => totalWidth += l.width);
+        const halfWidth = totalWidth / 2;
+        const lane0Offset = -totalWidth / 2 + lanes[0].width / 2;
+
+        const roadCenter = Geom.Vec.add(posData.point, Geom.Vec.scale(posData.normal, -lane0Offset));
+
+        let p1, p2;
+
+        if (mark.spanToLinkId && netData.links[mark.spanToLinkId]) {
+            const targetLink = netData.links[mark.spanToLinkId];
+            const tLanes = Object.values(targetLink.lanes).sort((a, b) => a.index - b.index);
+            if (tLanes.length > 0) {
+                // 尋找目標車道上的最近點
+                let bestDist = Infinity;
+                let bestPoint = null;
+                const path = tLanes[0].path;
+                for (let i = 0; i < path.length - 1; i++) {
+                    const closest = Geom.Utils.getClosestPointOnSegment(roadCenter, path[i], path[i + 1]);
+                    const d = Geom.Vec.dist(roadCenter, closest);
+                    if (d < bestDist) {
+                        bestDist = d;
+                        bestPoint = closest;
+                    }
+                }
+
+                if (bestPoint) {
+                    let tTotalWidth = 0;
+                    tLanes.forEach(l => tTotalWidth += l.width);
+                    const tHalfWidth = tTotalWidth / 2;
+                    const tLane0Offset = -tTotalWidth / 2 + tLanes[0].width / 2;
+
+                    const spanVec = Geom.Vec.sub(bestPoint, roadCenter);
+                    const dist = Geom.Vec.len(spanVec);
+                    if (dist > 0.1) {
+                        const spanDir = Geom.Vec.normalize(spanVec);
+                        // 從本側外緣一路畫到對向外緣
+                        p1 = Geom.Vec.add(roadCenter, Geom.Vec.scale(spanDir, -halfWidth));
+                        p2 = Geom.Vec.add(roadCenter, Geom.Vec.scale(spanDir, dist + Math.abs(tLane0Offset) + tHalfWidth));
+                        return { p1, p2, width: mark.length || 3 };
+                    }
+                }
+            }
+        }
+
+        // 一般依附模式 (未跨越或跨越失敗)
+        p1 = Geom.Vec.add(roadCenter, Geom.Vec.scale(posData.normal, halfWidth));
+        p2 = Geom.Vec.add(roadCenter, Geom.Vec.scale(posData.normal, -halfWidth));
+
+        return { p1, p2, width: mark.length || 3 };
+    }
+
     function drawNetwork2D(netData, vehicles) {
         if (!netData) return;
         const vehiclesOnLink = {};
@@ -2426,6 +2528,23 @@ document.addEventListener('DOMContentLoaded', () => {
         // --- 新增：繪製 Road Markings ---
         if (netData.roadMarkings) {
             netData.roadMarkings.forEach(mark => {
+                // [新增] 斑馬線特殊處理
+                if (mark.type === 'crosswalk') {
+                    const lineData = calculateCrosswalkLine(mark, netData);
+                    if (lineData) {
+                        ctx2D.save();
+                        ctx2D.strokeStyle = 'white';
+                        ctx2D.lineWidth = lineData.width / scale;
+                        ctx2D.setLineDash([0.6 / scale, 0.6 / scale]); // 2D 枕木紋虛線
+                        ctx2D.beginPath();
+                        ctx2D.moveTo(lineData.p1.x, lineData.p1.y);
+                        ctx2D.lineTo(lineData.p2.x, lineData.p2.y);
+                        ctx2D.stroke();
+                        ctx2D.restore();
+                    }
+                    return; // 畫完斑馬線就跳過，不執行下方一般四角形繪製
+                }
+
                 const corners = calculateMarkingCorners(mark, netData);
                 if (!corners) return;
 
@@ -2989,11 +3108,11 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         // --- 新增：建立 Road Markings 3D 物件 ---
         if (netData.roadMarkings) {
-            const markingMat = new THREE.MeshBasicMaterial({
+            const whiteMat = new THREE.MeshBasicMaterial({
                 color: 0xffffff,
                 side: THREE.DoubleSide,
                 polygonOffset: true,
-                polygonOffsetFactor: -2, // 確保畫在路面之上
+                polygonOffsetFactor: -4,
                 polygonOffsetUnits: 1
             });
 
@@ -3005,16 +3124,74 @@ document.addEventListener('DOMContentLoaded', () => {
                 polygonOffsetUnits: 1
             });
 
-            netData.roadMarkings.forEach(mark => {
-                const corners = calculateMarkingCorners(mark, netData);
+            netData.roadMarkings.forEach(mk => {
+                let zHeight = 0.12;
+                if (mk.isFree || mk.nodeId) zHeight = 0.22;
+
+                // [新增] 3D 斑馬線處理
+                if (mk.type === 'crosswalk') {
+                    const lineData = calculateCrosswalkLine(mk, netData);
+                    if (lineData) {
+                        const { p1, p2, width: w } = lineData;
+                        const dx = p2.x - p1.x;
+                        const dy = p2.y - p1.y;
+                        const dist = Math.hypot(dx, dy);
+                        if (dist <= 0) return;
+
+                        const dirX = dx / dist;
+                        const dirY = dy / dist;
+                        const nx = -dirY;
+                        const ny = dirX;
+
+                        // 產生個別的枕木紋方塊
+                        const stripeLength = 0.6; // 枕木寬度
+                        const stripeGap = 0.6;    // 間隙
+                        const totalStripe = stripeLength + stripeGap;
+                        const numStripes = Math.floor(dist / totalStripe);
+
+                        // 置中偏移，讓頭尾對稱
+                        const leftover = dist - (numStripes * totalStripe - stripeGap);
+                        const startOffset = Math.max(0, leftover / 2);
+
+                        for (let i = 0; i < numStripes; i++) {
+                            const cx = p1.x + dirX * (startOffset + i * totalStripe + stripeLength / 2);
+                            const cy = p1.y + dirY * (startOffset + i * totalStripe + stripeLength / 2);
+
+                            const hw = stripeLength / 2;
+                            const hh = w / 2; // 縱向長度的一半
+
+                            // 產生旋轉後的四個角點
+                            const pts = [
+                                { x: cx + dirX * hw + nx * hh, y: cy + dirY * hw + ny * hh },
+                                { x: cx + dirX * hw - nx * hh, y: cy + dirY * hw - ny * hh },
+                                { x: cx - dirX * hw - nx * hh, y: cy - dirY * hw - ny * hh },
+                                { x: cx - dirX * hw + nx * hh, y: cy - dirY * hw + ny * hh }
+                            ];
+
+                            const shape = new THREE.Shape();
+                            shape.moveTo(pts[0].x, -pts[0].y); // 注意 3D Y軸轉換
+                            shape.lineTo(pts[1].x, -pts[1].y);
+                            shape.lineTo(pts[2].x, -pts[2].y);
+                            shape.lineTo(pts[3].x, -pts[3].y);
+
+                            const geom = new THREE.ShapeGeometry(shape);
+                            geom.rotateX(-Math.PI / 2);
+                            const mesh = new THREE.Mesh(geom, whiteMat);
+                            mesh.position.y = zHeight;
+                            networkGroup.add(mesh);
+                        }
+                    }
+                    return; // 畫完跳過
+                }
+
+                const corners = calculateMarkingCorners(mk, netData);
                 if (!corners) return;
 
                 // 將 2D 點 (x, y) 轉為 3D 點 (x, 0.12, y)
-                // 高度設為 0.12，略高於路面(0.1)
-                const h = 0.12;
-                const points3D = corners.map(p => to3D(p.x, p.y, h));
+                // 高度設為 zHeight
+                const points3D = corners.map(p => to3D(p.x, p.y, zHeight));
 
-                if (mark.type === 'stop_line') {
+                if (mk.type === 'stop_line') {
                     // 停止線：實心矩形
                     const shape = new THREE.Shape();
                     shape.moveTo(corners[0].x, -corners[0].y); // 注意 3D 形狀 Y 軸反轉
@@ -3024,8 +3201,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
                     const geom = new THREE.ShapeGeometry(shape);
                     geom.rotateX(-Math.PI / 2);
-                    const mesh = new THREE.Mesh(geom, markingMat);
-                    mesh.position.y = h;
+                    const mesh = new THREE.Mesh(geom, whiteMat);
+                    mesh.position.y = zHeight;
                     networkGroup.add(mesh);
                 } else {
                     // 機車停等區 / 兩段式左轉：線框
@@ -5808,21 +5985,33 @@ document.addEventListener('DOMContentLoaded', () => {
     // [新增] 偵測器發車器：依據觀測流量產生車輛
     // 請將此類別放在 Simulation 類別之前
     // [修正] 偵測器發車器：依據觀測流量產生車輛 (支援多車種權重)
+    // 將原本的 DetectorSpawner 替換或修改為以下內容
     class DetectorSpawner {
         constructor(meter, network) {
             this.linkId = meter.linkId;
+            this.meterId = meter.id;
+            this.meterName = meter.name; // ★ 記錄 XML 中的 <tm:name> (例如 V014940)
+
             // 換算流量：輛/小時 -> 發車間隔(秒)
             this.interval = meter.observedFlow > 0 ? 3600 / meter.observedFlow : Infinity;
-            this.spawnTimer = 0; // 初始計時器
+            this.spawnTimer = 0;
 
-            // [修改重點 1] 接收 profiles 列表，而非單一 profileId
             this.spawnProfiles = meter.spawnProfiles || [];
 
-            // 防呆：如果 XML 沒給任何 Profile，給一個預設的
             if (this.spawnProfiles.length === 0) {
-                // 嘗試使用舊屬性作為備案
                 const fallbackId = meter.spawnProfileId || 'default';
                 this.spawnProfiles.push({ profileId: fallbackId, weight: 1 });
+            }
+        }
+
+        // ★★★ 新增：供外部 API 動態更新流量與權重的方法 ★★★
+        updateData(hourlyFlow, newProfiles) {
+            // 更新發車間隔
+            this.interval = hourlyFlow > 0 ? 3600 / hourlyFlow : Infinity;
+
+            // 更新車種權重
+            if (newProfiles && newProfiles.length > 0) {
+                this.spawnProfiles = newProfiles;
             }
         }
 
@@ -5836,24 +6025,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 const link = network.links[this.linkId];
                 if (!link) return null;
 
-                // [修改重點 2] 依據權重選擇車種
                 const chosenProfileEntry = this.chooseWithWeight(this.spawnProfiles);
                 if (!chosenProfileEntry) return null;
 
-                // 從全域設定中取得該車種的物理參數
                 const profile = network.vehicleProfiles[chosenProfileEntry.profileId];
+                if (!profile) return null;
 
-                // 防呆：如果找不到該 Profile 定義 (例如 Import 時漏掉了 GlobalProfiles)
-                if (!profile) {
-                    // console.warn(`Profile ${chosenProfileEntry.profileId} not found.`);
-                    return null;
-                }
-
-                // 隨機選擇一條車道發車
                 const laneCount = Object.keys(link.lanes).length;
                 const laneIndex = Math.floor(Math.random() * laneCount);
-
-                // 建立車輛
                 const vehicleId = `v-flow-${vehicleIdGenerator()}`;
 
                 return new Vehicle(vehicleId, profile, [this.linkId], network, laneIndex);
@@ -5861,10 +6040,8 @@ document.addEventListener('DOMContentLoaded', () => {
             return null;
         }
 
-        // [修改重點 3] 新增權重選擇輔助函數
         chooseWithWeight(items) {
             if (!items || items.length === 0) return null;
-
             const totalWeight = items.reduce((sum, item) => sum + item.weight, 0);
             if (totalWeight <= 0) return items[0];
 
@@ -9552,16 +9729,29 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
 
-            // 解析 RoadMarkings
+            // =========================================================
+            // 解析 RoadMarkings (修正 ReferenceError 與安全讀取跨越對向)
+            // =========================================================
             const roadMarkings = [];
-            const markingNodes = xmlDoc.querySelectorAll('RoadMarkings > RoadMarking');
+            const markingNodes = xmlDoc.querySelectorAll('RoadMarkings > RoadMarking, tm\\:RoadMarkings > tm\\:RoadMarking');
+
             if (markingNodes.length > 0) {
                 markingNodes.forEach(mkEl => {
-                    const id = mkEl.querySelector('id').textContent;
-                    const type = mkEl.querySelector('type').textContent;
-                    const linkId = mkEl.querySelector('linkId')?.textContent;
-                    const nodeId = mkEl.querySelector('nodeId')?.textContent;
+                    // 使用安全的 getChildValue 讀取 XML 節點，防止找不到標籤
+                    const id = getChildValue(mkEl, 'id');
+                    const type = getChildValue(mkEl, 'type');
+                    const linkId = getChildValue(mkEl, 'linkId');
+                    const nodeId = getChildValue(mkEl, 'nodeId');
 
+                    const posStr = getChildValue(mkEl, 'position');
+                    const lenStr = getChildValue(mkEl, 'length');
+                    const widStr = getChildValue(mkEl, 'width');
+                    const xStr = getChildValue(mkEl, 'x');
+                    const yStr = getChildValue(mkEl, 'y');
+                    const rotStr = getChildValue(mkEl, 'rotation');
+                    const isFreeStr = getChildValue(mkEl, 'isFree');
+                    // [新增] 讀取對向跨越的 Link ID
+                    const spanToLinkIdStr = getChildValue(mkEl, 'spanToLinkId');
                     const mk = {
                         id, type, linkId, nodeId,
                         position: parseFloat(mkEl.querySelector('position')?.textContent || 0),
@@ -9571,7 +9761,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         y: -parseFloat(mkEl.querySelector('y')?.textContent || 0), // Y軸反轉適配
                         rotation: parseFloat(mkEl.querySelector('rotation')?.textContent || 0),
                         laneIndices: [],
-                        isFree: mkEl.querySelector('isFree')?.textContent === 'true'
+                        isFree: mkEl.querySelector('isFree')?.textContent === 'true',
+                        spanToLinkId: spanToLinkIdStr || null // [新增]
                     };
 
                     const laneIndicesStr = mkEl.querySelector('laneIndices')?.textContent;
@@ -9811,13 +10002,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
             // =========================================================
-// --- 10. (新增) 解析 GeoAnchors (無痛解析版) ---
+            // --- 10. (新增) 解析 GeoAnchors (無痛解析版) ---
             const geoAnchors = [];
             try {
                 // 使用 getElementsByTagNameNS("*", ...) 能夠無視 tm: 前綴，強制抓取所有 Anchor 標籤
                 const anchors = xmlDoc.getElementsByTagNameNS("*", "Anchor");
                 console.warn(`★★ 系統偵測到 ${anchors.length} 個 Anchor 節點 ★★`);
-                
+
                 for (let i = 0; i < anchors.length; i++) {
                     const el = anchors[i];
                     // 輔助函式：無視前綴抓取數值
@@ -9852,7 +10043,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     speedMeters,
                     sectionMeters,
                     parkingLots,
-                    roadMarkings, 
+                    roadMarkings,
                     geoAnchors, // ★★★ 最重要的一行：必須把 geoAnchors 放進這裡，滑鼠事件才讀得到！ ★★★
                     bounds: { minX, minY, maxX, maxY },
                     pathfinder: new Pathfinder(links, nodes),
