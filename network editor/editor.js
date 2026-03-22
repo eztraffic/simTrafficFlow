@@ -229,6 +229,9 @@ document.addEventListener('DOMContentLoaded', () => {
             y,
             incomingLinkIds: new Set(),
             outgoingLinkIds: new Set(),
+            pedestrianVolume: 0,
+            crossOnceProb: 100,
+            crossTwiceProb: 0,
             konvaShape: new Konva.Shape({
                 id,
                 x: 0,
@@ -5283,9 +5286,28 @@ document.addEventListener('DOMContentLoaded', () => {
                         </div>`;
 
                 // 3. Edit Button
+                                // 3. Edit Button
                 content += `<button id="edit-tfl-btn" class="btn-action" style="width:100%; margin-top:8px;">
                             <i class="fa-solid fa-traffic-light"></i> Edit Schedule
                         </button>`;
+
+                // --- Pedestrian Settings ---
+                content += `<div class="prop-section-header" style="margin-top:16px;">Pedestrian Settings</div>`;
+                
+                content += `<div class="prop-row">
+                                <span class="prop-label" title="Hourly Pedestrian Volume">Volume (ped/h)</span>
+                                <input type="number" id="prop-node-ped-vol" class="prop-input" value="${obj.pedestrianVolume || 0}" min="0" step="10">
+                            </div>`;
+                            
+                content += `<div class="prop-row">
+                                <span class="prop-label" title="Cross Once Probability">Cross Once (%)</span>
+                                <input type="number" id="prop-node-cross-once" class="prop-input" value="${obj.crossOnceProb !== undefined ? obj.crossOnceProb : 100}" min="0" max="100" step="1">
+                            </div>`;
+                            
+                content += `<div class="prop-row">
+                                <span class="prop-label" title="Cross Twice Probability">Cross Twice (%)</span>
+                                <input type="number" id="prop-node-cross-twice" class="prop-input" value="${obj.crossTwiceProb || 0}" min="0" max="100" step="1">
+                            </div>`;
 
                 content += `</div>`; // End Tab 1
 
@@ -6291,6 +6313,55 @@ document.addEventListener('DOMContentLoaded', () => {
                 saveState();
             });
             document.getElementById('edit-tfl-btn').addEventListener('click', () => showTrafficLightEditor(obj));
+
+            // --- Pedestrian Settings Listeners ---
+            const pedVolInput = document.getElementById('prop-node-ped-vol');
+            if (pedVolInput) {
+                pedVolInput.addEventListener('change', (e) => {
+                    let val = parseInt(e.target.value, 10);
+                    if (isNaN(val) || val < 0) val = 0;
+                    obj.pedestrianVolume = val;
+                    e.target.value = val;
+                    saveState();
+                });
+            }
+
+            const crossOnceInput = document.getElementById('prop-node-cross-once');
+            if (crossOnceInput) {
+                crossOnceInput.addEventListener('change', (e) => {
+                    let val = parseFloat(e.target.value);
+                    if (isNaN(val) || val < 0) val = 0;
+                    if (val > 100) val = 100;
+                    obj.crossOnceProb = val;
+                    e.target.value = val;
+                    
+                    if (obj.crossOnceProb + (obj.crossTwiceProb || 0) > 100) {
+                        obj.crossTwiceProb = 100 - obj.crossOnceProb;
+                        const twiceInput = document.getElementById('prop-node-cross-twice');
+                        if (twiceInput) twiceInput.value = obj.crossTwiceProb;
+                    }
+                    saveState();
+                });
+            }
+
+            const crossTwiceInput = document.getElementById('prop-node-cross-twice');
+            if (crossTwiceInput) {
+                crossTwiceInput.addEventListener('change', (e) => {
+                    let val = parseFloat(e.target.value);
+                    if (isNaN(val) || val < 0) val = 0;
+                    if (val > 100) val = 100;
+                    obj.crossTwiceProb = val;
+                    e.target.value = val;
+                    
+                    if ((obj.crossOnceProb || 0) + obj.crossTwiceProb > 100) {
+                        obj.crossOnceProb = 100 - obj.crossTwiceProb;
+                        const onceInput = document.getElementById('prop-node-cross-once');
+                        if (onceInput) onceInput.value = obj.crossOnceProb;
+                    }
+                    saveState();
+                });
+            }
+            // ------------------------------------
 
             // 4. Connection Group Selectors (Highlighting & Selection)
             document.querySelectorAll('.prop-group-selector').forEach(link => {
@@ -9459,6 +9530,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
 
                     // TFL Groups
+                    // TFL Groups
                     const trGroupsEl = getChildrenByLocalName(nodeEl, "TurnTRGroups")[0];
                     let groupMap = null;
                     if (trGroupsEl) {
@@ -9476,7 +9548,18 @@ document.addEventListener('DOMContentLoaded', () => {
                             groupMap.set(gId, { name: gName, connXmlIds: connIds });
                         });
                     }
-                    xmlNodeDataMap.set(xmlId, { groups: groupMap, turningRatios: turningRatios });
+
+                    const pedVolStr = getChildValue(nodeEl, "pedestrianVolume");
+                    const crossOnceStr = getChildValue(nodeEl, "crossOnceProb");
+                    const crossTwiceStr = getChildValue(nodeEl, "crossTwiceProb");
+
+                    xmlNodeDataMap.set(xmlId, {
+                        groups: groupMap,
+                        turningRatios: turningRatios,
+                        pedestrianVolume: pedVolStr ? parseFloat(pedVolStr) : 0,
+                        crossOnceProb: crossOnceStr ? parseFloat(crossOnceStr) : 100,
+                        crossTwiceProb: crossTwiceStr ? parseFloat(crossTwiceStr) : 0
+                    });
                 }
             });
         }
@@ -9512,10 +9595,13 @@ document.addEventListener('DOMContentLoaded', () => {
                                     xmlNodeIdMap.set(xmlRegNodeId, newConn.nodeId);
                                     syncIdCounter(newConn.nodeId);
                                     const nodeData = xmlNodeDataMap.get(xmlRegNodeId);
-                                    if (nodeData && nodeData.turningRatios) {
+                                    if (nodeData) {
                                         const createdNode = network.nodes[newConn.nodeId];
                                         if (createdNode) {
-                                            createdNode.turningRatios = nodeData.turningRatios;
+                                            if (nodeData.turningRatios) createdNode.turningRatios = nodeData.turningRatios;
+                                            if (nodeData.pedestrianVolume !== undefined) createdNode.pedestrianVolume = nodeData.pedestrianVolume;
+                                            if (nodeData.crossOnceProb !== undefined) createdNode.crossOnceProb = nodeData.crossOnceProb;
+                                            if (nodeData.crossTwiceProb !== undefined) createdNode.crossTwiceProb = nodeData.crossTwiceProb;
                                         }
                                     }
                                 } else {
@@ -10341,6 +10427,10 @@ document.addEventListener('DOMContentLoaded', () => {
             // 只有當該節點有連接線，或者設定了轉向比例時才匯出
             if (connectionsAtNode.length > 0 || (node.turningRatios && Object.keys(node.turningRatios).length > 0)) {
                 xml += `      <tm:RegularNode><tm:id>${numericId}</tm:id><tm:name></tm:name>\n`;
+
+                xml += `        <tm:pedestrianVolume>${node.pedestrianVolume || 0}</tm:pedestrianVolume>\n`;
+                xml += `        <tm:crossOnceProb>${node.crossOnceProb !== undefined ? node.crossOnceProb : 100}</tm:crossOnceProb>\n`;
+                xml += `        <tm:crossTwiceProb>${node.crossTwiceProb || 0}</tm:crossTwiceProb>\n`;
 
                 // [新增] 寫入 Turning Ratios (Flow Mode)
                 if (node.turningRatios && Object.keys(node.turningRatios).length > 0) {
