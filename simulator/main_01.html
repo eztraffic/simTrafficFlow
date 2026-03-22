@@ -144,7 +144,8 @@
                 <div class="divider-v"></div>
 
                 <!-- 2. 視角/控制模式 (3 Columns Grid) -->
-                <div class="mode-grid">
+                <!-- 找到這行，加上 id="viewModeGrid" -->
+                <div class="mode-grid" id="viewModeGrid">
                     <label class="mini-switch" title="Flyover Mode">
                         <input type="checkbox" id="flyoverToggle">
                         <span class="switch-label" data-i18n="lblFlyover">鳥瞰</span>
@@ -168,12 +169,24 @@
                         <input type="checkbox" id="aiToggle">
                         <span class="switch-label">AI控制</span>
                     </label>
+
                     <label class="mini-switch" title="Signal Optimization (Webster)">
                         <input type="checkbox" id="optToggle">
                         <span class="switch-label">優化</span>
                     </label>
-                    <!-- 空位補齊 (Optional) -->
                     <div style="width: 1px;"></div>
+                </div>
+
+                <!-- ★★★ 新增：數位孿生資料更新頻率選單 (預設隱藏) ★★★ -->
+                <div id="vdUpdateFreqContainer"
+                    style="display: none; align-items: center; gap: 8px; margin-left: 10px;">
+                    <label style="font-size: 0.75rem; color: #64748b; font-weight: bold;">更新頻率:</label>
+                    <select id="vdUpdateFreqSelector" class="dropdown-light" style="font-weight: bold; color: #06b6d4;">
+                        <option value="10">10 分鐘</option>
+                        <option value="15">15 分鐘</option>
+                        <option value="30">30 分鐘</option>
+                        <option value="60">60 分鐘</option>
+                    </select>
                 </div>
 
                 <div class="divider-v"></div>
@@ -400,8 +413,11 @@
     <script src="script_drive.js"></script>
     <script src="script_opt_iterator.js"></script>
     <script src="script_opt.js"></script>
+    <script src="script_pedestrian_sim.js"></script>
     <!-- ★★★ 新增：數位孿生邏輯 ★★★ -->
     <script src="script_digital_twin.js"></script>
+    <!-- ★★★ 新增 VD API 腳本 ★★★ -->
+    <script src="script_vd_api.js"></script>
     <script src="script02.js"></script>
     <script src="script_report.js"></script>
     <script>

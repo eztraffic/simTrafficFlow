@@ -2181,6 +2181,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // [新增] 計算斑馬線中心線的兩個端點與寬度
+    window.calculateCrosswalkLine = calculateCrosswalkLine; // 暴露給行人腳本使用
     function calculateCrosswalkLine(mark, netData) {
         if (mark.isFree || mark.nodeId || (!mark.linkId && mark.x !== 0)) {
             const cx = mark.x;
@@ -2516,13 +2517,19 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         if (showSectionMeters && netData.sectionMeters) {
             netData.sectionMeters.forEach(meter => {
-                const size = 3.0;
-                [{ x: meter.startX, y: meter.startY, a: meter.startAngle }, { x: meter.endX, y: meter.endY, a: meter.endAngle }].forEach(p => {
+                const size = 3.0;[{ x: meter.startX, y: meter.startY, a: meter.startAngle }, { x: meter.endX, y: meter.endY, a: meter.endAngle }].forEach(p => {
                     ctx2D.save(); ctx2D.translate(p.x, p.y); ctx2D.rotate(p.a);
                     ctx2D.fillStyle = 'rgba(50, 180, 239, 0.9)'; ctx2D.fillRect(-size / 2, -size / 2, size, size);
                     ctx2D.restore();
                 });
             });
+        }
+
+        // ★ 繪製 2D 行人
+        if (simulation && simulation.pedManager) {
+            // 注意：ctx2D 已經 translate & scale 過，直接傳入原點即可
+            const identityWorldToScreen = (x, y) => ({ x, y });
+            simulation.pedManager.draw2D(ctx2D, identityWorldToScreen, scale);
         }
 
         // --- 新增：繪製 Road Markings ---
@@ -3875,6 +3882,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     networkGroup.add(mesh);
                 }
             });
+        }
+
+        // ★ 將行人 3D 群組加入場景
+        if (simulation && simulation.pedManager && simulation.pedManager.group3D) {
+            scene.add(simulation.pedManager.group3D);
         }
 
         update3DVisibility();
@@ -6285,6 +6297,11 @@ document.addEventListener('DOMContentLoaded', () => {
             this.trafficLights = network.trafficLights;
             this.speedMeters = (network.speedMeters || []).map(m => ({ ...m, readings: {}, maxAvgSpeed: 0 }));
             this.sectionMeters = (network.sectionMeters || []).map(m => ({ ...m, completedVehicles: [], maxAvgSpeed: 0, lastAvgSpeed: null }));
+
+            // ★ 初始化行人管理器
+            if (typeof window.PedestrianManagerSim !== 'undefined') {
+                this.pedManager = new window.PedestrianManagerSim(this, network);
+            }
         }
 
         getStopLinePosition(linkId, laneIndex) {
@@ -6317,6 +6334,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
             this.vehicles.forEach(vehicle => vehicle.update(dt, this.vehicles, this));
             this.vehicles = this.vehicles.filter(v => !v.finished);
+
+            // ★ 更新行人
+            if (this.pedManager) {
+                this.pedManager.update(dt);
+            }
         }
     }
 
@@ -6971,8 +6993,19 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             // ==========================================
             // 跟車模型 (IDM)
-            const { leader, gap } = this.findLeader(allVehicles, network);
+            // 將 const 替換為 let，因為我們可能需要修改 gap 和 leader
+            let { leader, gap } = this.findLeader(allVehicles, network);
 
+            // ==========================================
+            // ★★★ [新增] 行人防撞與轉向禮讓邏輯 ★★★
+            // ==========================================
+            if (simulation && simulation.pedManager) {
+                const pedGap = this.detectPedestrianConflict(simulation);
+                if (pedGap < gap) {
+                    gap = pedGap;  // 覆蓋安全距離，縮減為距離行人 3 公尺
+                    leader = null; // 視為虛擬靜止障礙物，強迫車輛排隊煞停
+                }
+            }
             // 起步加速邏輯（簡化版）
             // 如果處於起步模式且前方空曠，使用較高但合理的加速度
             if (this.isMotorcycle && this.swarmTimer > 0 && gap > 5.0) {
@@ -8619,6 +8652,87 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             return { leader, gap: Math.max(0.1, gap) };
         }
+/**
+         * [新增] 偵測行人衝突 (Pedestrian Yielding)
+         * 檢查車輛預測路徑上是否有正在穿越的行人，若有則回傳需煞車的虛擬 Gap (保留3公尺安全距離)
+         */
+        detectPedestrianConflict(simulation) {
+            let minVirtualGap = Infinity;
+            if (!simulation || !simulation.pedManager) return minVirtualGap;
+
+            const peds = simulation.pedManager.pedestrians;
+            if (peds.length === 0) return minVirtualGap;
+
+            // 只有在路口轉彎內，或接近路口時 (距離路段終點 < 20m) 才需要禮讓行人
+            const distToEnd = this.currentPathLength - this.distanceOnPath;
+            if (this.state !== 'inIntersection' && distToEnd > 20) return minVirtualGap;
+
+            for (const ped of peds) {
+                // 僅考慮正在過馬路的行人
+                if (ped.state !== 'CROSSING') continue;
+
+                const dx = ped.x - this.x;
+                const dy = ped.y - this.y;
+                const distSq = dx * dx + dy * dy;
+                
+                // 效能過濾：距離超過 20 公尺 (20^2 = 400) 就不考慮
+                if (distSq > 400) continue; 
+
+                let conflictDistance = null;
+
+                // 情況 A：在路口內 (車輛左/右轉循貝茲曲線行駛)
+                if (this.state === 'inIntersection' && this.currentPath && this.currentPath.length >= 4) {
+                    let minDistToPath = Infinity;
+                    let pathS = this.distanceOnPath;
+                    
+                    // 沿著前方剩餘的轉彎路徑採樣，檢查行人是否在車輛即將經過的路徑上
+                    for (let s = this.distanceOnPath; s <= this.currentPathLength; s += 1.0) {
+                        const t = s / this.currentPathLength;
+                        const pt = Geom.Bezier.getPoint(t, this.currentPath[0], this.currentPath[1], this.currentPath[2], this.currentPath[3]);
+                        const dSq = (ped.x - pt.x)**2 + (ped.y - pt.y)**2;
+                        if (dSq < minDistToPath) {
+                            minDistToPath = dSq;
+                            pathS = s;
+                        }
+                    }
+                    
+                    // 行人距離車輛轉彎軌跡小於 2.5m (2.5^2 = 6.25)，視為衝突
+                    if (minDistToPath < 6.25 && pathS >= this.distanceOnPath) {
+                        conflictDistance = pathS - this.distanceOnPath;
+                    }
+                } 
+                // 情況 B：在直行路段上接近路口斑馬線
+                else {
+                    const fx = Math.cos(this.angle);
+                    const fy = Math.sin(this.angle);
+                    const rx = -fy; // Canvas Y-Down: right vector is (-sin, cos)
+                    const ry = fx;
+
+                    const fwdProj = dx * fx + dy * fy;
+                    const rightProj = dx * rx + dy * ry;
+
+                    // 行人在前方 20m 內
+                    if (fwdProj > 0 && fwdProj < 20.0) {
+                        // 行人在橫向車道範圍內 (車寬一半 + 1.5m 緩衝)
+                        const latBuffer = (this.width / 2) + 1.5; 
+                        if (Math.abs(rightProj) < latBuffer) {
+                            conflictDistance = fwdProj;
+                        }
+                    }
+                }
+
+                if (conflictDistance !== null) {
+                    // 目標：停在距離行人 3 公尺處
+                    // 需扣除車身前半段長度，因為 conflictDistance 是從車中心算起
+                    const requiredGap = conflictDistance - 3.0 - (this.length / 2);
+                    if (requiredGap < minVirtualGap) {
+                        // 最低給予 0.1，確保車輛可以安全煞停而不倒退
+                        minVirtualGap = Math.max(0.1, requiredGap);
+                    }
+                }
+            }
+            return minVirtualGap;
+        }
 
         /**
          * [新增] 偵測右轉衝突 (Right Hook Detection)
@@ -9401,7 +9515,22 @@ document.addEventListener('DOMContentLoaded', () => {
             // --- 3. 解析 Nodes ---
             xmlDoc.querySelectorAll('Nodes > *').forEach(nodeEl => {
                 const nodeId = nodeEl.querySelector('id').textContent;
-                nodes[nodeId] = { id: nodeId, transitions: [], turnGroups: {}, polygon: [], turningRatios: {} };
+                
+                // [新增] 行人參數讀取
+                const pedVolStr = getChildValue(nodeEl, 'pedestrianVolume');
+                const crossOnceStr = getChildValue(nodeEl, 'crossOnceProb');
+                const crossTwiceStr = getChildValue(nodeEl, 'crossTwiceProb');
+
+                nodes[nodeId] = { 
+                    id: nodeId, 
+                    transitions:[], 
+                    turnGroups: {}, 
+                    polygon:[], 
+                    turningRatios: {},
+                    pedestrianVolume: pedVolStr ? parseFloat(pedVolStr) : 0,
+                    crossOnceProb: crossOnceStr ? parseFloat(crossOnceStr) : 100,
+                    crossTwiceProb: crossTwiceStr ? parseFloat(crossTwiceStr) : 0
+                };
                 const node = nodes[nodeId];
 
                 nodeEl.querySelectorAll('PolygonGeometry > Point').forEach(p => {
