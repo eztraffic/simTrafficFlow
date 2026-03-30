@@ -4162,61 +4162,115 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
 
-        // 3. 行人號誌更新 (保持原樣，因為上一輪已經修正過)
+        // 3. 行人號誌更新 (使用 3D 真實方向匹配)
         if (typeof PedestrianManager !== 'undefined' && pedestrianMeshes.length > 0) {
             pedestrianMeshes.forEach(pedData => {
-                const { mesh, nodeId, linkId } = pedData;
+                const { mesh, nodeId } = pedData;
                 const tfl = simulation.trafficLights.find(t => t.nodeId === nodeId);
                 const node = networkData.nodes[nodeId];
                 let stateStraight = 'Red';
                 let remaining = 0;
 
-                if (tfl && node && linkId) {
-                    const inLink = networkData.links[linkId];
-                    const straightTurnGroups = [];
-                    if (inLink) {
-                        const inAngle = getLinkAngle(inLink, true);
-                        const transitions = node.transitions.filter(t => t.sourceLinkId === linkId && t.turnGroupId);
-                        transitions.forEach(trans => {
-                            // ... (重複判定直行邏輯，省略以節省篇幅) ...
-                            let turnAngle = 0;
-                            if (trans.bezier && trans.bezier.points.length > 0) {
-                                const pts = trans.bezier.points;
-                                const dx = pts[pts.length - 1].x - pts[0].x;
-                                const dy = pts[pts.length - 1].y - pts[0].y;
-                                let diff = Math.atan2(dy, dx) - inAngle;
-                                while (diff <= -Math.PI) diff += Math.PI * 2;
-                                while (diff > Math.PI) diff -= Math.PI * 2;
-                                turnAngle = diff;
-                            } else {
-                                const outLink = networkData.links[trans.destLinkId];
-                                if (outLink) {
-                                    const outAngle = getLinkAngle(outLink, false);
-                                    let diff = outAngle - inAngle;
-                                    while (diff <= -Math.PI) diff += Math.PI * 2;
-                                    while (diff > Math.PI) diff -= Math.PI * 2;
-                                    turnAngle = diff;
+                if (tfl && node) {
+                    // 1. 取得 3D 燈面的世界朝向 (發光方向)
+                    const meshWorldDir = new THREE.Vector3();
+                    mesh.getWorldDirection(meshWorldDir);
+
+                    // 行人的「過馬路方向」與發光方向相反 (-X, -Z)
+                    const walkDirX = -meshWorldDir.x;
+                    const walkDirY = -meshWorldDir.z; // 3D 的 Z 軸對應 2D 的 Y 軸
+
+                    let explicitPedGroupId = null;
+                    let bestDot = 0;
+
+                    // 2. 尋找與此行走方向最「平行」的斑馬線
+                    if (networkData.roadMarkings) {
+                        networkData.roadMarkings.forEach(mark => {
+                            if (mark.type === 'crosswalk') {
+                                let belongsToNode = (mark.nodeId === nodeId);
+                                if (!belongsToNode && mark.linkId) {
+                                    const link = networkData.links[mark.linkId];
+                                    if (link && (link.source === nodeId || link.destination === nodeId)) belongsToNode = true;
+                                }
+
+                                if (belongsToNode) {
+                                    const lineData = window.calculateCrosswalkLine ? window.calculateCrosswalkLine(mark, networkData) : null;
+                                    if (lineData) {
+                                        const cwDx = lineData.p2.x - lineData.p1.x;
+                                        const cwDy = lineData.p2.y - lineData.p1.y;
+                                        const cwLen = Math.hypot(cwDx, cwDy);
+                                        if (cwLen > 0) {
+                                            // 內積取絕對值判斷是否平行 (0.85 約容忍 31 度誤差)
+                                            const dot = Math.abs(walkDirX * (cwDx / cwLen) + walkDirY * (cwDy / cwLen));
+                                            if (dot > 0.85 && dot > bestDot) {
+                                                bestDot = dot;
+                                                explicitPedGroupId = mark.signalGroupId;
+                                            }
+                                        }
+                                    }
                                 }
                             }
-                            if (Math.abs(turnAngle) < 0.6) straightTurnGroups.push(trans.turnGroupId);
                         });
                     }
 
-                    let isGreen = false;
-                    straightTurnGroups.forEach(gid => {
-                        if (tfl.getSignalForTurnGroup(gid) === 'Green') isGreen = true;
-                    });
+                    if (explicitPedGroupId) {
+                        // ==========================================
+                        // 採用新版：依照明確指定的行人時相群組顯示燈號
+                        // ==========================================
+                        stateStraight = tfl.getSignalForTurnGroup(explicitPedGroupId);
+                        // ★ 改用專屬的連續倒數方法，確保行綠接行閃時秒數不會斷層
+                        remaining = tfl.getPedestrianRemainingTime(simulation.time, explicitPedGroupId);
 
-                    if (isGreen) {
-                        stateStraight = 'Green';
-                        const phaseInfo = tfl.getPhaseDetails(simulation.time);
-                        remaining = phaseInfo.remaining;
                     } else {
-                        stateStraight = 'Red';
-                        remaining = tfl.getTimeToNextGreen(simulation.time, straightTurnGroups);
+                        // ==========================================
+                        // 相容舊版：依賴「幾何平行」的車流直行號誌推算
+                        // ==========================================
+                        const straightTurnGroups = [];
+                        node.transitions.forEach(trans => {
+                            if (trans.turnGroupId) {
+                                const srcL = networkData.links[trans.sourceLinkId];
+                                const dstL = networkData.links[trans.destLinkId];
+                                if (srcL && dstL) {
+                                    const srcPath = srcL.lanes[trans.sourceLaneIndex || 0]?.path;
+                                    const dstPath = dstL.lanes[trans.destLaneIndex || 0]?.path;
+                                    if (srcPath && dstPath && srcPath.length > 0 && dstPath.length > 0) {
+                                        const pSrc = srcPath[srcPath.length - 1];
+                                        const pDst = dstPath[0];
+                                        const dx = pDst.x - pSrc.x;
+                                        const dy = pDst.y - pSrc.y;
+                                        const len = Math.hypot(dx, dy);
+                                        if (len > 0.1) {
+                                            const dot = Math.abs(walkDirX * (dx / len) + walkDirY * (dy / len));
+                                            if (dot > 0.85) straightTurnGroups.push(trans.turnGroupId);
+                                        }
+                                    }
+                                }
+                            }
+                        });
+
+                        let isGreen = false;
+                        let isYellow = false;
+                        straightTurnGroups.forEach(gid => {
+                            const sig = tfl.getSignalForTurnGroup(gid);
+                            if (sig === 'Green') isGreen = true;
+                            else if (sig === 'Yellow') isYellow = true;
+                        });
+
+                        if (isGreen) {
+                            stateStraight = 'Green';
+                            remaining = tfl.getPedestrianRemainingTime(simulation.time, straightTurnGroups[0]);
+                        } else if (isYellow) {
+                            stateStraight = 'Yellow'; // ★ 正確傳遞行閃狀態
+                            remaining = tfl.getPedestrianRemainingTime(simulation.time, straightTurnGroups[0]);
+                        } else {
+                            stateStraight = 'Red';
+                            remaining = tfl.getTimeToNextGreen(simulation.time, straightTurnGroups);
+                        }
                     }
                     if (isNaN(remaining)) remaining = 0;
                 }
+
+                // 將狀態傳遞給視覺管理器 (此時 stateStraight 會精準為 Green 或 Yellow 或 Red)
                 PedestrianManager.update(mesh, stateStraight, remaining, simulation.time);
             });
         }
@@ -6393,20 +6447,18 @@ document.addEventListener('DOMContentLoaded', () => {
             this.schedule = config.schedule;
             this.lights = config.lights;
             this.timeShift = config.timeShift || 0;
-            this.advancedConfig = config.advancedConfig; // ★ 新增
-            this.allGroupIds = config.allGroupIds || []; // ★ 新增
+            this.advancedConfig = config.advancedConfig;
+            this.allGroupIds = config.allGroupIds || [];
+            this.groupNameMap = config.groupNameMap || {}; // ★ 新增：名稱對應表 (例如 "P1" -> "2")
             this.cycleDuration = this.schedule.reduce((sum, p) => sum + p.duration, 0);
             this.turnGroupStates = {};
         }
 
         update(time) {
-            // ★ 如果啟動數位孿生且具有進階排程，則交給 DigitalTwinLogic 處理
             if (isDigitalTwinMode && this.advancedConfig && typeof DigitalTwinLogic !== 'undefined') {
                 this.turnGroupStates = DigitalTwinLogic.updateTrafficLight(this.advancedConfig, this.allGroupIds);
                 return;
             }
-
-            // 傳統邏輯
             if (this.cycleDuration <= 0) return;
             const effectiveTime = time - this.timeShift;
             let timeInCycle = ((effectiveTime % this.cycleDuration) + this.cycleDuration) % this.cycleDuration;
@@ -6423,11 +6475,12 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         getSignalForTurnGroup(turnGroupId) {
-            return this.turnGroupStates[turnGroupId] || 'Green';
+            // ★ 支援傳入 "P1" 等名稱，自動轉為 "2" 等內部 ID
+            const actualId = this.groupNameMap[turnGroupId] || turnGroupId;
+            return this.turnGroupStates[actualId] || 'Green';
         }
 
         getPhaseDetails(time) {
-            // ... (保持原樣) ...
             if (this.cycleDuration <= 0) return { duration: 1, remaining: 0 };
             const effectiveTime = time - this.timeShift;
             let timeInCycle = ((effectiveTime % this.cycleDuration) + this.cycleDuration) % this.cycleDuration;
@@ -6444,14 +6497,14 @@ document.addEventListener('DOMContentLoaded', () => {
             return { duration: 1, remaining: 0 };
         }
 
-        // ★★★ [新增此方法] 計算距離下一次綠燈還需等待多久 (累積紅燈秒數) ★★★
         getTimeToNextGreen(time, targetGroupIds) {
             if (this.cycleDuration <= 0 || !targetGroupIds || targetGroupIds.length === 0) return 0;
 
+            // ★ 將傳入的 "P1" 轉換為實際的 "2"
+            const actualIds = targetGroupIds.map(id => this.groupNameMap[id] || id);
+
             const effectiveTime = time - this.timeShift;
             let timeInCycle = ((effectiveTime % this.cycleDuration) + this.cycleDuration) % this.cycleDuration;
-
-            // 1. 找到當前所在的週期索引 (index)
             let currentPeriodIndex = 0;
             for (let i = 0; i < this.schedule.length; i++) {
                 if (timeInCycle < this.schedule[i].duration) {
@@ -6461,42 +6514,63 @@ document.addEventListener('DOMContentLoaded', () => {
                 timeInCycle -= this.schedule[i].duration;
             }
 
-            // 檢查當前是否已經是綠燈 (若任一目標群組為綠燈，視為綠燈)
             const currentPeriod = this.schedule[currentPeriodIndex];
-            const isCurrentGreen = targetGroupIds.some(gid => currentPeriod.signals[gid] === 'Green');
-
-            // 如果現在就是綠燈，等待時間為 0 (由外部邏輯處理綠燈倒數)
+            const isCurrentGreen = actualIds.some(gid => currentPeriod.signals[gid] === 'Green');
             if (isCurrentGreen) return 0;
 
-            // 如果現在是紅/黃燈，開始累加時間
-            // 初始等待時間 = 當前週期剩餘時間 (timeInCycle 此時已扣除前面的週期，剩下的就是已過時間)
             let totalWaitTime = currentPeriod.duration - timeInCycle;
-
-            // 2. 往後遍歷週期，直到找到綠燈
             let i = (currentPeriodIndex + 1) % this.schedule.length;
-            let safetyCounter = 0; // 防止無窮迴圈
+            let safetyCounter = 0;
 
             while (i !== currentPeriodIndex && safetyCounter < this.schedule.length) {
                 const period = this.schedule[i];
-
-                // 檢查這個週期是否變綠燈了
-                const isGreen = targetGroupIds.some(gid => period.signals[gid] === 'Green');
-
-                if (isGreen) {
-                    // 找到綠燈了！停止累加
-                    return totalWaitTime;
-                } else {
-                    // 還是紅/黃燈，累加此週期全部時間
-                    totalWaitTime += period.duration;
-                }
-
+                const isGreen = actualIds.some(gid => period.signals[gid] === 'Green');
+                if (isGreen) return totalWaitTime;
+                totalWaitTime += period.duration;
                 i = (i + 1) % this.schedule.length;
                 safetyCounter++;
             }
-
-            // 如果繞了一圈都沒綠燈 (全紅)，回傳累積時間
             return totalWaitTime;
         }
+// ★★★ [新增此方法] 專門給行人號誌使用：計算包含綠燈與黃燈(行閃)的總剩餘秒數 ★★★
+        getPedestrianRemainingTime(time, groupId) {
+            if (this.cycleDuration <= 0 || !groupId) return 0;
+            const actualId = this.groupNameMap[groupId] || groupId;
+            const effectiveTime = time - this.timeShift;
+            let timeInCycle = ((effectiveTime % this.cycleDuration) + this.cycleDuration) % this.cycleDuration;
+            
+            let currentPeriodIndex = 0;
+            for (let i = 0; i < this.schedule.length; i++) {
+                if (timeInCycle < this.schedule[i].duration) {
+                    currentPeriodIndex = i;
+                    break;
+                }
+                timeInCycle -= this.schedule[i].duration;
+            }
+
+            const currentPeriod = this.schedule[currentPeriodIndex];
+            const currentState = currentPeriod.signals[actualId] || 'Green';
+
+            // 如果現在是紅燈，顯示距離下一個綠燈的等待時間
+            if (currentState === 'Red') {
+                return this.getTimeToNextGreen(time, [groupId]);
+            } else {
+                // 如果現在是綠燈或行閃(黃)，計算直到變成紅燈前的「總剩餘時間」
+                let totalRemaining = currentPeriod.duration - timeInCycle;
+                let i = (currentPeriodIndex + 1) % this.schedule.length;
+                let safetyCounter = 0;
+                while (i !== currentPeriodIndex && safetyCounter < this.schedule.length) {
+                    const period = this.schedule[i];
+                    const state = period.signals[actualId] || 'Green';
+                    if (state === 'Red') break; // 遇到紅燈就停止累加
+                    totalRemaining += period.duration;
+                    i = (i + 1) % this.schedule.length;
+                    safetyCounter++;
+                }
+                return totalRemaining;
+            }
+        }
+
     }
     class Spawner {
         constructor(config, pathfinder) { this.originNodeId = config.originNodeId; this.periods = config.periods || []; this.pathfinder = pathfinder; this.currentPeriodIndex = -1; this.timeInPeriod = 0; this.active = false; this.spawnInterval = Infinity; this.spawnTimer = 0; this.currentConfig = null; this._switchToNextPeriod(); }
@@ -9029,286 +9103,286 @@ document.addEventListener('DOMContentLoaded', () => {
             return minVirtualGap;
         }
 
-/**
- * [直行豁免脫困版] 路口交叉軌跡衝突偵測
- * 改善版：修復三項潛在風險
- *   1. 狀況 B 觸發條件收緊（防低速誤讓）
- *   2. 死鎖破局不再允許穿模（safeDist 不縮減）
- *   3. 軌跡衝突 fallback 加入幾何驗證
- */
-detectIntersectionConflict(allVehicles, network) {
-    if (this.state !== 'inIntersection' && this.state !== 'onLink') return Infinity;
+        /**
+         * [直行豁免脫困版] 路口交叉軌跡衝突偵測
+         * 改善版：修復三項潛在風險
+         *   1. 狀況 B 觸發條件收緊（防低速誤讓）
+         *   2. 死鎖破局不再允許穿模（safeDist 不縮減）
+         *   3. 軌跡衝突 fallback 加入幾何驗證
+         */
+        detectIntersectionConflict(allVehicles, network) {
+            if (this.state !== 'inIntersection' && this.state !== 'onLink') return Infinity;
 
-    const distToEnd = this.currentPathLength - this.distanceOnPath;
-    if (this.state === 'onLink' && distToEnd > 30) return Infinity;
+            const distToEnd = this.currentPathLength - this.distanceOnPath;
+            if (this.state === 'onLink' && distToEnd > 30) return Infinity;
 
-    let minGap = Infinity;
-    const cos = Math.cos(this.angle);
-    const sin = Math.sin(this.angle);
+            let minGap = Infinity;
+            const cos = Math.cos(this.angle);
+            const sin = Math.sin(this.angle);
 
-    // ─── 1. 取得本車 Transition ────────────────────────────────────────────
-    let myTrans = this.currentTransition;
-    if (this.state === 'onLink') {
-        const currentLink = network.links[this.currentLinkId];
-        if (currentLink && this.route.length > this.currentLinkIndex + 1) {
-            const destNode = network.nodes[currentLink.destination];
-            const nextLinkId = this.route[this.currentLinkIndex + 1];
-            let checkLane = this.currentLaneIndex;
-            if (this.laneChangeState && this.laneChangeState.progress > 0.5) {
-                checkLane = this.laneChangeState.toLaneIndex;
-            }
-            if (destNode) {
-                myTrans = destNode.transitions.find(
-                    t => t.sourceLinkId === this.currentLinkId &&
-                         t.sourceLaneIndex === checkLane &&
-                         t.destLinkId === nextLinkId
-                ) || destNode.transitions.find(
-                    t => t.sourceLinkId === this.currentLinkId &&
-                         t.destLinkId === nextLinkId
-                );
-            }
-        }
-    }
-
-    // ─── 2. 轉彎方向判定 ──────────────────────────────────────────────────
-    const getTurnType = (trans) => {
-        if (!trans || !trans.bezier || trans.bezier.points.length < 4) return 'straight';
-        const pts = trans.bezier.points;
-        const aStart = Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x);
-        const aEnd   = Math.atan2(pts[3].y - pts[2].y, pts[3].x - pts[2].x);
-        let diff = aEnd - aStart;
-        while (diff <= -Math.PI) diff += Math.PI * 2;
-        while (diff >  Math.PI) diff -= Math.PI * 2;
-        if (diff < -0.15) return 'left';
-        if (diff >  0.15) return 'right';
-        return 'straight';
-    };
-
-    // ─── [改善 3] 幾何線段交叉驗證（用於 fallback 軌跡衝突判斷）──────────
-
-    /**
-     * 取得三次 Bezier 路徑的近似折線點（均勻取樣 N 段）
-     */
-    const sampleBezier = (pts, n = 8) => {
-        const result = [];
-        for (let i = 0; i <= n; i++) {
-            const t = i / n;
-            const mt = 1 - t;
-            result.push({
-                x: mt*mt*mt*pts[0].x + 3*mt*mt*t*pts[1].x + 3*mt*t*t*pts[2].x + t*t*t*pts[3].x,
-                y: mt*mt*mt*pts[0].y + 3*mt*mt*t*pts[1].y + 3*mt*t*t*pts[2].y + t*t*t*pts[3].y,
-            });
-        }
-        return result;
-    };
-
-    /**
-     * 判斷兩線段 (p1→p2) 與 (p3→p4) 是否相交
-     */
-    const segmentsIntersect = (p1, p2, p3, p4) => {
-        const d1x = p2.x - p1.x, d1y = p2.y - p1.y;
-        const d2x = p4.x - p3.x, d2y = p4.y - p3.y;
-        const cross = d1x * d2y - d1y * d2x;
-        if (Math.abs(cross) < 1e-10) return false; // 平行或共線
-        const dx = p3.x - p1.x, dy = p3.y - p1.y;
-        const t = (dx * d2y - dy * d2x) / cross;
-        const u = (dx * d1y - dy * d1x) / cross;
-        return t >= 0 && t <= 1 && u >= 0 && u <= 1;
-    };
-
-    /**
-     * [改善 3] 幾何驗證：兩條 Bezier 路徑的折線是否實際有幾何交叉。
-     * 只有在 conflictingTransitionIds 資料缺失時作為 fallback 使用，
-     * 取代原本僅憑「來源不同 + 轉向不同」的過度寬鬆判斷。
-     */
-    const bezierPathsGeometricallyConflict = (transA, transB) => {
-        if (!transA?.bezier?.points || transA.bezier.points.length < 4) return false;
-        if (!transB?.bezier?.points || transB.bezier.points.length < 4) return false;
-        const polyA = sampleBezier(transA.bezier.points);
-        const polyB = sampleBezier(transB.bezier.points);
-        for (let i = 0; i < polyA.length - 1; i++) {
-            for (let j = 0; j < polyB.length - 1; j++) {
-                if (segmentsIntersect(polyA[i], polyA[i+1], polyB[j], polyB[j+1])) return true;
-            }
-        }
-        return false;
-    };
-
-    const myTurnType = getTurnType(myTrans);
-
-    for (const other of allVehicles) {
-        if (other.id === this.id) continue;
-        if (other.state !== 'inIntersection' && other.state !== 'onLink') continue;
-
-        if (this.state === 'onLink' && other.state === 'onLink' &&
-            this.currentLinkId === other.currentLinkId) continue;
-        if (this.state === 'inIntersection' && myTrans && other.currentTransition &&
-            myTrans.id === other.currentTransition.id) continue;
-        if (other.twoStageState && other.twoStageState !== 'none') continue;
-
-        const dx = other.x - this.x;
-        const dy = other.y - this.y;
-        const distSq = dx * dx + dy * dy;
-        if (distSq > 900) continue;
-
-        const myRadius    = Math.max(this.width,  this.length)  / 2;
-        const otherRadius = Math.max(other.width, other.length) / 2;
-        // ★ [改善 2] safeDist 固定不縮減，死鎖破局改用行為仲裁而非穿模
-        const safeDist = myRadius + otherRadius + 0.3;
-
-        // ─── 3. 軌跡衝突判定（含幾何 fallback）──────────────────────────
-        let pathsConflict = false;
-        const otherTurnType = getTurnType(other.currentTransition);
-
-        // 優先採用預計算的衝突表（最準確）
-        if (myTrans && other.currentTransition && myTrans.conflictingTransitionIds) {
-            if (myTrans.conflictingTransitionIds.includes(other.currentTransition.id)) {
-                pathsConflict = true;
-            }
-        }
-
-        // [改善 3] fallback：改用幾何交叉驗證，取代原本過於寬鬆的「來源不同+轉向不同」規則
-        if (!pathsConflict && myTrans && other.currentTransition) {
-            const mySrc    = myTrans.sourceLinkId;
-            const otherSrc = other.currentTransition.sourceLinkId;
-            if (mySrc !== otherSrc) {
-                pathsConflict = bezierPathsGeometricallyConflict(myTrans, other.currentTransition);
-            }
-        }
-
-        if (!pathsConflict && distSq < safeDist * safeDist) pathsConflict = true;
-        if (!pathsConflict) continue;
-
-        const distToOther = Math.sqrt(distSq);
-
-        const fwd = dx * cos + dy * sin;
-        if (fwd < -(this.length / 2) - otherRadius - 0.5) continue;
-
-        let shouldYield = false;
-        const myProgress    = this.distanceOnPath / Math.max(0.1, this.currentPathLength);
-        const otherProgress = other.distanceOnPath / Math.max(0.1, other.currentPathLength);
-
-        const isMeLeftOtherStraight = (myTurnType === 'left'     && otherTurnType === 'straight');
-        const isMeStraightOtherLeft = (myTurnType === 'straight' && otherTurnType === 'left');
-        const otherTimeToReach = distToOther / Math.max(other.speed, 0.1);
-
-        // =========================================================
-        // 4. 絕對路權與交會判定 (防互相禮讓死結)
-        // =========================================================
-
-        // [改善 2] 死鎖偵測條件不變，但完全移除 safeDist 縮減。
-        //          以「路口內者優先 + ID 仲裁」純粹透過行為讓步打破僵局，
-        //          不依賴物理穿模，保持視覺正確性。
-        const isDeadlockRisk = (distSq < 225 && this.speed < 1.0 && other.speed < 1.0);
-
-        if (isDeadlockRisk) {
-            if (this.state === 'inIntersection' && other.state === 'onLink') {
-                shouldYield = false;
-            } else if (this.state === 'onLink' && other.state === 'inIntersection') {
-                shouldYield = true;
-            } else {
-                shouldYield = (this.id > other.id);
-            }
-        }
-        else {
-            // 狀況 A：對方已在路口內，我還在路段上
-            if (this.state === 'onLink' && other.state === 'inIntersection') {
-                if (isMeStraightOtherLeft && otherProgress < 0.8) {
-                    shouldYield = false;
-                } else {
-                    shouldYield = (other.speed < 2.5 || otherProgress < 0.85);
-                }
-            }
-            // 狀況 B：我在路口內，對方在路段上
-            else if (this.state === 'inIntersection' && other.state === 'onLink') {
-                if (isMeLeftOtherStraight) {
-                    // [改善 1] 原條件：distToOther < 35 && other.speed > 0.5 && myProgress < 0.5
-                    //          問題：對方龜速（如 0.6 m/s）時也觸發讓行，導致左轉車長期卡死。
-                    //          修復：
-                    //            距離門檻從 35m 收緊至 25m（減少誤觸範圍）
-                    //            速度門檻從 0.5 m/s 提高至 3.0 m/s（約 10.8 km/h）
-                    //            確保對方真的在行進中才視為 T-bone 威脅
-                    const isTboneThreat = (
-                        distToOther < 25.0 &&
-                        other.speed > 3.0 &&   // ★ 新增：須達行進速度才算威脅
-                        myProgress < 0.5
-                    );
-                    shouldYield = isTboneThreat;
-                } else {
-                    shouldYield = false;
-                }
-            }
-            // 狀況 C：雙方都在路口內
-            else if (this.state === 'inIntersection' && other.state === 'inIntersection') {
-                if (isMeStraightOtherLeft) {
-                    shouldYield = (otherProgress > 0.5);
-                } else if (isMeLeftOtherStraight) {
-                    shouldYield = (myProgress <= 0.5);
-                } else if (otherProgress > myProgress + 0.1) {
-                    shouldYield = true;
-                } else if (myProgress > otherProgress + 0.1) {
-                    shouldYield = false;
-                } else {
-                    shouldYield = (this.id > other.id);
-                }
-            }
-            // 狀況 D：雙方都在路段上
-            else {
-                if (isMeLeftOtherStraight) {
-                    const isOtherApproaching = (other.speed > 1.0 && otherTimeToReach < 8.0);
-                    const isOtherVeryClose   = (distToOther < 40.0 && other.speed > 0.2);
-                    shouldYield = (isOtherApproaching || isOtherVeryClose);
-                } else if (isMeStraightOtherLeft) {
-                    shouldYield = false;
-                } else {
-                    if      (myTurnType === 'left'     && otherTurnType === 'right')    shouldYield = true;
-                    else if (myTurnType === 'right'    && otherTurnType === 'left')     shouldYield = false;
-                    else if (myTurnType === 'right'    && otherTurnType === 'straight') shouldYield = true;
-                    else if (myTurnType === 'straight' && otherTurnType === 'right')    shouldYield = false;
-                    else shouldYield = (this.id > other.id);
-                }
-            }
-        }
-
-        // =========================================================
-        // 5. 執行讓行與計算停車位置
-        // =========================================================
-        if (shouldYield) {
+            // ─── 1. 取得本車 Transition ────────────────────────────────────────────
+            let myTrans = this.currentTransition;
             if (this.state === 'onLink') {
-                let checkLane = this.currentLaneIndex;
-                if (this.laneChangeState && this.laneChangeState.progress > 0.5) {
-                    checkLane = this.laneChangeState.toLaneIndex;
-                }
-
-                let stopLinePos;
-                if (this.isMotorcycle) {
-                    stopLinePos = network.motoStopLineMap?.[this.currentLinkId]?.[checkLane];
-                } else {
-                    stopLinePos = network.stopLineMap?.[this.currentLinkId]?.[checkLane];
-                }
-
-                const actualDistToStop = stopLinePos !== undefined
-                    ? stopLinePos - this.distanceOnPath - (this.length / 2)
-                    : distToEnd - (this.length / 2);
-
-                if (actualDistToStop > -1.0) {
-                    const stopLineGap = actualDistToStop + this.minGap - 0.5;
-                    minGap = Math.min(minGap, Math.max(0.1, stopLineGap));
-                    continue;
+                const currentLink = network.links[this.currentLinkId];
+                if (currentLink && this.route.length > this.currentLinkIndex + 1) {
+                    const destNode = network.nodes[currentLink.destination];
+                    const nextLinkId = this.route[this.currentLinkIndex + 1];
+                    let checkLane = this.currentLaneIndex;
+                    if (this.laneChangeState && this.laneChangeState.progress > 0.5) {
+                        checkLane = this.laneChangeState.toLaneIndex;
+                    }
+                    if (destNode) {
+                        myTrans = destNode.transitions.find(
+                            t => t.sourceLinkId === this.currentLinkId &&
+                                t.sourceLaneIndex === checkLane &&
+                                t.destLinkId === nextLinkId
+                        ) || destNode.transitions.find(
+                            t => t.sourceLinkId === this.currentLinkId &&
+                                t.destLinkId === nextLinkId
+                        );
+                    }
                 }
             }
 
-            if (distSq < safeDist * safeDist) {
-                minGap = Math.min(minGap, 0.1);
-            } else {
-                const virtualGap = Math.max(0.1, distToOther - (this.length / 2) - otherRadius - 0.5);
-                minGap = Math.min(minGap, virtualGap);
+            // ─── 2. 轉彎方向判定 ──────────────────────────────────────────────────
+            const getTurnType = (trans) => {
+                if (!trans || !trans.bezier || trans.bezier.points.length < 4) return 'straight';
+                const pts = trans.bezier.points;
+                const aStart = Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x);
+                const aEnd = Math.atan2(pts[3].y - pts[2].y, pts[3].x - pts[2].x);
+                let diff = aEnd - aStart;
+                while (diff <= -Math.PI) diff += Math.PI * 2;
+                while (diff > Math.PI) diff -= Math.PI * 2;
+                if (diff < -0.15) return 'left';
+                if (diff > 0.15) return 'right';
+                return 'straight';
+            };
+
+            // ─── [改善 3] 幾何線段交叉驗證（用於 fallback 軌跡衝突判斷）──────────
+
+            /**
+             * 取得三次 Bezier 路徑的近似折線點（均勻取樣 N 段）
+             */
+            const sampleBezier = (pts, n = 8) => {
+                const result = [];
+                for (let i = 0; i <= n; i++) {
+                    const t = i / n;
+                    const mt = 1 - t;
+                    result.push({
+                        x: mt * mt * mt * pts[0].x + 3 * mt * mt * t * pts[1].x + 3 * mt * t * t * pts[2].x + t * t * t * pts[3].x,
+                        y: mt * mt * mt * pts[0].y + 3 * mt * mt * t * pts[1].y + 3 * mt * t * t * pts[2].y + t * t * t * pts[3].y,
+                    });
+                }
+                return result;
+            };
+
+            /**
+             * 判斷兩線段 (p1→p2) 與 (p3→p4) 是否相交
+             */
+            const segmentsIntersect = (p1, p2, p3, p4) => {
+                const d1x = p2.x - p1.x, d1y = p2.y - p1.y;
+                const d2x = p4.x - p3.x, d2y = p4.y - p3.y;
+                const cross = d1x * d2y - d1y * d2x;
+                if (Math.abs(cross) < 1e-10) return false; // 平行或共線
+                const dx = p3.x - p1.x, dy = p3.y - p1.y;
+                const t = (dx * d2y - dy * d2x) / cross;
+                const u = (dx * d1y - dy * d1x) / cross;
+                return t >= 0 && t <= 1 && u >= 0 && u <= 1;
+            };
+
+            /**
+             * [改善 3] 幾何驗證：兩條 Bezier 路徑的折線是否實際有幾何交叉。
+             * 只有在 conflictingTransitionIds 資料缺失時作為 fallback 使用，
+             * 取代原本僅憑「來源不同 + 轉向不同」的過度寬鬆判斷。
+             */
+            const bezierPathsGeometricallyConflict = (transA, transB) => {
+                if (!transA?.bezier?.points || transA.bezier.points.length < 4) return false;
+                if (!transB?.bezier?.points || transB.bezier.points.length < 4) return false;
+                const polyA = sampleBezier(transA.bezier.points);
+                const polyB = sampleBezier(transB.bezier.points);
+                for (let i = 0; i < polyA.length - 1; i++) {
+                    for (let j = 0; j < polyB.length - 1; j++) {
+                        if (segmentsIntersect(polyA[i], polyA[i + 1], polyB[j], polyB[j + 1])) return true;
+                    }
+                }
+                return false;
+            };
+
+            const myTurnType = getTurnType(myTrans);
+
+            for (const other of allVehicles) {
+                if (other.id === this.id) continue;
+                if (other.state !== 'inIntersection' && other.state !== 'onLink') continue;
+
+                if (this.state === 'onLink' && other.state === 'onLink' &&
+                    this.currentLinkId === other.currentLinkId) continue;
+                if (this.state === 'inIntersection' && myTrans && other.currentTransition &&
+                    myTrans.id === other.currentTransition.id) continue;
+                if (other.twoStageState && other.twoStageState !== 'none') continue;
+
+                const dx = other.x - this.x;
+                const dy = other.y - this.y;
+                const distSq = dx * dx + dy * dy;
+                if (distSq > 900) continue;
+
+                const myRadius = Math.max(this.width, this.length) / 2;
+                const otherRadius = Math.max(other.width, other.length) / 2;
+                // ★ [改善 2] safeDist 固定不縮減，死鎖破局改用行為仲裁而非穿模
+                const safeDist = myRadius + otherRadius + 0.3;
+
+                // ─── 3. 軌跡衝突判定（含幾何 fallback）──────────────────────────
+                let pathsConflict = false;
+                const otherTurnType = getTurnType(other.currentTransition);
+
+                // 優先採用預計算的衝突表（最準確）
+                if (myTrans && other.currentTransition && myTrans.conflictingTransitionIds) {
+                    if (myTrans.conflictingTransitionIds.includes(other.currentTransition.id)) {
+                        pathsConflict = true;
+                    }
+                }
+
+                // [改善 3] fallback：改用幾何交叉驗證，取代原本過於寬鬆的「來源不同+轉向不同」規則
+                if (!pathsConflict && myTrans && other.currentTransition) {
+                    const mySrc = myTrans.sourceLinkId;
+                    const otherSrc = other.currentTransition.sourceLinkId;
+                    if (mySrc !== otherSrc) {
+                        pathsConflict = bezierPathsGeometricallyConflict(myTrans, other.currentTransition);
+                    }
+                }
+
+                if (!pathsConflict && distSq < safeDist * safeDist) pathsConflict = true;
+                if (!pathsConflict) continue;
+
+                const distToOther = Math.sqrt(distSq);
+
+                const fwd = dx * cos + dy * sin;
+                if (fwd < -(this.length / 2) - otherRadius - 0.5) continue;
+
+                let shouldYield = false;
+                const myProgress = this.distanceOnPath / Math.max(0.1, this.currentPathLength);
+                const otherProgress = other.distanceOnPath / Math.max(0.1, other.currentPathLength);
+
+                const isMeLeftOtherStraight = (myTurnType === 'left' && otherTurnType === 'straight');
+                const isMeStraightOtherLeft = (myTurnType === 'straight' && otherTurnType === 'left');
+                const otherTimeToReach = distToOther / Math.max(other.speed, 0.1);
+
+                // =========================================================
+                // 4. 絕對路權與交會判定 (防互相禮讓死結)
+                // =========================================================
+
+                // [改善 2] 死鎖偵測條件不變，但完全移除 safeDist 縮減。
+                //          以「路口內者優先 + ID 仲裁」純粹透過行為讓步打破僵局，
+                //          不依賴物理穿模，保持視覺正確性。
+                const isDeadlockRisk = (distSq < 225 && this.speed < 1.0 && other.speed < 1.0);
+
+                if (isDeadlockRisk) {
+                    if (this.state === 'inIntersection' && other.state === 'onLink') {
+                        shouldYield = false;
+                    } else if (this.state === 'onLink' && other.state === 'inIntersection') {
+                        shouldYield = true;
+                    } else {
+                        shouldYield = (this.id > other.id);
+                    }
+                }
+                else {
+                    // 狀況 A：對方已在路口內，我還在路段上
+                    if (this.state === 'onLink' && other.state === 'inIntersection') {
+                        if (isMeStraightOtherLeft && otherProgress < 0.8) {
+                            shouldYield = false;
+                        } else {
+                            shouldYield = (other.speed < 2.5 || otherProgress < 0.85);
+                        }
+                    }
+                    // 狀況 B：我在路口內，對方在路段上
+                    else if (this.state === 'inIntersection' && other.state === 'onLink') {
+                        if (isMeLeftOtherStraight) {
+                            // [改善 1] 原條件：distToOther < 35 && other.speed > 0.5 && myProgress < 0.5
+                            //          問題：對方龜速（如 0.6 m/s）時也觸發讓行，導致左轉車長期卡死。
+                            //          修復：
+                            //            距離門檻從 35m 收緊至 25m（減少誤觸範圍）
+                            //            速度門檻從 0.5 m/s 提高至 3.0 m/s（約 10.8 km/h）
+                            //            確保對方真的在行進中才視為 T-bone 威脅
+                            const isTboneThreat = (
+                                distToOther < 25.0 &&
+                                other.speed > 3.0 &&   // ★ 新增：須達行進速度才算威脅
+                                myProgress < 0.5
+                            );
+                            shouldYield = isTboneThreat;
+                        } else {
+                            shouldYield = false;
+                        }
+                    }
+                    // 狀況 C：雙方都在路口內
+                    else if (this.state === 'inIntersection' && other.state === 'inIntersection') {
+                        if (isMeStraightOtherLeft) {
+                            shouldYield = (otherProgress > 0.5);
+                        } else if (isMeLeftOtherStraight) {
+                            shouldYield = (myProgress <= 0.5);
+                        } else if (otherProgress > myProgress + 0.1) {
+                            shouldYield = true;
+                        } else if (myProgress > otherProgress + 0.1) {
+                            shouldYield = false;
+                        } else {
+                            shouldYield = (this.id > other.id);
+                        }
+                    }
+                    // 狀況 D：雙方都在路段上
+                    else {
+                        if (isMeLeftOtherStraight) {
+                            const isOtherApproaching = (other.speed > 1.0 && otherTimeToReach < 8.0);
+                            const isOtherVeryClose = (distToOther < 40.0 && other.speed > 0.2);
+                            shouldYield = (isOtherApproaching || isOtherVeryClose);
+                        } else if (isMeStraightOtherLeft) {
+                            shouldYield = false;
+                        } else {
+                            if (myTurnType === 'left' && otherTurnType === 'right') shouldYield = true;
+                            else if (myTurnType === 'right' && otherTurnType === 'left') shouldYield = false;
+                            else if (myTurnType === 'right' && otherTurnType === 'straight') shouldYield = true;
+                            else if (myTurnType === 'straight' && otherTurnType === 'right') shouldYield = false;
+                            else shouldYield = (this.id > other.id);
+                        }
+                    }
+                }
+
+                // =========================================================
+                // 5. 執行讓行與計算停車位置
+                // =========================================================
+                if (shouldYield) {
+                    if (this.state === 'onLink') {
+                        let checkLane = this.currentLaneIndex;
+                        if (this.laneChangeState && this.laneChangeState.progress > 0.5) {
+                            checkLane = this.laneChangeState.toLaneIndex;
+                        }
+
+                        let stopLinePos;
+                        if (this.isMotorcycle) {
+                            stopLinePos = network.motoStopLineMap?.[this.currentLinkId]?.[checkLane];
+                        } else {
+                            stopLinePos = network.stopLineMap?.[this.currentLinkId]?.[checkLane];
+                        }
+
+                        const actualDistToStop = stopLinePos !== undefined
+                            ? stopLinePos - this.distanceOnPath - (this.length / 2)
+                            : distToEnd - (this.length / 2);
+
+                        if (actualDistToStop > -1.0) {
+                            const stopLineGap = actualDistToStop + this.minGap - 0.5;
+                            minGap = Math.min(minGap, Math.max(0.1, stopLineGap));
+                            continue;
+                        }
+                    }
+
+                    if (distSq < safeDist * safeDist) {
+                        minGap = Math.min(minGap, 0.1);
+                    } else {
+                        const virtualGap = Math.max(0.1, distToOther - (this.length / 2) - otherRadius - 0.5);
+                        minGap = Math.min(minGap, virtualGap);
+                    }
+                }
             }
+
+            return minGap;
         }
-    }
-
-    return minGap;
-}
 
         // ==================================================================================
 
@@ -10373,11 +10447,12 @@ detectIntersectionConflict(allVehicles, network) {
             });
 
             // --- 4. 解析 Traffic Lights ---
+            // --- 4. 解析 Traffic Lights ---
             xmlDoc.querySelectorAll('RegularTrafficLightNetwork').forEach(netEl => {
                 const nodeId = netEl.querySelector('regularNodeId').textContent;
-                const config = { nodeId: nodeId, schedule: [], lights: {}, timeShift: 0, advancedConfig: null };
+                // ★ 加入 groupNameMap 用來儲存 P1 -> 2 的關係
+                const config = { nodeId: nodeId, schedule: [], lights: {}, timeShift: 0, advancedConfig: null, groupNameMap: {} };
 
-                // 檢查是否包含 AdvancedScheduling
                 if (typeof DigitalTwinLogic !== 'undefined') {
                     config.advancedConfig = DigitalTwinLogic.parseAdvancedScheduling(netEl);
                 }
@@ -10387,15 +10462,22 @@ detectIntersectionConflict(allVehicles, network) {
                     config.timeShift = parseFloat(timeShiftEl.textContent) || 0;
                 }
 
-                // 提取所有 Group IDs
                 const allGroupIds = new Set();
                 netEl.querySelectorAll('TrafficLight').forEach(lightEl => {
                     const lightId = lightEl.querySelector('id').textContent;
+                    // ★ 讀取 <tm:name>
+                    const nameEl = lightEl.querySelector('name') || lightEl.querySelector('tm\\:name');
+                    const name = nameEl ? nameEl.textContent : lightId;
+
                     const turnTRGroupIds = Array.from(lightEl.querySelectorAll('turnTRGroupId')).map(id => id.textContent);
                     config.lights[lightId] = { id: lightId, turnTRGroupIds: turnTRGroupIds };
-                    turnTRGroupIds.forEach(id => allGroupIds.add(id));
+
+                    turnTRGroupIds.forEach(id => {
+                        allGroupIds.add(id);
+                        config.groupNameMap[name] = id; // ★ 建立 P1 -> 2 對應
+                    });
                 });
-                config.allGroupIds = Array.from(allGroupIds); // 保存供數位孿生使用
+                config.allGroupIds = Array.from(allGroupIds);
 
                 // 傳統 Schedule 解析 (如果沒有啟用 Advanced 或當作 fallback)
                 netEl.querySelectorAll('Schedule > TimePeriods > TimePeriod').forEach(periodEl => {
@@ -10625,37 +10707,34 @@ detectIntersectionConflict(allVehicles, network) {
             // =========================================================
             // 解析 RoadMarkings (修正 ReferenceError 與安全讀取跨越對向)
             // =========================================================
+            // 在 parseTrafficModel 函數中，找到解析 RoadMarkings 的迴圈：
             const roadMarkings = [];
             const markingNodes = xmlDoc.querySelectorAll('RoadMarkings > RoadMarking, tm\\:RoadMarkings > tm\\:RoadMarking');
 
             if (markingNodes.length > 0) {
                 markingNodes.forEach(mkEl => {
-                    // 使用安全的 getChildValue 讀取 XML 節點，防止找不到標籤
-                    const id = getChildValue(mkEl, 'id');
-                    const type = getChildValue(mkEl, 'type');
-                    const linkId = getChildValue(mkEl, 'linkId');
-                    const nodeId = getChildValue(mkEl, 'nodeId');
+                    const id = mkEl.querySelector('id')?.textContent;
+                    const type = mkEl.querySelector('type')?.textContent;
+                    const linkId = mkEl.querySelector('linkId')?.textContent;
+                    const nodeId = mkEl.querySelector('nodeId')?.textContent;
 
-                    const posStr = getChildValue(mkEl, 'position');
-                    const lenStr = getChildValue(mkEl, 'length');
-                    const widStr = getChildValue(mkEl, 'width');
-                    const xStr = getChildValue(mkEl, 'x');
-                    const yStr = getChildValue(mkEl, 'y');
-                    const rotStr = getChildValue(mkEl, 'rotation');
-                    const isFreeStr = getChildValue(mkEl, 'isFree');
-                    // [新增] 讀取對向跨越的 Link ID
-                    const spanToLinkIdStr = getChildValue(mkEl, 'spanToLinkId');
+                    const spanToLinkIdStr = mkEl.querySelector('spanToLinkId')?.textContent;
+                    // ★ [新增] 讀取行人號誌綁定 ID
+                    const signalGroupIdStr = mkEl.querySelector('signalGroupId')?.textContent;
+
                     const mk = {
                         id, type, linkId, nodeId,
                         position: parseFloat(mkEl.querySelector('position')?.textContent || 0),
                         length: parseFloat(mkEl.querySelector('length')?.textContent || 0),
                         width: parseFloat(mkEl.querySelector('width')?.textContent || 0),
                         x: parseFloat(mkEl.querySelector('x')?.textContent || 0),
-                        y: -parseFloat(mkEl.querySelector('y')?.textContent || 0), // Y軸反轉適配
+                        y: -parseFloat(mkEl.querySelector('y')?.textContent || 0),
                         rotation: parseFloat(mkEl.querySelector('rotation')?.textContent || 0),
                         laneIndices: [],
                         isFree: mkEl.querySelector('isFree')?.textContent === 'true',
-                        spanToLinkId: spanToLinkIdStr || null // [新增]
+                        spanToLinkId: spanToLinkIdStr || null,
+                        // ★ [新增] 寫入物件
+                        signalGroupId: signalGroupIdStr || null
                     };
 
                     const laneIndicesStr = mkEl.querySelector('laneIndices')?.textContent;

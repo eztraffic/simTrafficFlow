@@ -37,15 +37,26 @@ const PedestrianManager = {
 
         ctx.fillStyle = color === 'red' ? '#ff3333' : '#33ff33';
 
-        // 簡單繪製人像 (火柴人風格模擬 LED)
         if (color === 'red') {
-            // 站立
-            ctx.fillRect(28, 10, 8, 8); // 頭
-            ctx.fillRect(26, 20, 12, 20); // 身
-            ctx.fillRect(26, 42, 4, 18); // 左腳
-            ctx.fillRect(34, 42, 4, 18); // 右腳
+            // === 小紅人 (立正) ===
+            // 頭
+            ctx.fillRect(28, 10, 8, 8);
+            // 身體
+            ctx.fillRect(26, 20, 12, 20);
+            // 左腳
+            ctx.fillRect(26, 42, 4, 18);
+            // 右腳
+            ctx.fillRect(34, 42, 4, 18);
+
+            // ★★★ [新增] 靜止的手臂 ★★★
+            // 左手
+            ctx.fillRect(18, 20, 6, 20);
+            // 右手
+            ctx.fillRect(40, 20, 6, 20);
+
         } else {
-            // 行走/跑步
+            // === 小綠人 (走/跑) ===
+            // (保持原樣)
             ctx.beginPath();
             ctx.arc(32, 14, 5, 0, Math.PI * 2); // 頭
             ctx.fill();
@@ -55,7 +66,7 @@ const PedestrianManager = {
             ctx.beginPath();
             // 身體
             ctx.moveTo(32, 20); ctx.lineTo(32, 38);
-            // 手腳依姿態變化
+
             if (pose === 'walk') {
                 ctx.moveTo(32, 24); ctx.lineTo(20, 34); // 左手
                 ctx.moveTo(32, 24); ctx.lineTo(44, 34); // 右手
@@ -63,24 +74,24 @@ const PedestrianManager = {
                 ctx.moveTo(32, 38); ctx.lineTo(40, 54); // 右腳
             } else {
                 // 跑
-                ctx.moveTo(32, 24); ctx.lineTo(18, 20); // 左手擺動
-                ctx.moveTo(32, 24); ctx.lineTo(46, 28); // 右手擺動
-                ctx.moveTo(32, 38); ctx.lineTo(18, 48); // 左腳大跨
-                ctx.moveTo(32, 38); ctx.lineTo(42, 48); // 右腳後踢
+                ctx.moveTo(32, 24); ctx.lineTo(18, 20);
+                ctx.moveTo(32, 24); ctx.lineTo(46, 28);
+                ctx.moveTo(32, 38); ctx.lineTo(18, 48);
+                ctx.moveTo(32, 38); ctx.lineTo(42, 48);
             }
             ctx.stroke();
         }
 
         const tex = new THREE.CanvasTexture(canvas);
-        tex.minFilter = THREE.NearestFilter; // 保持像素感
+        tex.minFilter = THREE.NearestFilter;
         return tex;
     },
 
     // 輔助：繪製數字 Canvas
-       // ★★★ [修正]：改為繪製七段顯示器風格的數字 ★★★
+    // ★★★ [修正]：改為繪製七段顯示器風格的數字 ★★★
     createNumberTexture: function (num) {
         const canvas = document.createElement('canvas');
-        canvas.width = 64; 
+        canvas.width = 64;
         canvas.height = 64;
         const ctx = canvas.getContext('2d');
 
@@ -90,7 +101,7 @@ const PedestrianManager = {
 
         // 2. 設定繪圖參數
         // 我們畫白色，這樣材質顏色 (material.color) 設紅或綠時才能正確染色
-        ctx.fillStyle = '#ffffff'; 
+        ctx.fillStyle = '#ffffff';
 
         // 3. 定義七段顯示器的邏輯
         // 每一段的位置 (x, y, w, h) 相對於單個數字的左上角
@@ -101,7 +112,7 @@ const PedestrianManager = {
         //      G
         //    E   C
         //      D
-        
+
         const thickness = 4;
         const width = 20;
         const height = 18; // 上半部與下半部的高度
@@ -168,7 +179,7 @@ const PedestrianManager = {
 
         const tex = new THREE.CanvasTexture(canvas);
         // 使用 LinearFilter 讓邊緣稍微柔和一點，比較像發光體，如果不喜歡糊糊的可以用 NearestFilter
-        tex.minFilter = THREE.LinearFilter; 
+        tex.minFilter = THREE.LinearFilter;
         return tex;
     },
     // 建立行人號誌 3D 物件 (Housing + Top Mesh + Bottom Mesh)
@@ -221,78 +232,78 @@ const PedestrianManager = {
     },
 
     // 核心更新邏輯
-    update: function(pedGroup, state, remainingTime, globalTime) {
+    update: function (pedGroup, state, remainingTime, globalTime) {
         if (!pedGroup) return;
-        
-        const data = pedGroup.userData;
 
-        // 1. 秒數防呆處理
-        // 如果 remainingTime 是 undefined 或 NaN，預設為 0
-        // 使用 Math.ceil 進位 (例如 9.1秒 顯示 10)
+        const data = pedGroup.userData;
+        const manMesh = data.manMesh; // 人像 Mesh
+        const numMesh = data.numMesh; // 數字 Mesh
+
+        // 1. 秒數處理
         let seconds = 0;
         if (typeof remainingTime === 'number' && !isNaN(remainingTime)) {
             seconds = Math.max(0, Math.ceil(remainingTime));
         }
-
-        // 限制數字在 0~99 之間 (超過 99 顯示 99)
+        // 限制最大顯示 99
         const numKey = Math.min(99, seconds);
 
-        // --- 狀態判定與更新 ---
-        
-        if (state === 'Green') {
-            // === 行人綠燈模式 ===
-            
-            // A. 更新人像動畫 (小綠人)
-            // 倒數 > 10秒: 慢走 (每 500ms 切換一幀)
-            // 倒數 <= 10秒: 快跑 (每 150ms 切換一幀)
-            const isUrgent = seconds <= 10;
-            const toggleRate = isUrgent ? 150 : 500; // 毫秒
-            
-            // 利用全域時間計算當前動畫幀 (0 或 1)
+        // --- 狀態更新 ---
+        if (state === 'Green' || state === 'Yellow') {
+            // ===========================
+            // === 行人綠燈 / 行閃 ===
+            // 台灣規則：倒數在上方 (0.55)，小綠人在下方 (-0.55)
+            // ===========================
+            numMesh.position.y = 0.55;
+            manMesh.position.y = -0.55;
+
+            const isFlashing = (state === 'Yellow');
+
+            // ★ 修正不動問題：利用 toggleRate 控制「步伐動畫」的速度
+            // 行綠時 500ms 換一張圖 (慢走)，行閃時 120ms 換一張圖 (快跑)
+            const toggleRate = isFlashing ? 120 : 500;
             const frame = Math.floor(globalTime * 1000 / toggleRate) % 2;
 
-            // 切換貼圖：Frame 0 用走路姿態，Frame 1 用跑步姿態，模擬動態
+            // 確保兩張貼圖 (Walk / Run) 快速交替，產生動畫感
             if (this.textures.greenManWalk && this.textures.greenManRun) {
-                data.manMesh.material.map = (frame === 0) ? this.textures.greenManWalk : this.textures.greenManRun;
+                manMesh.material.map = (frame === 0) ? this.textures.greenManWalk : this.textures.greenManRun;
             }
-            
-            // 確保顏色正確 (白色疊加貼圖原色)
-            data.manMesh.material.color.setHex(0xffffff); 
-            data.manMesh.visible = true;
 
-            // B. 更新倒數數字 (綠色)
-            // 優化：只有當秒數改變或狀態改變時才更新材質與顏色
-            if (data.lastSecond !== seconds || data.lastState !== 'Green') {
-                if (this.textures.numbers[numKey]) {
-                    data.numMesh.material.map = this.textures.numbers[numKey];
-                    // 台灣行人號誌綠燈倒數通常為綠色
-                    data.numMesh.material.color.setHex(0x33ff33); 
-                }
-                data.lastSecond = seconds;
-                data.lastState = 'Green';
+            // ★ 保持圖示常亮，才看得到完整的切換動畫
+            manMesh.visible = true;
+            manMesh.material.color.setHex(0xffffff);
+
+            // B. 倒數數字 (綠色)
+            if (this.textures.numbers[numKey]) {
+                numMesh.material.map = this.textures.numbers[numKey];
+                numMesh.material.color.setHex(0x33ff33);
             }
+            numMesh.visible = true;
 
         } else {
-            // === 行人紅燈模式 ===
-            
-            // A. 顯示小紅人 (靜止)
-            if (this.textures.redMan) {
-                data.manMesh.material.map = this.textures.redMan;
-            }
-            data.manMesh.material.color.setHex(0xffffff);
-            data.manMesh.visible = true;
+            // ===========================
+            // === 行人紅燈 (Red) ===
+            // 台灣規則：小紅人在上方 (0.55)，倒數在下方 (-0.55)
+            // ===========================
+            manMesh.position.y = 0.55;
+            numMesh.position.y = -0.55;
 
-            // B. 更新倒數數字 (紅色)
-            // 台灣部分號誌紅燈時也會倒數，顏色為紅色
-            if (data.lastSecond !== seconds || data.lastState !== 'Red') {
-                if (this.textures.numbers[numKey]) {
-                    data.numMesh.material.map = this.textures.numbers[numKey];
-                    // 紅燈倒數為紅色
-                    data.numMesh.material.color.setHex(0xff3333); 
-                }
-                data.lastSecond = seconds;
-                data.lastState = 'Red';
+            // A. 小紅人 (靜止長亮)
+            if (this.textures.redMan) {
+                manMesh.material.map = this.textures.redMan;
             }
+            manMesh.material.color.setHex(0xffffff);
+            manMesh.visible = true;
+
+            // B. 倒數數字 (紅色)
+            if (this.textures.numbers[numKey]) {
+                numMesh.material.map = this.textures.numbers[numKey];
+                numMesh.material.color.setHex(0xff3333);
+            }
+            numMesh.visible = true;
         }
+
+        // 確保可見
+        manMesh.visible = true;
+        numMesh.visible = true;
     }
 };

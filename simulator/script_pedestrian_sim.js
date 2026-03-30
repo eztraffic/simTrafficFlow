@@ -64,16 +64,17 @@ class Pedestrian {
         }
 
         if (this.state === 'WAITING') {
-            // 綠燈開始穿越
+            // ★[修改] 只有正港的綠燈 (Green = 行綠) 才可以起步
+            // 避免行人在行閃 (Yellow) 時才開始過馬路
             if (signal === 'Green') {
                 this.state = 'CROSSING';
                 this.speed = this.baseSpeed;
             }
         }
         else if (this.state === 'CROSSING') {
-            // ★ 需求：過馬路中途遇到黃燈或紅燈，加速到 1.5 m/s
-            if (signal !== 'Green') {
-                this.speed = 1.5;
+            // ★ [修改] 走到一半遇到 Yellow(行閃) 或 Red(行停遲閉)，自動加快腳步清道
+            if (signal === 'Yellow' || signal === 'Red') {
+                this.speed = 1.5; 
             } else {
                 this.speed = this.baseSpeed;
             }
@@ -180,12 +181,11 @@ class PedestrianSimManager {
     }
 
     extractCrosswalks(nodeId) {
-        const cws = [];
+        const cws =[];
         if (!this.network.roadMarkings) return cws;
 
         this.network.roadMarkings.forEach(mark => {
             if (mark.type === 'crosswalk') {
-                // 如果斑馬線直接屬於此 Node，或屬於此 Node 的相連 Link
                 let belongsToNode = (mark.nodeId === nodeId);
                 if (!belongsToNode && mark.linkId) {
                     const link = this.network.links[mark.linkId];
@@ -195,40 +195,42 @@ class PedestrianSimManager {
                 }
 
                 if (belongsToNode) {
-                    // 利用既有的 calculateCrosswalkLine (需要它暴露到全域或能被呼叫)
                     const lineData = window.calculateCrosswalkLine ? window.calculateCrosswalkLine(mark, this.network) : null;
                     if (lineData) {
-                        // 綁定號誌群組：尋找與斑馬線平行的直行 Transition
                         let turnGroupId = null;
-                        const cwVecX = lineData.p2.x - lineData.p1.x;
-                        const cwVecY = lineData.p2.y - lineData.p1.y;
-                        const node = this.network.nodes[nodeId];
 
-                        if (node && node.transitions) {
-                            for (const t of node.transitions) {
-                                // 找直行路徑
-                                // 找直行路徑
-                                if (t.sourceLinkId !== t.destLinkId && t.turnGroupId) {
-                                    const srcL = this.network.links[t.sourceLinkId];
-                                    const dstL = this.network.links[t.destLinkId];
-                                    if (srcL && dstL) {
-                                        // 模擬器的路網點位存在 lanes 的 path 中
-                                        const srcPath = srcL.lanes[t.sourceLaneIndex || 0]?.path;
-                                        const dstPath = dstL.lanes[t.destLaneIndex || 0]?.path;
+                        // ★ [新增] 1. 優先使用 XML 中明確綁定的行人號誌群組
+                        if (mark.signalGroupId) {
+                            turnGroupId = mark.signalGroupId;
+                        } 
+                        // ★ [相容舊版] 2. 若未綁定，使用幾何推算平行的車輛直行號誌
+                        else {
+                            const cwVecX = lineData.p2.x - lineData.p1.x;
+                            const cwVecY = lineData.p2.y - lineData.p1.y;
+                            const node = this.network.nodes[nodeId];
 
-                                        if (srcPath && dstPath && srcPath.length > 0 && dstPath.length > 0) {
-                                            const pSrc = srcPath[srcPath.length - 1];
-                                            const pDst = dstPath[0];
-                                            const dx = pDst.x - pSrc.x;
-                                            const dy = pDst.y - pSrc.y;
-                                            const len = Math.hypot(dx, dy);
+                            if (node && node.transitions) {
+                                for (const t of node.transitions) {
+                                    if (t.sourceLinkId !== t.destLinkId && t.turnGroupId) {
+                                        const srcL = this.network.links[t.sourceLinkId];
+                                        const dstL = this.network.links[t.destLinkId];
+                                        if (srcL && dstL) {
+                                            const srcPath = srcL.lanes[t.sourceLaneIndex || 0]?.path;
+                                            const dstPath = dstL.lanes[t.destLaneIndex || 0]?.path;
 
-                                            if (len > 0.1) {
-                                                // 內積判斷平行 (cos 接近 1 或 -1)
-                                                const dot = (cwVecX * dx + cwVecY * dy) / (Math.hypot(cwVecX, cwVecY) * len);
-                                                if (Math.abs(dot) > 0.8) {
-                                                    turnGroupId = t.turnGroupId;
-                                                    break;
+                                            if (srcPath && dstPath && srcPath.length > 0 && dstPath.length > 0) {
+                                                const pSrc = srcPath[srcPath.length - 1];
+                                                const pDst = dstPath[0];
+                                                const dx = pDst.x - pSrc.x;
+                                                const dy = pDst.y - pSrc.y;
+                                                const len = Math.hypot(dx, dy);
+
+                                                if (len > 0.1) {
+                                                    const dot = (cwVecX * dx + cwVecY * dy) / (Math.hypot(cwVecX, cwVecY) * len);
+                                                    if (Math.abs(dot) > 0.8) { // 內積判斷平行
+                                                        turnGroupId = t.turnGroupId;
+                                                        break;
+                                                    }
                                                 }
                                             }
                                         }
