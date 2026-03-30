@@ -4621,7 +4621,7 @@ document.addEventListener('DOMContentLoaded', () => {
             position: initPos,
             laneIndices: [],
 
-            length: type === 'crosswalk' ? 3 : 5, // 斑馬線預設 3m 寬
+            length: type === 'crosswalk' ? 3 : 5,
             width: 2.5,
 
             x: initX,
@@ -4629,10 +4629,12 @@ document.addEventListener('DOMContentLoaded', () => {
             rotation: 0,
 
             isFree: false,
-            spanToLinkId: null, // [新增] 目標跨越的對向 Link ID
+            spanToLinkId: null,
+            signalGroupId: null, // <--- [新增] 用於綁定行人號誌群組 ID
 
             konvaGroup: new Konva.Group({ id, draggable: false, name: 'road-marking-group' })
         };
+
 
         if (marking.linkId) {
             const link = network.links[marking.linkId];
@@ -4679,7 +4681,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const LINE_COLOR = 'white';
         const STROKE_WIDTH = 0.5;
-        const HIT_WIDTH = 15;
+        const HIT_WIDTH = 5; // <--- [修正] 將命中範圍加大到 30px
 
         const isLaneAttached = marking.linkId && !marking.isFree;
 
@@ -4696,21 +4698,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 const halfWidth = totalWidth / 2;
 
                 if (marking.spanToLinkId && network.links[marking.spanToLinkId]) {
-                    //[自動偵測模式]：跨越到對向車道
                     const targetLink = network.links[marking.spanToLinkId];
-
-                    // 【修正這裡】先取得投影距離，再換算成座標點
                     const projResult = projectPointOnPolyline(point, targetLink.waypoints);
                     const { point: targetPt } = getPointAlongPolyline(targetLink.waypoints, projResult.dist);
-
-                    // 計算兩個路段中心點的連線向量
                     const spanVec = getVector(point, targetPt);
                     const dist = vecLen(spanVec);
 
                     if (dist > 0) {
                         const spanDir = normalize(spanVec);
                         const targetHalfWidth = getLinkTotalWidth(targetLink) / 2;
-                        // 從本側外緣一路畫到對向外緣
                         p1 = add(point, scale(spanDir, -halfWidth));
                         p2 = add(targetPt, scale(spanDir, targetHalfWidth));
                     } else {
@@ -4718,26 +4714,33 @@ document.addEventListener('DOMContentLoaded', () => {
                         p2 = add(point, scale(normal, -halfWidth));
                     }
                 } else {
-                    // 僅畫在本側車道
                     p1 = add(point, scale(normal, halfWidth));
                     p2 = add(point, scale(normal, -halfWidth));
                 }
 
+                // <--- [修正重點：解決虛線點不到的問題] --->
+                // 1. 建立一條透明的粗實線，專門用來捕捉點擊
+                const hitLine = new Konva.Line({
+                    points: [p1.x, p1.y, p2.x, p2.y],
+                    stroke: 'transparent',
+                    strokeWidth: Math.max(HIT_WIDTH, marking.length || 3),
+                    listening: true,
+                    name: 'marking-hit-area'
+                });
+                marking.konvaGroup.add(hitLine);
 
-                // 畫斑馬線 (枕木紋)
+                // 2. 建立實際視覺上的虛線 (不捕捉點擊)
                 const line = new Konva.Line({
                     points: [p1.x, p1.y, p2.x, p2.y],
                     stroke: LINE_COLOR,
-                    strokeWidth: marking.length || 3, // 斑馬線的縱向寬度
-                    hitStrokeWidth: Math.max(HIT_WIDTH, marking.length || 3),
-                    dash: [0.6, 0.6], // 枕木紋間隔 0.6m
-                    listening: true,
+                    strokeWidth: marking.length || 3,
+                    dash: [0.6, 0.6],
+                    listening: false,
                     name: 'marking-shape'
                 });
                 marking.konvaGroup.add(line);
 
             } else {
-                // 原有 stop_line 與 waiting_area 邏輯
                 const selectedLanes = marking.laneIndices.sort((a, b) => a - b);
                 let startW = 0, endW = 0;
                 for (let i = 0; i < selectedLanes[0]; i++) startW += link.lanes[i].width;
@@ -4751,6 +4754,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 p2 = add(point, scale(normal, offsetRight));
 
                 if (marking.markingType === 'stop_line') {
+                    // [修正] 停止線套用加大的 HIT_WIDTH
                     const line = new Konva.Line({ points: [p1.x, p1.y, p2.x, p2.y], stroke: LINE_COLOR, strokeWidth: STROKE_WIDTH, hitStrokeWidth: HIT_WIDTH, listening: true, name: 'marking-shape' });
                     marking.konvaGroup.add(line);
                 } else if (marking.markingType === 'waiting_area' || marking.markingType === 'two_stage_box') {
@@ -4759,7 +4763,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     const backNormal = getNormal(backVec);
                     const p3 = add(backPoint, scale(backNormal, offsetRight));
                     const p4 = add(backPoint, scale(backNormal, offsetLeft));
-                    const rect = new Konva.Line({ points: [p1.x, p1.y, p2.x, p2.y, p3.x, p3.y, p4.x, p4.y], closed: true, stroke: LINE_COLOR, strokeWidth: STROKE_WIDTH, hitStrokeWidth: HIT_WIDTH, fill: 'rgba(0,0,0,0)', listening: true, name: 'marking-shape' });
+                    // [修正] 加入 1% 的透明黑色填充 (rgba(0,0,0,0.01))，使得點擊框內任何一處都能選取
+                    const rect = new Konva.Line({ points: [p1.x, p1.y, p2.x, p2.y, p3.x, p3.y, p4.x, p4.y], closed: true, stroke: LINE_COLOR, strokeWidth: STROKE_WIDTH, hitStrokeWidth: HIT_WIDTH, fill: 'rgba(0,0,0,0.01)', listening: true, name: 'marking-shape' });
                     marking.konvaGroup.add(rect);
                 }
             }
@@ -4773,24 +4778,31 @@ document.addEventListener('DOMContentLoaded', () => {
             let rectHeight = marking.width || 2.5;
 
             if (marking.markingType === 'crosswalk') {
-                // 如果斑馬線解除綁定變為自由模式，給一個預設長度 (例如跨越馬路的寬度)
                 if (!marking.width) marking.width = 10;
                 rectHeight = marking.width;
 
+                // [修正重點] 自由模式下的虛線同樣增加透明 HitLine
+                const hitLine = new Konva.Line({
+                    points: [0, -rectHeight / 2, 0, rectHeight / 2],
+                    stroke: 'transparent',
+                    strokeWidth: Math.max(HIT_WIDTH, rectWidth),
+                    listening: true,
+                    name: 'marking-hit-area'
+                });
                 const line = new Konva.Line({
                     points: [0, -rectHeight / 2, 0, rectHeight / 2],
                     stroke: LINE_COLOR,
                     strokeWidth: rectWidth,
-                    hitStrokeWidth: Math.max(HIT_WIDTH, rectWidth),
                     dash: [0.6, 0.6],
-                    listening: true,
+                    listening: false,
                     name: 'marking-shape'
                 });
-                marking.konvaGroup.add(line);
+                marking.konvaGroup.add(hitLine, line);
             } else {
+                // [修正] 自由模式矩形同樣加入微量填充以捕捉點擊
                 const rect = new Konva.Rect({
                     x: -rectWidth / 2, y: -rectHeight / 2, width: rectWidth, height: rectHeight,
-                    stroke: LINE_COLOR, strokeWidth: STROKE_WIDTH, hitStrokeWidth: HIT_WIDTH, fill: 'rgba(0,0,0,0)', listening: true, name: 'marking-shape'
+                    stroke: LINE_COLOR, strokeWidth: STROKE_WIDTH, hitStrokeWidth: HIT_WIDTH, fill: 'rgba(0,0,0,0.01)', listening: true, name: 'marking-shape'
                 });
                 marking.konvaGroup.add(rect);
             }
@@ -5286,24 +5298,24 @@ document.addEventListener('DOMContentLoaded', () => {
                         </div>`;
 
                 // 3. Edit Button
-                                // 3. Edit Button
+                // 3. Edit Button
                 content += `<button id="edit-tfl-btn" class="btn-action" style="width:100%; margin-top:8px;">
                             <i class="fa-solid fa-traffic-light"></i> Edit Schedule
                         </button>`;
 
                 // --- Pedestrian Settings ---
                 content += `<div class="prop-section-header" style="margin-top:16px;">Pedestrian Settings</div>`;
-                
+
                 content += `<div class="prop-row">
                                 <span class="prop-label" title="Hourly Pedestrian Volume">Volume (ped/h)</span>
                                 <input type="number" id="prop-node-ped-vol" class="prop-input" value="${obj.pedestrianVolume || 0}" min="0" step="10">
                             </div>`;
-                            
+
                 content += `<div class="prop-row">
                                 <span class="prop-label" title="Cross Once Probability">Cross Once (%)</span>
                                 <input type="number" id="prop-node-cross-once" class="prop-input" value="${obj.crossOnceProb !== undefined ? obj.crossOnceProb : 100}" min="0" max="100" step="1">
                             </div>`;
-                            
+
                 content += `<div class="prop-row">
                                 <span class="prop-label" title="Cross Twice Probability">Cross Twice (%)</span>
                                 <input type="number" id="prop-node-cross-twice" class="prop-input" value="${obj.crossTwiceProb || 0}" min="0" max="100" step="1">
@@ -6012,6 +6024,54 @@ document.addEventListener('DOMContentLoaded', () => {
                 // --- SECTION: PLACEMENT ---
                 content += `<div class="prop-section-header">Placement</div>`;
 
+                // ==========================================
+                //[新增] 斑馬線專屬的行人號誌綁定 (自動偵測鄰近路口)
+                // ==========================================
+                if (obj.markingType === 'crosswalk') {
+                    content += `<div class="prop-section-header">Pedestrian Signal Binding</div>`;
+
+                    let optionsHtml = `<option value="">(無 / None)</option>`;
+                    let foundNode = null;
+
+                    // 智慧偵測：尋找最近的路口節點
+                    if (obj.nodeId) {
+                        foundNode = network.nodes[obj.nodeId];
+                    } else if (obj.linkId) {
+                        const link = network.links[obj.linkId];
+                        if (link && link.waypoints.length >= 2) {
+                            const len = getPolylineLength(link.waypoints);
+                            // 判斷斑馬線靠近起點還是終點
+                            const closestNodeId = (obj.position < len / 2) ? link.startNodeId : link.endNodeId;
+                            if (closestNodeId) foundNode = network.nodes[closestNodeId];
+                        }
+                    }
+
+                    // 如果找到鄰近路口，且該路口有號誌設定，則拉出所有的行人群組
+                    if (foundNode && network.trafficLights[foundNode.id]) {
+                        const tfl = network.trafficLights[foundNode.id];
+                        if (tfl.signalGroups) {
+                            Object.values(tfl.signalGroups).forEach(sg => {
+                                if (sg.type === 'pedestrian') { // 只列出行人號誌
+                                    const selected = obj.signalGroupId === sg.id ? 'selected' : '';
+                                    optionsHtml += `<option value="${sg.id}" ${selected}>${sg.id}</option>`;
+                                }
+                            });
+                        }
+                    }
+
+                    content += `<div class="prop-row">
+                        <span class="prop-label">Signal Group</span>
+                        <div style="display:flex; gap:4px; flex:1;">
+                            <select id="prop-mark-signal-select" class="prop-select" style="flex:1;">
+                                ${optionsHtml}
+                            </select>
+                            <input type="text" id="prop-mark-signal-text" class="prop-input" style="flex:1;" value="${obj.signalGroupId || ''}" placeholder="Custom ID">
+                        </div>
+                    </div>
+                    <div class="prop-hint" style="margin-bottom:12px;">自動抓取鄰近路口的行人群組，或手動輸入 ID。</div>`;
+                }
+                // ==========================================
+
                 if (obj.linkId && !obj.isFree) {
                     content += `<div class="prop-row">
                                 <span class="prop-label">Parent Link</span>
@@ -6334,7 +6394,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (val > 100) val = 100;
                     obj.crossOnceProb = val;
                     e.target.value = val;
-                    
+
                     if (obj.crossOnceProb + (obj.crossTwiceProb || 0) > 100) {
                         obj.crossTwiceProb = 100 - obj.crossOnceProb;
                         const twiceInput = document.getElementById('prop-node-cross-twice');
@@ -6352,7 +6412,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (val > 100) val = 100;
                     obj.crossTwiceProb = val;
                     e.target.value = val;
-                    
+
                     if ((obj.crossOnceProb || 0) + obj.crossTwiceProb > 100) {
                         obj.crossOnceProb = 100 - obj.crossTwiceProb;
                         const onceInput = document.getElementById('prop-node-cross-once');
@@ -7398,6 +7458,34 @@ document.addEventListener('DOMContentLoaded', () => {
                     layer.batchDraw();
                     updatePropertiesPanel(obj);
                 });
+            }
+
+            // [新增] 斑馬線行人號誌綁定事件
+            if (obj.markingType === 'crosswalk') {
+                const sigSel = document.getElementById('prop-mark-signal-select');
+                const sigTxt = document.getElementById('prop-mark-signal-text');
+
+                // 下拉選單連動文字框
+                if (sigSel) {
+                    sigSel.addEventListener('change', (e) => {
+                        const val = e.target.value;
+                        obj.signalGroupId = val !== '' ? val : null;
+                        if (sigTxt) sigTxt.value = val;
+                        saveState();
+                    });
+                }
+                // 文字框連動下拉選單
+                if (sigTxt) {
+                    sigTxt.addEventListener('change', (e) => {
+                        const val = e.target.value;
+                        obj.signalGroupId = val !== '' ? val : null;
+                        if (sigSel) {
+                            const opt = Array.from(sigSel.options).find(o => o.value === val);
+                            sigSel.value = opt ? opt.value : '';
+                        }
+                        saveState();
+                    });
+                }
             }
         }
     }
@@ -8570,8 +8658,13 @@ document.addEventListener('DOMContentLoaded', () => {
         Object.values(tflData.signalGroups).forEach(group => {
             const groupItem = document.createElement('div');
             groupItem.className = 'tfl-group-item';
+            // [修改] 加入群組類型選擇器
             groupItem.innerHTML = `
-                <input type="text" class="tfl-group-name-input" value="${group.id}" data-old-id="${group.id}">
+                <input type="text" class="tfl-group-name-input" value="${group.id}" data-old-id="${group.id}" style="width: 100px;">
+                <select class="tfl-group-type-select prop-select" data-group-id="${group.id}" style="width: 90px; margin-left: 8px;">
+                    <option value="vehicle" ${group.type !== 'pedestrian' ? 'selected' : ''}>🚗 車輛</option>
+                    <option value="pedestrian" ${group.type === 'pedestrian' ? 'selected' : ''}>🚶 行人</option>
+                </select>
                 <span class="delete-group-btn" data-group-id="${group.id}" title="Delete Group">×</span>
             `;
             groupManagementDiv.appendChild(groupItem);
@@ -8581,15 +8674,30 @@ document.addEventListener('DOMContentLoaded', () => {
             const newGroupNameInput = document.getElementById('tfl-new-group-name');
             const name = newGroupNameInput.value.trim();
             if (name && !tflData.signalGroups[name]) {
-                tflData.signalGroups[name] = { id: name, connIds: [] };
+                // [修改] 智慧預設：如果是 P 開頭，預設為行人群組
+                const isPed = name.toUpperCase().startsWith('P');
+                tflData.signalGroups[name] = { id: name, connIds: [], type: isPed ? 'pedestrian' : 'vehicle' };
+
+                // 更新現有時相的資料結構
+                tflData.schedule.forEach(phase => {
+                    phase.signals[name] = isPed ? { walk: phase.duration, flash: 0, stop: 0 } : 'Red';
+                });
+                if (tflData.advanced) {
+                    Object.values(tflData.advanced.schedules).forEach(sched => {
+                        sched.phases.forEach(p => {
+                            p.signals[name] = isPed ? { walk: p.duration, flash: 0, stop: 0 } : 'Red';
+                        });
+                    });
+                }
                 newGroupNameInput.value = '';
                 renderTflGroupingTab();
-                renderTflPhasingTab();
+                renderTflLibraryTab();
             } else {
                 alert(I18N.t('Group name is empty or already exists.'));
             }
         };
 
+        // 監聽名稱與類型變更
         groupManagementDiv.querySelectorAll('.tfl-group-name-input').forEach(input => {
             input.onchange = (e) => {
                 const oldId = e.target.dataset.oldId;
@@ -8600,19 +8708,51 @@ document.addEventListener('DOMContentLoaded', () => {
                     delete tflData.signalGroups[oldId];
                     tflData.signalGroups[newId] = groupData;
 
-                    // Update schedule with new group ID
                     tflData.schedule.forEach(phase => {
-                        if (phase.signals[oldId]) {
+                        if (phase.signals[oldId] !== undefined) {
                             phase.signals[newId] = phase.signals[oldId];
                             delete phase.signals[oldId];
                         }
                     });
+                    if (tflData.advanced) {
+                        Object.values(tflData.advanced.schedules).forEach(sched => {
+                            sched.phases.forEach(p => {
+                                if (p.signals[oldId] !== undefined) {
+                                    p.signals[newId] = p.signals[oldId];
+                                    delete p.signals[oldId];
+                                }
+                            });
+                        });
+                    }
                     renderTflGroupingTab();
-                    renderTflPhasingTab();
+                    renderTflLibraryTab();
                 } else if (newId !== oldId) {
-                    e.target.value = oldId; // Revert if name is invalid
+                    e.target.value = oldId;
                     alert('Group name is empty or already exists.');
                 }
+            };
+        });
+
+        groupManagementDiv.querySelectorAll('.tfl-group-type-select').forEach(select => {
+            select.onchange = (e) => {
+                const gId = e.target.dataset.groupId;
+                const newType = e.target.value;
+                tflData.signalGroups[gId].type = newType;
+
+                // 轉換現有時相資料格式
+                if (tflData.advanced) {
+                    Object.values(tflData.advanced.schedules).forEach(sched => {
+                        sched.phases.forEach(p => {
+                            if (newType === 'pedestrian' && typeof p.signals[gId] === 'string') {
+                                p.signals[gId] = { walk: p.duration, flash: 0, stop: 0 };
+                            } else if (newType === 'vehicle' && typeof p.signals[gId] === 'object') {
+                                p.signals[gId] = 'Red';
+                            }
+                        });
+                    });
+                }
+                saveState();
+                renderTflLibraryTab();
             };
         });
 
@@ -8620,10 +8760,15 @@ document.addEventListener('DOMContentLoaded', () => {
             btn.onclick = (e) => {
                 const groupId = e.target.dataset.groupId;
                 delete tflData.signalGroups[groupId];
+
                 tflData.schedule.forEach(phase => delete phase.signals[groupId]);
+                if (tflData.advanced) {
+                    Object.values(tflData.advanced.schedules).forEach(sched => {
+                        sched.phases.forEach(p => delete p.signals[groupId]);
+                    });
+                }
                 renderTflGroupingTab();
-                renderTflPhasingTab();
-                // Refresh properties panel if a related object is selected
+                renderTflLibraryTab();
                 if (selectedObject && (selectedObject.type === 'Connection' || selectedObject.type === 'ConnectionGroup')) {
                     updatePropertiesPanel(selectedObject);
                 }
@@ -8636,12 +8781,9 @@ document.addEventListener('DOMContentLoaded', () => {
         const advancedData = tflData.advanced;
         if (!currentTflScheduleId || !advancedData.schedules[currentTflScheduleId]) return;
 
-        // ==========================================
-        // 1. 頂部控制區 (選擇器、時差、新增、刪除)
-        // ==========================================
+        // --- 頂部控制區 (略過不變的部分) ---
         const selector = document.getElementById('tfl-schedule-selector');
         selector.innerHTML = '';
-
         Object.values(advancedData.schedules).forEach(sched => {
             const opt = document.createElement('option');
             opt.value = sched.id;
@@ -8649,147 +8791,235 @@ document.addEventListener('DOMContentLoaded', () => {
             if (sched.id === currentTflScheduleId) opt.selected = true;
             selector.appendChild(opt);
         });
+        selector.onchange = (e) => { currentTflScheduleId = e.target.value; renderTflLibraryTab(); };
 
-        selector.onchange = (e) => {
-            currentTflScheduleId = e.target.value;
-            renderTflLibraryTab();
-        };
-
-        // [新增] 時差綁定與反向同步
         const currentSchedule = advancedData.schedules[currentTflScheduleId];
         const shiftInput = document.getElementById('tfl-schedule-timeshift');
         shiftInput.value = currentSchedule.timeShift || 0;
-
         shiftInput.onchange = (e) => {
             const newVal = parseInt(e.target.value, 10) || 0;
             currentSchedule.timeShift = newVal;
-
-            // 檢查目前編輯的時制，是否就是「代表性時制」
-            // 如果是，則同步更新右側屬性面板的 UI 與基礎資料
             if (advancedData.weekly) {
                 const monPlanId = advancedData.weekly[1];
                 if (monPlanId && advancedData.dailyPlans[monPlanId]) {
                     const sw = advancedData.dailyPlans[monPlanId].switches.find(s => s.schedId !== 'NONE');
                     if (sw && sw.schedId === currentTflScheduleId) {
-
-                        // 同步底層資料
                         tflData.timeShift = newVal;
-
-                        // 若右側面板正好開啟此路口，即時更新輸入框數值
                         const propShiftInput = document.getElementById('prop-tfl-shift');
-                        if (propShiftInput && selectedObject && selectedObject.id === currentModalNode.id) {
-                            propShiftInput.value = newVal;
-                        }
+                        if (propShiftInput && selectedObject && selectedObject.id === currentModalNode.id) propShiftInput.value = newVal;
                     }
                 }
             }
             saveState();
         };
 
-        // 新增時制
         document.getElementById('tfl-add-schedule-btn').onclick = () => {
-            let newNum = 1;
-            while (advancedData.schedules[`Sched_${newNum}`]) newNum++;
-
+            let newNum = 1; while (advancedData.schedules[`Sched_${newNum}`]) newNum++;
             const newId = `Sched_${newNum}`;
-            advancedData.schedules[newId] = {
-                id: newId, name: `自訂時制[${newNum}]`, timeShift: 0, phases: []
-            };
+            advancedData.schedules[newId] = { id: newId, name: `自訂時制[${newNum}]`, timeShift: 0, phases: [] };
             currentTflScheduleId = newId;
-            renderTflLibraryTab();
-            renderTflDailyPlansTab();
-            saveState();
+            renderTflLibraryTab(); renderTflDailyPlansTab(); saveState();
         };
 
-        // [新增] 刪除時制
         document.getElementById('tfl-delete-schedule-btn').onclick = () => {
             const schedKeys = Object.keys(advancedData.schedules);
-            if (schedKeys.length <= 1) {
-                alert(I18N.t("必須保留至少一個時制 (At least one schedule must remain)."));
-                return;
-            }
-
-            if (confirm(I18N.t(`確定要刪除時制 [${currentSchedule.name}] 嗎？`))) {
-                // 清理依賴：將日型態中有用到這個時制的時段改為「無時制(NONE)」
-                Object.values(advancedData.dailyPlans).forEach(plan => {
-                    plan.switches.forEach(sw => {
-                        if (sw.schedId === currentTflScheduleId) sw.schedId = 'NONE';
-                    });
-                });
-
+            if (schedKeys.length <= 1) { alert(I18N.t("必須保留至少一個時制。")); return; }
+            if (confirm(I18N.t(`確定要刪除時制[${currentSchedule.name}] 嗎？`))) {
+                Object.values(advancedData.dailyPlans).forEach(plan => { plan.switches.forEach(sw => { if (sw.schedId === currentTflScheduleId) sw.schedId = 'NONE'; }); });
                 delete advancedData.schedules[currentTflScheduleId];
-                // 自動選取剩餘的第一個時制
                 currentTflScheduleId = Object.keys(advancedData.schedules)[0];
-
-                renderTflLibraryTab();
-                renderTflDailyPlansTab(); // 重新渲染日型態 (因為有選項變成了 NONE)
-                saveState();
+                renderTflLibraryTab(); renderTflDailyPlansTab(); saveState();
             }
         };
 
-        // ==========================================
-        // 2. 時制表格區 (Phasing Schedule)
-        // ==========================================
+        // --- 表格區塊 ---
         const tableHead = document.querySelector('#tfl-schedule-table thead');
         const tableBody = document.querySelector('#tfl-schedule-table tbody');
-        tableHead.innerHTML = ''; tableBody.innerHTML = '';
 
-        const signalGroupIds = Object.keys(tflData.signalGroups);
+        // [修改] 分離車輛與行人群組
+        const vehicleGroups = [];
+        const pedestrianGroups = [];
+        Object.values(tflData.signalGroups).forEach(g => {
+            if (g.type === 'pedestrian') pedestrianGroups.push(g.id);
+            else vehicleGroups.push(g.id);
+        });
 
-        let headerHtml = '<tr><th style="width: 100px;">Duration (s)</th>';
-        signalGroupIds.forEach(id => { headerHtml += `<th>${id}</th>`; });
-        headerHtml += '<th style="width: 80px;">Actions</th></tr>';
+        // 表頭
+        let headerHtml = '<tr><th style="width: 80px;">秒數 (s)</th>';
+        vehicleGroups.forEach(id => { headerHtml += `<th>🚗 ${id}</th>`; });
+        pedestrianGroups.forEach(id => { headerHtml += `<th title="雙擊儲存格套用台灣預設 (閃7停3)">🚶 ${id}</th>`; });
+        headerHtml += '<th style="width: 70px;">操作</th></tr>';
         tableHead.innerHTML = headerHtml;
 
+        // 內容
         let bodyHtml = '';
         currentSchedule.phases.forEach((phase, phaseIndex) => {
             bodyHtml += `<tr>`;
-            bodyHtml += `<td><input type="number" class="tfl-duration-input prop-input" data-phase="${phaseIndex}" value="${phase.duration}" min="1" style="text-align:center;"></td>`;
+            bodyHtml += `<td><input type="number" class="tfl-duration-input prop-input" data-phase="${phaseIndex}" value="${phase.duration}" min="1" style="width:50px; text-align:center;"></td>`;
 
-            signalGroupIds.forEach(id => {
+            // 車輛格子 (點擊循環切換)
+            vehicleGroups.forEach(id => {
                 const signal = phase.signals[id] || 'Red';
                 const colorClass = `signal-${signal.toLowerCase()}`;
                 bodyHtml += `<td><div class="signal-block ${colorClass}" data-phase="${phaseIndex}" data-group-id="${id}" title="Current: ${signal}"></div></td>`;
             });
 
-            bodyHtml += `<td><button class="tfl-delete-phase-btn btn-danger-outline" data-phase="${phaseIndex}" style="padding: 4px 8px; font-size: 0.8rem; margin:0 auto;">Delete</button></td></tr>`;
+            // 行人格子 (複合式輸入框)
+            pedestrianGroups.forEach(id => {
+                let pState = phase.signals[id];
+                if (!pState || typeof pState !== 'object') {
+                    if (pState === 'Green') pState = { walk: phase.duration, flash: 0, stop: 0 };
+                    else pState = { walk: 0, flash: 0, stop: phase.duration };
+                    phase.signals[id] = pState; // 修正舊資料
+                }
+                bodyHtml += `
+                    <td class="pedestrian-composite-cell" data-phase="${phaseIndex}" data-group="${id}" style="white-space: nowrap; padding: 2px; font-size: 0.75rem; background: #f8fafc; border: 1px solid #e2e8f0;">
+                        <div style="display:flex; justify-content:center; align-items:center; gap:2px;">
+                            <span style="color:#22c55e;">🟢</span><input type="number" class="p-walk prop-input" data-phase="${phaseIndex}" data-group="${id}" value="${pState.walk}" style="width:30px; padding:0; text-align:center;">
+                            <span style="color:#f97316;">🟠</span><input type="number" class="p-flash prop-input" data-phase="${phaseIndex}" data-group="${id}" value="${pState.flash}" style="width:30px; padding:0; text-align:center;">
+                            <span style="color:#ef4444;">🔴</span><input type="number" class="p-stop prop-input" data-phase="${phaseIndex}" data-group="${id}" value="${pState.stop}" style="width:30px; padding:0; text-align:center;">
+                        </div>
+                    </td>`;
+            });
+
+            bodyHtml += `<td><button class="tfl-delete-phase-btn btn-mini btn-mini-danger" data-phase="${phaseIndex}"><i class="fa-solid fa-trash-can"></i></button></td></tr>`;
         });
         tableBody.innerHTML = bodyHtml;
 
-        // 表格內部事件綁定...
+        // --- 事件綁定 ---
+
+        // 1. 總時間變更 (連動調整行人紅燈或綠燈)
         tableBody.querySelectorAll('.tfl-duration-input').forEach(input => {
             input.onchange = (e) => {
-                currentSchedule.phases[e.target.dataset.phase].duration = parseInt(e.target.value, 10) || 30;
-                saveState();
+                const phaseIdx = e.target.dataset.phase;
+                const oldDur = currentSchedule.phases[phaseIdx].duration;
+                const newDur = parseInt(e.target.value, 10) || 30;
+                const diff = newDur - oldDur;
+                const phase = currentSchedule.phases[phaseIdx];
+                phase.duration = newDur;
+
+                // 所有行人群組時間按比例補齊
+                pedestrianGroups.forEach(id => {
+                    const pState = phase.signals[id];
+                    if (pState) {
+                        pState.stop += diff;
+                        if (pState.stop < 0) { pState.walk += pState.stop; pState.stop = 0; }
+                        if (pState.walk < 0) { pState.flash += pState.walk; pState.walk = 0; }
+                    }
+                });
+                renderTflLibraryTab(); saveState();
             };
         });
 
+        // 2. 行人參數智慧配平 (Auto-Balancing)
+        tableBody.querySelectorAll('.p-walk, .p-flash, .p-stop').forEach(input => {
+            input.onchange = (e) => {
+                const phaseIdx = e.target.dataset.phase;
+                const groupId = e.target.dataset.group;
+                const type = e.target.className.includes('p-walk') ? 'walk' : (e.target.className.includes('p-flash') ? 'flash' : 'stop');
+                let val = parseInt(e.target.value, 10) || 0;
+                if (val < 0) val = 0;
+
+                const phase = currentSchedule.phases[phaseIdx];
+                const dur = phase.duration;
+                const pState = phase.signals[groupId];
+                pState[type] = val;
+
+                let sum = pState.walk + pState.flash + pState.stop;
+                if (sum !== dur) {
+                    let diff = dur - sum;
+                    if (diff > 0) {
+                        // 時間有剩：優先加給 Stop，若編輯的就是 Stop 則加給 Walk
+                        if (type === 'walk') pState.stop += diff;
+                        else if (type === 'flash') pState.walk += diff;
+                        else pState.walk += diff;
+                    } else {
+                        // 時間超出：依序從其他屬性扣除
+                        let toRemove = -diff;
+                        const order = type === 'walk' ? ['stop', 'flash'] : (type === 'flash' ? ['stop', 'walk'] : ['flash', 'walk']);
+                        for (let prop of order) {
+                            if (toRemove <= 0) break;
+                            let deduct = Math.min(pState[prop], toRemove);
+                            pState[prop] -= deduct;
+                            toRemove -= deduct;
+                        }
+                        if (toRemove > 0) pState[type] -= toRemove; // 極端情況硬扣
+                    }
+                }
+                renderTflLibraryTab(); saveState();
+            };
+        });
+
+        // 3. 雙擊行人格子快速套用台灣預設 (閃7停3)
+        tableBody.querySelectorAll('.pedestrian-composite-cell').forEach(cell => {
+            cell.ondblclick = (e) => {
+                // 避免點擊到輸入框時觸發
+                if (e.target.tagName === 'INPUT') return;
+
+                const phaseIdx = cell.dataset.phase;
+                const groupId = cell.dataset.group;
+                const phase = currentSchedule.phases[phaseIdx];
+                const pState = phase.signals[groupId];
+                const dur = phase.duration;
+
+                let flash = 7; let stop = 3;
+                if (dur < 10) { flash = 0; stop = dur; } // 防呆
+                pState.flash = flash;
+                pState.stop = stop;
+                pState.walk = Math.max(0, dur - flash - stop);
+
+                renderTflLibraryTab(); saveState();
+            };
+        });
+
+        // 4. 車輛狀態切換
         tableBody.querySelectorAll('.signal-block').forEach(block => {
             block.onclick = (e) => {
-                const phaseIndex = e.target.dataset.phase;
+                const phaseIdx = e.target.dataset.phase;
                 const groupId = e.target.dataset.groupId;
                 const signals = ['Green', 'Yellow', 'Red'];
-                const currentSignal = currentSchedule.phases[phaseIndex].signals[groupId] || 'Red';
-
-                let nextIndex = (currentSignal === 'Green') ? 1 : (currentSignal === 'Yellow' ? 2 : 0);
-                currentSchedule.phases[phaseIndex].signals[groupId] = signals[nextIndex];
-                renderTflLibraryTab();
-                saveState();
+                const currentSignal = currentSchedule.phases[phaseIdx].signals[groupId] || 'Red';
+                currentSchedule.phases[phaseIdx].signals[groupId] = signals[(currentSignal === 'Green') ? 1 : (currentSignal === 'Yellow' ? 2 : 0)];
+                renderTflLibraryTab(); saveState();
             };
         });
 
+        // 5. 刪除與新增步階
         tableBody.querySelectorAll('.tfl-delete-phase-btn').forEach(btn => {
             btn.onclick = (e) => {
-                currentSchedule.phases.splice(e.target.dataset.phase, 1);
-                renderTflLibraryTab();
-                saveState();
+                currentSchedule.phases.splice(e.currentTarget.dataset.phase, 1);
+                renderTflLibraryTab(); saveState();
             };
         });
 
         document.getElementById('tfl-add-phase-btn').onclick = () => {
-            currentSchedule.phases.push({ duration: 30, signals: {} });
-            renderTflLibraryTab();
-            saveState();
+            const dur = 30;
+            const newPhase = { duration: dur, signals: {} };
+            Object.values(tflData.signalGroups).forEach(g => {
+                if (g.type === 'pedestrian') newPhase.signals[g.id] = { walk: dur - 10, flash: 7, stop: 3 };
+                else newPhase.signals[g.id] = 'Red';
+            });
+            currentSchedule.phases.push(newPhase);
+            renderTflLibraryTab(); saveState();
+        };
+
+        // [新增] 一鍵產生行人專用時相
+        let scrambleBtn = document.getElementById('tfl-add-scramble-btn');
+        if (!scrambleBtn) {
+            scrambleBtn = document.createElement('button');
+            scrambleBtn.id = 'tfl-add-scramble-btn';
+            scrambleBtn.className = 'btn-action';
+            scrambleBtn.style = 'margin-left: 10px; background: #8b5cf6;';
+            scrambleBtn.innerHTML = '<i class="fa-solid fa-person-walking"></i> 加入行人專用時相';
+            document.getElementById('tfl-add-phase-btn').after(scrambleBtn);
+        }
+        scrambleBtn.onclick = () => {
+            const dur = 30;
+            const newPhase = { duration: dur, signals: {} };
+            vehicleGroups.forEach(id => newPhase.signals[id] = 'Red');
+            pedestrianGroups.forEach(id => newPhase.signals[id] = { walk: dur - 10, flash: 7, stop: 3 });
+            currentSchedule.phases.push(newPhase);
+            renderTflLibraryTab(); saveState();
         };
     }
 
@@ -9538,6 +9768,11 @@ document.addEventListener('DOMContentLoaded', () => {
                         getChildrenByLocalName(trGroupsEl, "TurnTRGroup").forEach(gEl => {
                             const gId = getChildValue(gEl, "id");
                             const gName = getChildValue(gEl, "name");
+
+                            // [修改] 讀取 type 標籤，如果舊版沒有則依名稱判斷 (P 開頭為行人)
+                            const typeEl = getChildrenByLocalName(gEl, "type")[0];
+                            const gType = typeEl ? typeEl.textContent : (gName.toUpperCase().startsWith('P') ? 'pedestrian' : 'vehicle');
+
                             const rulesEl = getChildrenByLocalName(gEl, "TransitionRules")[0];
                             const connIds = [];
                             if (rulesEl) {
@@ -9545,7 +9780,8 @@ document.addEventListener('DOMContentLoaded', () => {
                                     connIds.push(getChildValue(trEl, "transitionRuleId"));
                                 });
                             }
-                            groupMap.set(gId, { name: gName, connXmlIds: connIds });
+                            // 加入 type 屬性
+                            groupMap.set(gId, { name: gName, connXmlIds: connIds, type: gType });
                         });
                     }
 
@@ -9711,10 +9947,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 groupDefinitions.forEach((groupInfo, numericGroupId) => {
                     const groupName = groupInfo.name;
-                    const internalConnIds = groupInfo.connXmlIds
-                        .map(xmlConnId => xmlConnIdMap.get(xmlConnId))
-                        .filter(Boolean);
-                    tflData.signalGroups[groupName] = { id: groupName, connIds: internalConnIds };
+                    const internalConnIds = groupInfo.connXmlIds.map(xmlConnId => xmlConnIdMap.get(xmlConnId)).filter(Boolean);
+                    // [修改] 將 type 寫入記憶體
+                    tflData.signalGroups[groupName] = { id: groupName, connIds: internalConnIds, type: groupInfo.type };
                 });
 
                 // --- 解析舊版 (相容) Schedule ---
@@ -9751,21 +9986,41 @@ document.addEventListener('DOMContentLoaded', () => {
                             const sId = sDef.getAttribute("id");
                             const sName = sDef.getAttribute("name");
                             const sShift = parseInt(sDef.getAttribute("timeShift"), 10) || 0;
-                            const phases = [];
+                            let phases = [];
 
-                            const phasesEl = getChildrenByLocalName(sDef, "Phases")[0];
-                            if (phasesEl) {
-                                getChildrenByLocalName(phasesEl, "Phase").forEach(pEl => {
-                                    const duration = parseInt(pEl.getAttribute("duration"), 10);
-                                    const signals = {};
-                                    getChildrenByLocalName(pEl, "Signal").forEach(sigEl => {
-                                        const numericId = sigEl.getAttribute("groupId");
-                                        // 轉換 XML 的數字 ID 回系統用的 Group Name
-                                        const groupInfo = groupDefinitions.get(numericId);
-                                        if (groupInfo) signals[groupInfo.name] = sigEl.getAttribute("state");
+                            //[新增] 尋找完美的編輯器存檔
+                            const editorMacroEl = getChildrenByLocalName(sDef, "EditorMacroPhases")[0];
+                            if (editorMacroEl) {
+                                try {
+                                    phases = JSON.parse(editorMacroEl.textContent);
+                                } catch (e) { console.error("Parse MacroPhases failed", e); }
+                            }
+
+                            // Fallback: 如果是舊版檔案，將 Micro-phases 原封不動轉入 (行人補齊結構)
+                            if (phases.length === 0) {
+                                const phasesEl = getChildrenByLocalName(sDef, "Phases")[0];
+                                if (phasesEl) {
+                                    getChildrenByLocalName(phasesEl, "Phase").forEach(pEl => {
+                                        const duration = parseInt(pEl.getAttribute("duration"), 10);
+                                        const signals = {};
+                                        getChildrenByLocalName(pEl, "Signal").forEach(sigEl => {
+                                            const numericId = sigEl.getAttribute("groupId");
+                                            const groupInfo = groupDefinitions.get(numericId);
+                                            if (groupInfo) {
+                                                const state = sigEl.getAttribute("state");
+                                                // [修改] 相容轉換
+                                                if (groupInfo.type === 'pedestrian') {
+                                                    if (state === 'Green') signals[groupInfo.name] = { walk: duration, flash: 0, stop: 0 };
+                                                    else if (state === 'Yellow') signals[groupInfo.name] = { walk: 0, flash: duration, stop: 0 };
+                                                    else signals[groupInfo.name] = { walk: 0, flash: 0, stop: duration };
+                                                } else {
+                                                    signals[groupInfo.name] = state;
+                                                }
+                                            }
+                                        });
+                                        phases.push({ duration, signals });
                                     });
-                                    phases.push({ duration, signals });
-                                });
+                                }
                             }
                             tflData.advanced.schedules[sId] = { id: sId, name: sName, timeShift: sShift, phases };
                         });
@@ -10211,6 +10466,12 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (internalSpanId) newMark.spanToLinkId = internalSpanId;
                     }
 
+                    // <--- [新增] 解析行人號誌綁定 (舊版檔案會安全地解析為 null) --->
+                    const sigGrpVal = getChildValue(mkEl, "signalGroupId");
+                    if (sigGrpVal) {
+                        newMark.signalGroupId = sigGrpVal;
+                    }
+
                     const lanesStr = getChildValue(mkEl, "laneIndices");
                     if (lanesStr) {
                         newMark.laneIndices = lanesStr.split(',').map(Number);
@@ -10268,6 +10529,56 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- [修改] 重構 exportXML ---
 
     // 1. 新增此函數 (內容是原本 exportXML 的邏輯，但最後改為 return xml)
+    /**
+     * [新增] 將 UI 上的「巨觀分相 (Macro-Phases)」編譯為模擬器底層需要的「微觀步階 (Micro-Phases)」
+     * 當行人和車道時間不一致時，會自動在時間軸上切割出新的陣列元素。
+     */
+    function compileMacroPhasesToMicro(macroPhases, groupDefinitions) {
+        const microPhases = [];
+
+        macroPhases.forEach(macro => {
+            const dur = macro.duration;
+            // 尋找該分相內所有狀態改變的時間邊界點 (Time Boundaries)
+            const boundaries = new Set([0, dur]);
+
+            Object.entries(macro.signals).forEach(([gId, state]) => {
+                const groupInfo = groupDefinitions[gId];
+                if (groupInfo && groupInfo.type === 'pedestrian' && typeof state === 'object') {
+                    if (state.walk > 0 && state.walk < dur) boundaries.add(state.walk);
+                    if (state.walk + state.flash > 0 && state.walk + state.flash < dur) boundaries.add(state.walk + state.flash);
+                }
+            });
+
+            // 排序邊界點
+            const sortedBoundaries = Array.from(boundaries).sort((a, b) => a - b);
+
+            // 根據邊界點切割出微觀步階
+            for (let i = 0; i < sortedBoundaries.length - 1; i++) {
+                const start = sortedBoundaries[i];
+                const end = sortedBoundaries[i + 1];
+                const microDur = end - start;
+                if (microDur <= 0) continue;
+
+                const microSignals = {};
+                Object.entries(macro.signals).forEach(([gId, state]) => {
+                    const groupInfo = groupDefinitions[gId];
+                    if (!groupInfo) return;
+
+                    if (groupInfo.type === 'pedestrian' && typeof state === 'object') {
+                        const mid = start + (microDur / 2.0); // 採樣區間中點以判定狀態
+                        if (mid < state.walk) microSignals[gId] = 'Green';
+                        else if (mid < state.walk + state.flash) microSignals[gId] = 'Yellow'; // 模擬器通常用 Yellow 代表閃爍
+                        else microSignals[gId] = 'Red';
+                    } else {
+                        microSignals[gId] = (typeof state === 'string') ? state : 'Red';
+                    }
+                });
+                microPhases.push({ duration: microDur, signals: microSignals });
+            }
+        });
+        return microPhases;
+    }
+
     function serializeNetworkToXML() {
         const tflGroupMappings = {};
         const linkIdMap = new Map(), regularNodeIdMap = new Map(), originNodeIdMap = new Map(),
@@ -10489,10 +10800,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 const tflData = network.trafficLights[node.id];
                 if (tflData && tflData.signalGroups && Object.keys(tflData.signalGroups).length > 0) {
                     const groupNameToNumericId = {}; let turnTRGroupIdCounter = 0;
+                    // [修改] 寫入群組 type
                     xml += '        <tm:TurnTRGroups>\n';
                     Object.values(tflData.signalGroups).forEach(group => {
-                        const numericTurnTRGroupId = turnTRGroupIdCounter++; groupNameToNumericId[group.id] = numericTurnTRGroupId;
-                        xml += `          <tm:TurnTRGroup><tm:id>${numericTurnTRGroupId}</tm:id><tm:name>${group.id}</tm:name>\n`;
+                        const numericTurnTRGroupId = turnTRGroupIdCounter++;
+                        groupNameToNumericId[group.id] = numericTurnTRGroupId;
+                        // [修改] 寫入群組 type
+                        xml += `          <tm:TurnTRGroup><tm:id>${numericTurnTRGroupId}</tm:id><tm:name>${group.id}</tm:name><tm:type>${group.type || 'vehicle'}</tm:type>\n`;
                         const firstConn = network.connections[group.connIds[0]];
                         if (firstConn) {
                             const sourceLink = network.links[firstConn.sourceLinkId], destLink = network.links[firstConn.destLinkId];
@@ -10561,16 +10875,18 @@ document.addEventListener('DOMContentLoaded', () => {
                     xml += `        <tm:id>${mark.id}</tm:id>\n`;
                     xml += `        <tm:type>${mark.markingType}</tm:type>\n`;
 
-                    // 匯出自由移動狀態
-                    if (mark.isFree) {
-                        xml += `        <tm:isFree>true</tm:isFree>\n`;
-                    }
-                    // [新增] 匯出跨越狀態
+                    if (mark.isFree) xml += `        <tm:isFree>true</tm:isFree>\n`;
+
                     if (mark.spanToLinkId) {
                         const numSpanId = linkIdMap.get(mark.spanToLinkId);
                         if (numSpanId !== undefined) {
                             xml += `        <tm:spanToLinkId>${numSpanId}</tm:spanToLinkId>\n`;
                         }
+                    }
+
+                    // <--- [新增] 匯出行人號誌綁定 --->
+                    if (mark.signalGroupId) {
+                        xml += `        <tm:signalGroupId>${mark.signalGroupId}</tm:signalGroupId>\n`;
                     }
 
                     if (numericLinkId !== undefined) {
@@ -10648,7 +10964,9 @@ document.addEventListener('DOMContentLoaded', () => {
             // 輸出舊版相容標籤
             xml += `        <tm:scheduleTimeShift>${legacyTimeShift}</tm:scheduleTimeShift>\n`;
             xml += '        <tm:Schedule><tm:TimePeriods>\n';
-            legacyPhases.forEach(phase => {
+            // [修改] 調用編譯器
+            const microLegacyPhases = compileMacroPhasesToMicro(legacyPhases, tfl.signalGroups);
+            microLegacyPhases.forEach(phase => {
                 xml += `          <tm:TimePeriod><tm:duration>${phase.duration}</tm:duration>\n`;
                 if (groupMap) {
                     Object.values(tfl.signalGroups).forEach(group => {
@@ -10668,15 +10986,16 @@ document.addEventListener('DOMContentLoaded', () => {
             // ----------------------------------------------------
             if (tfl.advanced) {
                 xml += '        <tm:AdvancedScheduling enabled="true">\n';
-
-                // 1. Schedules (時制庫)
                 xml += '          <tm:Schedules>\n';
                 Object.values(tfl.advanced.schedules).forEach(sched => {
                     xml += `            <tm:ScheduleDef id="${sched.id}" name="${sched.name || sched.id}" timeShift="${sched.timeShift || 0}">\n`;
+
+                    // [修改] 調用編譯器產生標準 Phases
+                    const microPhases = compileMacroPhasesToMicro(sched.phases, tfl.signalGroups);
                     xml += '              <tm:Phases>\n';
-                    sched.phases.forEach(phase => {
-                        xml += `                <tm:Phase duration="${phase.duration}">\n`;
-                        Object.entries(phase.signals).forEach(([gId, state]) => {
+                    microPhases.forEach(mPhase => {
+                        xml += `                <tm:Phase duration="${mPhase.duration}">\n`;
+                        Object.entries(mPhase.signals).forEach(([gId, state]) => {
                             const numericGroupId = groupMap ? groupMap[gId] : undefined;
                             if (numericGroupId !== undefined) {
                                 xml += `                  <tm:Signal groupId="${numericGroupId}" state="${state}"/>\n`;
@@ -10685,6 +11004,9 @@ document.addEventListener('DOMContentLoaded', () => {
                         xml += `                </tm:Phase>\n`;
                     });
                     xml += '              </tm:Phases>\n';
+
+                    // [新增] 寫入編輯器專屬的巨觀步階紀錄，以利下次完美讀取
+                    xml += `              <tm:EditorMacroPhases><![CDATA[${JSON.stringify(sched.phases)}]]></tm:EditorMacroPhases>\n`;
                     xml += `            </tm:ScheduleDef>\n`;
                 });
                 xml += '          </tm:Schedules>\n';
