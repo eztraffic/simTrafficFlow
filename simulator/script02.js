@@ -2535,6 +2535,56 @@ document.addEventListener('DOMContentLoaded', () => {
         // --- 新增：繪製 Road Markings ---
         if (netData.roadMarkings) {
             netData.roadMarkings.forEach(mark => {
+                // ★★★[新增] 2D 繪製對角線行人穿越道 ★★★
+                // ★★★[新增] 2D 繪製對角線行人穿越道 ★★★
+                if (mark.type === 'diagonal_crosswalk') {
+                    // X形狀主軸線
+                    const cxA = mark.cA.x, cyA = mark.cA.y;
+                    const cxB = mark.cB.x, cyB = mark.cB.y;
+
+                    const dx = cxB - cxA;
+                    const dy = cyB - cyA;
+                    const len = Math.hypot(dx, dy);
+                    if (len < 0.1) return;
+                    
+                    const ux = dx / len;
+                    const uy = dy / len;
+                    const nx = -uy; // 法向量X
+                    const ny = ux;  // 法向量Y
+
+                    // 需求 1: 通道等寬且邊線平行
+                    const halfW = 2.0; // 通道半寬 2.0 公尺 (總寬 4m)
+                    const gapRatio = 0.25; // 鏤空比例
+
+                    // 往兩側法向量推算平行邊線
+                    const line1_A = { x: cxA + nx * halfW, y: cyA + ny * halfW };
+                    const line1_B = { x: cxB + nx * halfW, y: cyB + ny * halfW };
+                    const line2_A = { x: cxA - nx * halfW, y: cyA - ny * halfW };
+                    const line2_B = { x: cxB - nx * halfW, y: cyB - ny * halfW };
+
+                    ctx2D.save();
+                    ctx2D.strokeStyle = 'white'; // 需求 2: 白色
+                    ctx2D.lineWidth = 1.0 / scale;
+
+                    const drawBrokenLine = (pA, pB) => {
+                        const ldx = pB.x - pA.x;
+                        const ldy = pB.y - pA.y;
+                        const pA_end = { x: pA.x + ldx * (0.5 - gapRatio/2), y: pA.y + ldy * (0.5 - gapRatio/2) };
+                        const pB_start = { x: pA.x + ldx * (0.5 + gapRatio/2), y: pA.y + ldy * (0.5 + gapRatio/2) };
+                        ctx2D.beginPath();
+                        ctx2D.moveTo(pA.x, pA.y); ctx2D.lineTo(pA_end.x, pA_end.y);
+                        ctx2D.stroke();
+                        ctx2D.beginPath();
+                        ctx2D.moveTo(pB_start.x, pB_start.y); ctx2D.lineTo(pB.x, pB.y);
+                        ctx2D.stroke();
+                    };
+
+                    drawBrokenLine(line1_A, line1_B);
+                    drawBrokenLine(line2_A, line2_B);
+                    ctx2D.restore();
+                    return; // 畫完對角線就跳過
+                }
+
                 // [新增] 斑馬線特殊處理
                 if (mark.type === 'crosswalk') {
                     const lineData = calculateCrosswalkLine(mark, netData);
@@ -3825,6 +3875,58 @@ document.addEventListener('DOMContentLoaded', () => {
             });
 
             netData.roadMarkings.forEach(mk => {
+
+                                // ★★★ [新增] 3D 繪製對角線行人穿越道 ★★★
+// ★★★[新增] 3D 繪製對角線行人穿越道 ★★★
+                if (mk.type === 'diagonal_crosswalk') {
+                    const cxA = mk.cA.x, cyA = mk.cA.y;
+                    const cxB = mk.cB.x, cyB = mk.cB.y;
+
+                    const dx = cxB - cxA;
+                    const dy = cyB - cyA;
+                    const len = Math.hypot(dx, dy);
+                    if (len < 0.1) return;
+
+                    const ux = dx / len;
+                    const uy = dy / len;
+                    const nx = -uy;
+                    const ny = ux;
+
+                    const halfW = 2.0; 
+                    const gapRatio = 0.25; 
+
+                    const line1_A = { x: cxA + nx * halfW, y: cyA + ny * halfW };
+                    const line1_B = { x: cxB + nx * halfW, y: cyB + ny * halfW };
+                    const line2_A = { x: cxA - nx * halfW, y: cyA - ny * halfW };
+                    const line2_B = { x: cxB - nx * halfW, y: cyB - ny * halfW };
+
+                    const add3DPlaneLine = (pA, pB) => {
+                        const ldx = pB.x - pA.x;
+                        const ldy = pB.y - pA.y;
+                        const pA_end = { x: pA.x + ldx * (0.5 - gapRatio/2), y: pA.y + ldy * (0.5 - gapRatio/2) };
+                        const pB_start = { x: pA.x + ldx * (0.5 + gapRatio/2), y: pA.y + ldy * (0.5 + gapRatio/2) };
+
+                        const createPlaneLine = (pt1, pt2) => {
+                            const segDx = pt2.x - pt1.x, segDy = pt2.y - pt1.y;
+                            const segmentLen = Math.hypot(segDx, segDy);
+                            const midX = (pt1.x + pt2.x)/2, midY = (pt1.y + pt2.y)/2;
+                            const angle = Math.atan2(segDy, segDx);
+                            
+                            const geo = new THREE.PlaneGeometry(segmentLen, 0.4); // 白線寬 0.4 公尺
+                            const mesh = new THREE.Mesh(geo, whiteMat);
+                            mesh.position.set(midX, 0.13, midY); // 高度設為 0.13，略高於斑馬線(0.12)
+                            mesh.rotation.x = -Math.PI / 2;
+                            mesh.rotation.z = -angle;
+                            networkGroup.add(mesh);
+                        };
+                        createPlaneLine(pA, pA_end);
+                        createPlaneLine(pB_start, pB);
+                    };
+
+                    add3DPlaneLine(line1_A, line1_B);
+                    add3DPlaneLine(line2_A, line2_B);
+                    return; 
+                }
                 // [修正] 動態調整高度
                 // 如果是 Link 上的標線，高度 0.12 (高於路面 0.10)
                 // 如果是 Free 或 Node 上的標線 (通常在路口)，高度需 > 0.20 (高於路口 0.20)
@@ -10741,11 +10843,143 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (laneIndicesStr) {
                         mk.laneIndices = laneIndicesStr.split(',').map(Number);
                     }
-
                     roadMarkings.push(mk);
                 });
             }
+// ★★★ [新增] 自動偵測十字路口並生成對角線行人穿越道 ★★★
+            const nodeCrosswalks = {};
+            roadMarkings.forEach(mark => {
+                if (mark.type === 'crosswalk') {
+                    let targetNodeId = mark.nodeId;
+                    if (!targetNodeId && mark.linkId) {
+                        const link = links[mark.linkId];
+                        if (link) {
+                            // 【修正】嚴格過濾字串與數字的 '-1' 邊界節點，找出路段真正連接的路口節點
+                            if (link.destination && String(link.destination) !== '-1') {
+                                targetNodeId = String(link.destination);
+                            } else if (link.source && String(link.source) !== '-1') {
+                                targetNodeId = String(link.source);
+                            }
+                        }
+                    }
+                    if (targetNodeId) {
+                        if (!nodeCrosswalks[targetNodeId]) nodeCrosswalks[targetNodeId] = [];
+                        nodeCrosswalks[targetNodeId].push(mark);
+                    }
+                }
+            });
 
+            // 輔助函數：獲取行穿線號誌ID
+            const getCrosswalkSignalGroupId = (mark, nodeId, lineData) => {
+                if (mark.signalGroupId) return mark.signalGroupId;
+                const cwVecX = lineData.p2.x - lineData.p1.x;
+                const cwVecY = lineData.p2.y - lineData.p1.y;
+                const node = nodes[nodeId];
+                if (node && node.transitions) {
+                    for (const t of node.transitions) {
+                        if (t.sourceLinkId !== t.destLinkId && t.turnGroupId) {
+                            const srcL = links[t.sourceLinkId];
+                            const dstL = links[t.destLinkId];
+                            if (srcL && dstL && srcL.lanes[t.sourceLaneIndex || 0] && dstL.lanes[t.destLaneIndex || 0]) {
+                                const srcPath = srcL.lanes[t.sourceLaneIndex || 0].path;
+                                const dstPath = dstL.lanes[t.destLaneIndex || 0].path;
+                                if (srcPath.length > 0 && dstPath.length > 0) {
+                                    const dx = dstPath[0].x - srcPath[srcPath.length - 1].x;
+                                    const dy = dstPath[0].y - srcPath[srcPath.length - 1].y;
+                                    const len = Math.hypot(dx, dy);
+                                    if (len > 0.1) {
+                                        const dot = (cwVecX * dx + cwVecY * dy) / (Math.hypot(cwVecX, cwVecY) * len);
+                                        if (Math.abs(dot) > 0.8) return t.turnGroupId;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                return null;
+            };
+
+            for (const nodeId in nodeCrosswalks) {
+                const cws = nodeCrosswalks[nodeId];
+                // 需求 1: 當路口為十字路（四個方向皆有行人穿越線）
+                if (cws.length === 4) {
+                    let sharedGroupId = null;
+                    let allSame = true;
+                    const cwDataList =[];
+
+                    for (const cw of cws) {
+                        // 借用全域的 calculateCrosswalkLine 取得端點
+                        const lineData = window.calculateCrosswalkLine ? window.calculateCrosswalkLine(cw, {links, nodes}) : null;
+                        if (!lineData) { allSame = false; break; }
+
+                        const tGroupId = getCrosswalkSignalGroupId(cw, nodeId, lineData);
+                        if (!tGroupId) { allSame = false; break; }
+                        
+                        // 需求 5: 對應的行人時相是共用相同的編號
+                        if (!sharedGroupId) sharedGroupId = tGroupId;
+                        if (tGroupId !== sharedGroupId) { allSame = false; break; }
+
+                        cwDataList.push({ mark: cw, line: lineData });
+                    }
+
+                    if (allSame && sharedGroupId && cwDataList.length === 4) {
+                        // 計算路口中心點
+                        let cx = 0, cy = 0;
+                        cwDataList.forEach(d => {
+                            cx += (d.line.p1.x + d.line.p2.x) / 2;
+                            cy += (d.line.p1.y + d.line.p2.y) / 2;
+                        });
+                        cx /= 4; cy /= 4;
+
+                        // 依據相對於中心的角度排序 (構成環狀 0,1,2,3)
+                        cwDataList.sort((a, b) => {
+                            const aAngle = Math.atan2((a.line.p1.y + a.line.p2.y)/2 - cy, (a.line.p1.x + a.line.p2.x)/2 - cx);
+                            const bAngle = Math.atan2((b.line.p1.y + b.line.p2.y)/2 - cy, (b.line.p1.x + b.line.p2.x)/2 - cx);
+                            return aAngle - bAngle;
+                        });
+
+                        // 需求 3: 以相鄰斑馬線最靠近的端點，求出四個真正的「角落」(號誌桿位置)
+                        const getCorner = (lineA, lineB) => {
+                            let minDist = Infinity;
+                            let bestCorner = { x: 0, y: 0 };
+                            const ptsA = [lineA.p1, lineA.p2];
+                            const ptsB = [lineB.p1, lineB.p2];
+                            for(let pa of ptsA) {
+                                for(let pb of ptsB) {
+                                    const d = Math.hypot(pa.x - pb.x, pa.y - pb.y);
+                                    if(d < minDist) {
+                                        minDist = d;
+                                        bestCorner = { x: (pa.x + pb.x)/2, y: (pa.y + pb.y)/2 };
+                                    }
+                                }
+                            }
+                            return bestCorner;
+                        };
+
+                        const c0 = getCorner(cwDataList[0].line, cwDataList[1].line);
+                        const c1 = getCorner(cwDataList[1].line, cwDataList[2].line);
+                        const c2 = getCorner(cwDataList[2].line, cwDataList[3].line);
+                        const c3 = getCorner(cwDataList[3].line, cwDataList[0].line);
+
+                        const createDiag = (cornerA, cornerB, idSuffix) => {
+                            roadMarkings.push({
+                                id: `diag_${nodeId}_${idSuffix}`,
+                                type: 'diagonal_crosswalk',
+                                nodeId: nodeId,
+                                signalGroupId: sharedGroupId,
+                                cA: cornerA,
+                                cB: cornerB,
+                                isFree: true
+                            });
+                        };
+                        
+                        // 生成 X 形狀對角線: c0連c2, c1連c3
+                        createDiag(c0, c2, '1');
+                        createDiag(c1, c3, '2');
+                    }
+                }
+            }
+            // ★★★ 自動生成對角線邏輯結束 ★★★
             // --- 8. 解析背景圖片 ---
             xmlDoc.querySelectorAll('Background > Tile').forEach(tileEl => {
                 const rect = tileEl.querySelector('Rectangle');

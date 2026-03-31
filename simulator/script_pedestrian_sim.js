@@ -74,7 +74,7 @@ class Pedestrian {
         else if (this.state === 'CROSSING') {
             // ★ [修改] 走到一半遇到 Yellow(行閃) 或 Red(行停遲閉)，自動加快腳步清道
             if (signal === 'Yellow' || signal === 'Red') {
-                this.speed = 1.5; 
+                this.speed = 1.5;
             } else {
                 this.speed = this.baseSpeed;
             }
@@ -148,29 +148,31 @@ class PedestrianSimManager {
     }
 
     initSpawners() {
-        // 從節點資料中尋找需要產流行人的路口
         for (const nodeId in this.network.nodes) {
             const node = this.network.nodes[nodeId];
             if (node.pedestrianVolume && node.pedestrianVolume > 0) {
-                // 找出這個路口附近的所有斑馬線
-                const crosswalks = this.extractCrosswalks(nodeId);
+                // ★ [修改] 接收封裝好的物件
+                const extracted = this.extractCrosswalks(nodeId);
+                const crosswalks = extracted.cws;
+                const diagonals = extracted.diagonals;
+
                 if (crosswalks.length > 0) {
                     this.spawners.push({
                         nodeId: nodeId,
                         volume: node.pedestrianVolume,
                         interval: 3600 / node.pedestrianVolume,
-                        timer: Math.random() * (3600 / node.pedestrianVolume), // 隨機初始相位
+                        timer: Math.random() * (3600 / node.pedestrianVolume),
                         crossOnceProb: node.crossOnceProb !== undefined ? node.crossOnceProb : 100,
                         crossTwiceProb: node.crossTwiceProb || 0,
                         crosswalks: crosswalks,
+                        diagonals: diagonals, // ★ 儲存對角線以供使用
 
                         findConnectingCrosswalk: (currentCw, x, y) => {
-                            // 找最近的另一條斑馬線
                             for (const cw of crosswalks) {
                                 if (cw.id === currentCw.id) continue;
                                 const d1 = Math.hypot(x - cw.p1.x, y - cw.p1.y);
                                 const d2 = Math.hypot(x - cw.p2.x, y - cw.p2.y);
-                                if (d1 < 10 || d2 < 10) return cw; // 距離10米內視為連通
+                                if (d1 < 10 || d2 < 10) return cw;
                             }
                             return null;
                         }
@@ -181,7 +183,8 @@ class PedestrianSimManager {
     }
 
     extractCrosswalks(nodeId) {
-        const cws =[];
+        const cws = [];
+        const diagonals = []; // ★ 新增對角線陣列
         if (!this.network.roadMarkings) return cws;
 
         this.network.roadMarkings.forEach(mark => {
@@ -202,13 +205,12 @@ class PedestrianSimManager {
                         // ★ [新增] 1. 優先使用 XML 中明確綁定的行人號誌群組
                         if (mark.signalGroupId) {
                             turnGroupId = mark.signalGroupId;
-                        } 
+                        }
                         // ★ [相容舊版] 2. 若未綁定，使用幾何推算平行的車輛直行號誌
                         else {
                             const cwVecX = lineData.p2.x - lineData.p1.x;
                             const cwVecY = lineData.p2.y - lineData.p1.y;
                             const node = this.network.nodes[nodeId];
-
                             if (node && node.transitions) {
                                 for (const t of node.transitions) {
                                     if (t.sourceLinkId !== t.destLinkId && t.turnGroupId) {
@@ -217,20 +219,15 @@ class PedestrianSimManager {
                                         if (srcL && dstL) {
                                             const srcPath = srcL.lanes[t.sourceLaneIndex || 0]?.path;
                                             const dstPath = dstL.lanes[t.destLaneIndex || 0]?.path;
-
                                             if (srcPath && dstPath && srcPath.length > 0 && dstPath.length > 0) {
                                                 const pSrc = srcPath[srcPath.length - 1];
                                                 const pDst = dstPath[0];
                                                 const dx = pDst.x - pSrc.x;
                                                 const dy = pDst.y - pSrc.y;
                                                 const len = Math.hypot(dx, dy);
-
                                                 if (len > 0.1) {
                                                     const dot = (cwVecX * dx + cwVecY * dy) / (Math.hypot(cwVecX, cwVecY) * len);
-                                                    if (Math.abs(dot) > 0.8) { // 內積判斷平行
-                                                        turnGroupId = t.turnGroupId;
-                                                        break;
-                                                    }
+                                                    if (Math.abs(dot) > 0.8) { turnGroupId = t.turnGroupId; break; }
                                                 }
                                             }
                                         }
@@ -238,19 +235,23 @@ class PedestrianSimManager {
                                 }
                             }
                         }
-
-                        cws.push({
-                            id: mark.id,
-                            p1: lineData.p1,
-                            p2: lineData.p2,
-                            width: lineData.width,
-                            turnGroupId: turnGroupId
-                        });
+                        cws.push({ id: mark.id, p1: lineData.p1, p2: lineData.p2, width: lineData.width, turnGroupId: turnGroupId });
                     }
                 }
             }
+            // ★★★ [新增] 讀取對角線資料給行人使用 ★★★
+            else if (mark.type === 'diagonal_crosswalk' && mark.nodeId === nodeId) {
+                // 直接使用算出的對角角落作為行人起終點
+                diagonals.push({
+                    id: mark.id,
+                    p1: mark.cA,
+                    p2: mark.cB,
+                    width: 4.0, // ★ 配合繪圖的通道半寬 2.0m，總寬度設為 4.0m
+                    turnGroupId: mark.signalGroupId
+                });
+            }
         });
-        return cws;
+        return { cws, diagonals }; // 回傳物件
     }
 
     update(dt) {
@@ -259,15 +260,25 @@ class PedestrianSimManager {
             sp.timer += dt;
             if (sp.timer >= sp.interval) {
                 sp.timer -= sp.interval;
-                const cw = sp.crosswalks[Math.floor(Math.random() * sp.crosswalks.length)];
+                
+                const rand = Math.random() * 100;
+                let crossTwice = rand > sp.crossOnceProb && rand <= (sp.crossOnceProb + sp.crossTwiceProb);
+
+                let cw;
+                // ★★★ 需求 4: 模擬行人動畫時，讓需走兩次行穿線的行人，才改走對角線 ★★★
+                if (crossTwice && sp.diagonals && sp.diagonals.length > 0) {
+                    // 若這路口有對角線，且被分配要走兩次，則直接分配對角線
+                    cw = sp.diagonals[Math.floor(Math.random() * sp.diagonals.length)];
+                    // 因為對角線一次就穿越完了，所以關閉 crossTwice 的兩段式尋路邏輯
+                    crossTwice = false; 
+                } else {
+                    // 若無對角線，或只需走一次，就走一般斑馬線
+                    cw = sp.crosswalks[Math.floor(Math.random() * sp.crosswalks.length)];
+                }
 
                 // 決定過馬路方向 (50% 機率 p1->p2 或 p2->p1)
                 const startP = Math.random() > 0.5 ? cw.p1 : cw.p2;
                 const endP = startP === cw.p1 ? cw.p2 : cw.p1;
-
-                // 決定穿越次數
-                const rand = Math.random() * 100;
-                const crossTwice = rand > sp.crossOnceProb && rand <= (sp.crossOnceProb + sp.crossTwiceProb);
 
                 const ped = new Pedestrian(`ped_${this.pedIdCounter++}`, startP, endP, cw.width, cw, sp, crossTwice);
                 this.pedestrians.push(ped);
@@ -279,7 +290,7 @@ class PedestrianSimManager {
             // 【修復關鍵】：crosswalk 裡面沒有 spawner 屬性，
             // 應直接讀取行人身上綁定的 ped.spawner.nodeId 來獲取對應的號誌。
             const tfl = this.simulation.trafficLights.find(t => t.nodeId === ped.spawner.nodeId);
-            
+
             ped.update(dt, tfl, this.pedestrians);
             this.update3DMesh(ped); // 更新 3D
         });
@@ -312,13 +323,13 @@ class PedestrianSimManager {
     }
 
     // --- 簡單的 3D 生成與動畫 ---
-        // --- 簡單的 3D 生成與動畫 ---
+    // --- 簡單的 3D 生成與動畫 ---
     update3DMesh(ped) {
         if (!this.group3D) return;
 
         if (!ped.mesh) {
             ped.mesh = new THREE.Group();
-            
+
             // 基礎顏色
             const shirtColor = ped.isMale ? 0x3b82f6 : 0xec4899;
             const pantsColor = 0x1e293b;
@@ -330,7 +341,7 @@ class PedestrianSimManager {
 
             // 比例參數 (依據身高動態調整)
             const scaleH = ped.height / 1.7; // 以 1.7m 為基準
-            
+
             // 將行人正面建構朝向 +X 軸 (與車輛一致)
             // 身體 (Torso) - 寬度在 Z 軸(0.4)，厚度在 X 軸(0.25)
             const bodyGeo = new THREE.BoxGeometry(0.25, 0.6 * scaleH, 0.4);
@@ -349,8 +360,8 @@ class PedestrianSimManager {
             // 雙腳 (Legs) - 寬度在 Z，厚度在 X
             const legGeo = new THREE.BoxGeometry(0.15, 0.6 * scaleH, 0.15);
             // 調整幾何體中心點到頂部 (髖關節)，方便沿 Z 軸旋轉擺動
-            legGeo.translate(0, -0.3 * scaleH, 0); 
-            
+            legGeo.translate(0, -0.3 * scaleH, 0);
+
             // 左腳 (-Z 側)
             const legL = new THREE.Mesh(legGeo, matPants);
             legL.position.set(0, 0.6 * scaleH, -0.1);
@@ -372,14 +383,14 @@ class PedestrianSimManager {
 
             // 左手 (-Z 側)
             const armL = new THREE.Mesh(armGeo, matSkin);
-            armL.position.set(0, 1.15 * scaleH, -0.26); 
+            armL.position.set(0, 1.15 * scaleH, -0.26);
             armL.castShadow = true;
             ped.mesh.armL = armL;
             ped.mesh.add(armL);
 
             // 右手 (+Z 側)
             const armR = new THREE.Mesh(armGeo, matSkin);
-            armR.position.set(0, 1.15 * scaleH, 0.26); 
+            armR.position.set(0, 1.15 * scaleH, 0.26);
             armR.castShadow = true;
             ped.mesh.armR = armR;
             ped.mesh.add(armR);
@@ -389,7 +400,7 @@ class PedestrianSimManager {
 
         // 更新座標與旋轉 (直接使用與車輛完全相同的旋轉公式，無須額外補償)
         ped.mesh.position.set(ped.x, 0, ped.y);
-        ped.mesh.rotation.y = -ped.angle; 
+        ped.mesh.rotation.y = -ped.angle;
 
         // 更新步行動畫 (沿 Z 軸旋轉以產生前後擺動)
         if (ped.state === 'CROSSING') {
