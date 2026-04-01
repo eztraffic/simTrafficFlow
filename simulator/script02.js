@@ -2538,51 +2538,64 @@ document.addEventListener('DOMContentLoaded', () => {
                 // ★★★[新增] 2D 繪製對角線行人穿越道 ★★★
                 // ★★★[新增] 2D 繪製對角線行人穿越道 ★★★
                 if (mark.type === 'diagonal_crosswalk') {
-                    // X形狀主軸線
-                    const cxA = mark.cA.x, cyA = mark.cA.y;
-                    const cxB = mark.cB.x, cyB = mark.cB.y;
+                    const[c0, c1, c2, c3] = mark.corners;
+                    const halfW = 2.0; // 通道半寬 (總寬 4m)
 
-                    const dx = cxB - cxA;
-                    const dy = cyB - cyA;
-                    const len = Math.hypot(dx, dy);
-                    if (len < 0.1) return;
-                    
-                    const ux = dx / len;
-                    const uy = dy / len;
-                    const nx = -uy; // 法向量X
-                    const ny = ux;  // 法向量Y
-
-                    // 需求 1: 通道等寬且邊線平行
-                    const halfW = 2.0; // 通道半寬 2.0 公尺 (總寬 4m)
-                    const gapRatio = 0.25; // 鏤空比例
-
-                    // 往兩側法向量推算平行邊線
-                    const line1_A = { x: cxA + nx * halfW, y: cyA + ny * halfW };
-                    const line1_B = { x: cxB + nx * halfW, y: cyB + ny * halfW };
-                    const line2_A = { x: cxA - nx * halfW, y: cyA - ny * halfW };
-                    const line2_B = { x: cxB - nx * halfW, y: cyB - ny * halfW };
-
-                    ctx2D.save();
-                    ctx2D.strokeStyle = 'white'; // 需求 2: 白色
-                    ctx2D.lineWidth = 1.0 / scale;
-
-                    const drawBrokenLine = (pA, pB) => {
-                        const ldx = pB.x - pA.x;
-                        const ldy = pB.y - pA.y;
-                        const pA_end = { x: pA.x + ldx * (0.5 - gapRatio/2), y: pA.y + ldy * (0.5 - gapRatio/2) };
-                        const pB_start = { x: pA.x + ldx * (0.5 + gapRatio/2), y: pA.y + ldy * (0.5 + gapRatio/2) };
-                        ctx2D.beginPath();
-                        ctx2D.moveTo(pA.x, pA.y); ctx2D.lineTo(pA_end.x, pA_end.y);
-                        ctx2D.stroke();
-                        ctx2D.beginPath();
-                        ctx2D.moveTo(pB_start.x, pB_start.y); ctx2D.lineTo(pB.x, pB.y);
-                        ctx2D.stroke();
+                    const getNorm = (pA, pB) => {
+                        const dx = pB.x - pA.x, dy = pB.y - pA.y;
+                        const len = Math.hypot(dx, dy);
+                        return len > 0 ? { x: -dy / len, y: dx / len } : { x: 0, y: 0 };
                     };
 
-                    drawBrokenLine(line1_A, line1_B);
-                    drawBrokenLine(line2_A, line2_B);
+                    const nA = getNorm(c0, c2);
+                    const nB = getNorm(c1, c3);
+
+                    // 定義兩條對角線向外平移的 4 條虛擬外框線
+                    const linesA =[
+                        { p1: { x: c0.x + nA.x * halfW, y: c0.y + nA.y * halfW }, p2: { x: c2.x + nA.x * halfW, y: c2.y + nA.y * halfW } },
+                        { p1: { x: c0.x - nA.x * halfW, y: c0.y - nA.y * halfW }, p2: { x: c2.x - nA.x * halfW, y: c2.y - nA.y * halfW } }
+                    ];
+                    const linesB =[
+                        { p1: { x: c1.x + nB.x * halfW, y: c1.y + nB.y * halfW }, p2: { x: c3.x + nB.x * halfW, y: c3.y + nB.y * halfW } },
+                        { p1: { x: c1.x - nB.x * halfW, y: c1.y - nB.y * halfW }, p2: { x: c3.x - nB.x * halfW, y: c3.y - nB.y * halfW } }
+                    ];
+
+                    // 兩線交點函數
+                    const getIntersect = (l1, l2) => {
+                        const d1x = l1.p2.x - l1.p1.x, d1y = l1.p2.y - l1.p1.y;
+                        const d2x = l2.p2.x - l2.p1.x, d2y = l2.p2.y - l2.p1.y;
+                        const cross = d1x * d2y - d1y * d2x;
+                        if (Math.abs(cross) < 1e-6) return null;
+                        const dx = l2.p1.x - l1.p1.x, dy = l2.p1.y - l1.p1.y;
+                        const t = (dx * d2y - dy * d2x) / cross;
+                        return { x: l1.p1.x + t * d1x, y: l1.p1.y + t * d1y };
+                    };
+
+                    ctx2D.save();
+                    ctx2D.strokeStyle = 'white';
+                    ctx2D.lineWidth = 1.0 / scale;
+                    ctx2D.beginPath();
+
+                    // 只繪製角落到「交點」的線段
+                    [linesA, linesB].forEach((corridorLines, idx) => {
+                        const otherLines = idx === 0 ? linesB : linesA;
+                        corridorLines.forEach(line => {
+                            const i1 = getIntersect(line, otherLines[0]);
+                            const i2 = getIntersect(line, otherLines[1]);
+                            if (i1 && i2) {
+                                const d1 = Math.hypot(line.p1.x - i1.x, line.p1.y - i1.y);
+                                const d2 = Math.hypot(line.p1.x - i2.x, line.p1.y - i2.y);
+                                const closerToP1 = d1 < d2 ? i1 : i2;
+                                const closerToP2 = d1 < d2 ? i2 : i1;
+                                ctx2D.moveTo(line.p1.x, line.p1.y); ctx2D.lineTo(closerToP1.x, closerToP1.y);
+                                ctx2D.moveTo(line.p2.x, line.p2.y); ctx2D.lineTo(closerToP2.x, closerToP2.y);
+                            }
+                        });
+                    });
+
+                    ctx2D.stroke();
                     ctx2D.restore();
-                    return; // 畫完對角線就跳過
+                    return;
                 }
 
                 // [新增] 斑馬線特殊處理
@@ -2590,6 +2603,18 @@ document.addEventListener('DOMContentLoaded', () => {
                     const lineData = calculateCrosswalkLine(mark, netData);
                     if (lineData) {
                         ctx2D.save();
+                        
+                        // --- [新增] 1. 繪製柏油路面底色，蓋住中央分隔線 ---
+                        ctx2D.strokeStyle = '#666666'; // 與 2D 道路顏色相同
+                        ctx2D.lineWidth = lineData.width / scale;
+                        ctx2D.lineCap = 'butt'; // 切齊端點，不超出版圖
+                        ctx2D.beginPath();
+                        ctx2D.moveTo(lineData.p1.x, lineData.p1.y);
+                        ctx2D.lineTo(lineData.p2.x, lineData.p2.y);
+                        ctx2D.stroke();
+                        // -----------------------------------------------
+
+                        // 2. 繪製白色枕木紋
                         ctx2D.strokeStyle = 'white';
                         ctx2D.lineWidth = lineData.width / scale;
                         ctx2D.setLineDash([0.6 / scale, 0.6 / scale]); // 2D 枕木紋虛線
@@ -2597,6 +2622,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         ctx2D.moveTo(lineData.p1.x, lineData.p1.y);
                         ctx2D.lineTo(lineData.p2.x, lineData.p2.y);
                         ctx2D.stroke();
+                        
                         ctx2D.restore();
                     }
                     return; // 畫完斑馬線就跳過，不執行下方一般四角形繪製
@@ -3200,6 +3226,27 @@ document.addEventListener('DOMContentLoaded', () => {
                         const nx = -dirY;
                         const ny = dirX;
 
+                        // --- [新增] 繪製 3D 柏油路面底墊以遮蔽中央分隔線 ---
+                        const midX = (p1.x + p2.x) / 2;
+                        const midY = (p1.y + p2.y) / 2;
+                        const angle = Math.atan2(dy, dx);
+                        
+                        const bgGeo = new THREE.PlaneGeometry(dist, w);
+                        const bgMat = new THREE.MeshBasicMaterial({
+                            color: 0x008000, // 與道路材質 (asphaltMat) 顏色一致
+                            side: THREE.DoubleSide,
+                            polygonOffset: true,
+                            polygonOffsetFactor: -1, // 優先級高於分隔線
+                            polygonOffsetUnits: -1
+                        });
+                        const bgMesh = new THREE.Mesh(bgGeo, bgMat);
+                        bgMesh.rotation.x = -Math.PI / 2;
+                        bgMesh.rotation.z = -angle;
+                        // 高度設在 zHeight(0.12) 與 分隔線(0.11) 之間，完美夾在中間
+                        bgMesh.position.set(midX, zHeight - 0.005, midY); 
+                        networkGroup.add(bgMesh);
+                        // --------------------------------------------------
+
                         // 產生個別的枕木紋方塊
                         const stripeLength = 0.6; // 枕木寬度
                         const stripeGap = 0.6;    // 間隙
@@ -3369,8 +3416,8 @@ document.addEventListener('DOMContentLoaded', () => {
             if (link.dividingLines) {
                 link.dividingLines.forEach(line => {
                     if (line.path.length < 2) return;
-                    // 分隔線高度需略高於路面 (0.1 + 0.02)
-                    const points = line.path.map(p => to3D(p.x, p.y, 0.12));
+                    // --- [修改] 分隔線高度改為 0.11 (原本為 0.12)，避免與標線搶奪顯示權 ---
+                    const points = line.path.map(p => to3D(p.x, p.y, 0.11));
                     const geometry = new THREE.BufferGeometry().setFromPoints(points);
                     const lineMesh = new THREE.Line(geometry, lineMat);
                     networkGroup.add(lineMesh);
@@ -3879,52 +3926,69 @@ document.addEventListener('DOMContentLoaded', () => {
                                 // ★★★ [新增] 3D 繪製對角線行人穿越道 ★★★
 // ★★★[新增] 3D 繪製對角線行人穿越道 ★★★
                 if (mk.type === 'diagonal_crosswalk') {
-                    const cxA = mk.cA.x, cyA = mk.cA.y;
-                    const cxB = mk.cB.x, cyB = mk.cB.y;
+                    const [c0, c1, c2, c3] = mk.corners;
+                    const halfW = 2.0;
 
-                    const dx = cxB - cxA;
-                    const dy = cyB - cyA;
-                    const len = Math.hypot(dx, dy);
-                    if (len < 0.1) return;
-
-                    const ux = dx / len;
-                    const uy = dy / len;
-                    const nx = -uy;
-                    const ny = ux;
-
-                    const halfW = 2.0; 
-                    const gapRatio = 0.25; 
-
-                    const line1_A = { x: cxA + nx * halfW, y: cyA + ny * halfW };
-                    const line1_B = { x: cxB + nx * halfW, y: cyB + ny * halfW };
-                    const line2_A = { x: cxA - nx * halfW, y: cyA - ny * halfW };
-                    const line2_B = { x: cxB - nx * halfW, y: cyB - ny * halfW };
-
-                    const add3DPlaneLine = (pA, pB) => {
-                        const ldx = pB.x - pA.x;
-                        const ldy = pB.y - pA.y;
-                        const pA_end = { x: pA.x + ldx * (0.5 - gapRatio/2), y: pA.y + ldy * (0.5 - gapRatio/2) };
-                        const pB_start = { x: pA.x + ldx * (0.5 + gapRatio/2), y: pA.y + ldy * (0.5 + gapRatio/2) };
-
-                        const createPlaneLine = (pt1, pt2) => {
-                            const segDx = pt2.x - pt1.x, segDy = pt2.y - pt1.y;
-                            const segmentLen = Math.hypot(segDx, segDy);
-                            const midX = (pt1.x + pt2.x)/2, midY = (pt1.y + pt2.y)/2;
-                            const angle = Math.atan2(segDy, segDx);
-                            
-                            const geo = new THREE.PlaneGeometry(segmentLen, 0.4); // 白線寬 0.4 公尺
-                            const mesh = new THREE.Mesh(geo, whiteMat);
-                            mesh.position.set(midX, 0.13, midY); // 高度設為 0.13，略高於斑馬線(0.12)
-                            mesh.rotation.x = -Math.PI / 2;
-                            mesh.rotation.z = -angle;
-                            networkGroup.add(mesh);
-                        };
-                        createPlaneLine(pA, pA_end);
-                        createPlaneLine(pB_start, pB);
+                    const getNorm = (pA, pB) => {
+                        const dx = pB.x - pA.x, dy = pB.y - pA.y;
+                        const len = Math.hypot(dx, dy);
+                        return len > 0 ? { x: -dy / len, y: dx / len } : { x: 0, y: 0 };
                     };
 
-                    add3DPlaneLine(line1_A, line1_B);
-                    add3DPlaneLine(line2_A, line2_B);
+                    const nA = getNorm(c0, c2);
+                    const nB = getNorm(c1, c3);
+
+                    const linesA =[
+                        { p1: { x: c0.x + nA.x * halfW, y: c0.y + nA.y * halfW }, p2: { x: c2.x + nA.x * halfW, y: c2.y + nA.y * halfW } },
+                        { p1: { x: c0.x - nA.x * halfW, y: c0.y - nA.y * halfW }, p2: { x: c2.x - nA.x * halfW, y: c2.y - nA.y * halfW } }
+                    ];
+                    const linesB =[
+                        { p1: { x: c1.x + nB.x * halfW, y: c1.y + nB.y * halfW }, p2: { x: c3.x + nB.x * halfW, y: c3.y + nB.y * halfW } },
+                        { p1: { x: c1.x - nB.x * halfW, y: c1.y - nB.y * halfW }, p2: { x: c3.x - nB.x * halfW, y: c3.y - nB.y * halfW } }
+                    ];
+
+                    const getIntersect = (l1, l2) => {
+                        const d1x = l1.p2.x - l1.p1.x, d1y = l1.p2.y - l1.p1.y;
+                        const d2x = l2.p2.x - l2.p1.x, d2y = l2.p2.y - l2.p1.y;
+                        const cross = d1x * d2y - d1y * d2x;
+                        if (Math.abs(cross) < 1e-6) return null;
+                        const dx = l2.p1.x - l1.p1.x, dy = l2.p1.y - l1.p1.y;
+                        const t = (dx * d2y - dy * d2x) / cross;
+                        return { x: l1.p1.x + t * d1x, y: l1.p1.y + t * d1y };
+                    };
+
+                    const segmentsToDraw = [];
+
+                    [linesA, linesB].forEach((corridorLines, idx) => {
+                        const otherLines = idx === 0 ? linesB : linesA;
+                        corridorLines.forEach(line => {
+                            const i1 = getIntersect(line, otherLines[0]);
+                            const i2 = getIntersect(line, otherLines[1]);
+                            if (i1 && i2) {
+                                const d1 = Math.hypot(line.p1.x - i1.x, line.p1.y - i1.y);
+                                const d2 = Math.hypot(line.p1.x - i2.x, line.p1.y - i2.y);
+                                segmentsToDraw.push({ p1: line.p1, p2: d1 < d2 ? i1 : i2 });
+                                segmentsToDraw.push({ p1: line.p2, p2: d1 < d2 ? i2 : i1 });
+                            }
+                        });
+                    });
+
+                    segmentsToDraw.forEach(seg => {
+                        const ldx = seg.p2.x - seg.p1.x;
+                        const ldy = seg.p2.y - seg.p1.y;
+                        const segmentLen = Math.hypot(ldx, ldy);
+                        if(segmentLen < 0.1) return;
+                        
+                        const midX = (seg.p1.x + seg.p2.x)/2, midY = (seg.p1.y + seg.p2.y)/2;
+                        const angle = Math.atan2(ldy, ldx);
+                        
+                        const geo = new THREE.PlaneGeometry(segmentLen, 0.4); // 白線寬 0.4m
+                        const mesh = new THREE.Mesh(geo, whiteMat);
+                        mesh.position.set(midX, 0.13, midY); 
+                        mesh.rotation.x = -Math.PI / 2;
+                        mesh.rotation.z = -angle;
+                        networkGroup.add(mesh);
+                    });
                     return; 
                 }
                 // [修正] 動態調整高度
@@ -10931,7 +10995,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         });
                         cx /= 4; cy /= 4;
 
-                        // 依據相對於中心的角度排序 (構成環狀 0,1,2,3)
+                        // 依據相對於中心的角度排序 (構成環狀 0, 1, 2, 3)
                         cwDataList.sort((a, b) => {
                             const aAngle = Math.atan2((a.line.p1.y + a.line.p2.y)/2 - cy, (a.line.p1.x + a.line.p2.x)/2 - cx);
                             const bAngle = Math.atan2((b.line.p1.y + b.line.p2.y)/2 - cy, (b.line.p1.x + b.line.p2.x)/2 - cx);
@@ -10943,7 +11007,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             let minDist = Infinity;
                             let bestCorner = { x: 0, y: 0 };
                             const ptsA = [lineA.p1, lineA.p2];
-                            const ptsB = [lineB.p1, lineB.p2];
+                            const ptsB =[lineB.p1, lineB.p2];
                             for(let pa of ptsA) {
                                 for(let pb of ptsB) {
                                     const d = Math.hypot(pa.x - pb.x, pa.y - pb.y);
@@ -10961,21 +11025,15 @@ document.addEventListener('DOMContentLoaded', () => {
                         const c2 = getCorner(cwDataList[2].line, cwDataList[3].line);
                         const c3 = getCorner(cwDataList[3].line, cwDataList[0].line);
 
-                        const createDiag = (cornerA, cornerB, idSuffix) => {
-                            roadMarkings.push({
-                                id: `diag_${nodeId}_${idSuffix}`,
-                                type: 'diagonal_crosswalk',
-                                nodeId: nodeId,
-                                signalGroupId: sharedGroupId,
-                                cA: cornerA,
-                                cB: cornerB,
-                                isFree: true
-                            });
-                        };
-                        
-                        // 生成 X 形狀對角線: c0連c2, c1連c3
-                        createDiag(c0, c2, '1');
-                        createDiag(c1, c3, '2');
+                        // 合併成單一個對角線物件
+                        roadMarkings.push({
+                            id: `diag_${nodeId}`,
+                            type: 'diagonal_crosswalk',
+                            nodeId: nodeId,
+                            signalGroupId: sharedGroupId,
+                            corners: [c0, c1, c2, c3], // 順序為環狀
+                            isFree: true
+                        });
                     }
                 }
             }

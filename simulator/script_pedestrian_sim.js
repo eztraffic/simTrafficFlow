@@ -241,12 +241,19 @@ class PedestrianSimManager {
             }
             // ★★★ [新增] 讀取對角線資料給行人使用 ★★★
             else if (mark.type === 'diagonal_crosswalk' && mark.nodeId === nodeId) {
-                // 直接使用算出的對角角落作為行人起終點
+                // 將角落對分，形成兩條 4m 寬的 X 型虛擬通道
                 diagonals.push({
-                    id: mark.id,
-                    p1: mark.cA,
-                    p2: mark.cB,
-                    width: 4.0, // ★ 配合繪圖的通道半寬 2.0m，總寬度設為 4.0m
+                    id: mark.id + '_1',
+                    p1: mark.corners[0],
+                    p2: mark.corners[2],
+                    width: 4.0, // ★ 通道總寬 4m
+                    turnGroupId: mark.signalGroupId
+                });
+                diagonals.push({
+                    id: mark.id + '_2',
+                    p1: mark.corners[1],
+                    p2: mark.corners[3],
+                    width: 4.0, // ★ 通道總寬 4m
                     turnGroupId: mark.signalGroupId
                 });
             }
