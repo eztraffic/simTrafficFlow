@@ -13,30 +13,32 @@ class Pedestrian {
         this.id = id;
         this.spawner = spawner;
         this.network = spawner.network;
-        this.crosswalks = [crosswalk]; // 記錄要走的行穿線
+        this.crosswalks = [crosswalk]; 
         this.currentCrosswalkIndex = 0;
         this.crossTwice = crossTwice;
 
         // 屬性設定
         this.isMale = Math.random() > 0.5;
-        this.height = randNormal(1.4, 1.9); // 140cm ~ 190cm
-        this.baseSpeed = Math.random() > 0.2 ? 1.0 : 0.8; // 80% 1.0m/s, 20% 0.8m/s
+        this.height = randNormal(1.4, 1.9); 
+        this.baseSpeed = Math.random() > 0.2 ? 1.2 : 0.9; // 稍微提升步速
         this.speed = this.baseSpeed;
 
-        // 橫向偏移 (在行穿線寬度內隨機，避免排成一直線)
         this.lateralOffset = (Math.random() - 0.5) * (width * 0.8);
 
         // 狀態與幾何
-        this.state = 'WAITING'; // WAITING, CROSSING, FINISHED
+        this.state = 'WAITING'; // WAITING, CROSSING, WAITING_AT_ISLAND, FINISHED
         this.setupPath(startPoint, endPoint);
 
-        // 3D/2D 渲染資源
+        // ★★★ 修正：判斷這條斑馬線是否夠長，是否有中央庇護島 ★★★
+        // 如果是對角線行穿線 (isDiagonal)，則不管多長都「不」具備庇護島，必須一次走完
+        this.hasRefuge = this.pathLength > 12 && !crosswalk.isDiagonal;
+        this.midPoint = this.pathLength / 2;
+
         this.mesh = null;
-        this.walkCycle = Math.random() * Math.PI * 2; // 動畫相位
+        this.walkCycle = Math.random() * Math.PI * 2; 
     }
 
     setupPath(p1, p2) {
-        // 計算方向與實際起終點 (加上橫向偏移)
         const dx = p2.x - p1.x;
         const dy = p2.y - p1.y;
         const len = Math.hypot(dx, dy);
@@ -53,55 +55,86 @@ class Pedestrian {
         this.distanceTraveled = 0;
     }
 
-    update(dt, tfl, allPedestrians) {
+    // ★ 接收 simTime 參數以便計算剩餘秒數
+    update(dt, tfl, allPedestrians, simTime) {
         if (this.state === 'FINISHED') return;
 
-        // 取得當前行穿線綁定的號誌狀態
         const cw = this.crosswalks[this.currentCrosswalkIndex];
-        let signal = 'Green'; // 無號誌預設為綠燈
+        let signal = 'Green'; 
+        let remainingTime = 999; // 預設充裕時間
+        
         if (tfl && cw.turnGroupId) {
             signal = tfl.getSignalForTurnGroup(cw.turnGroupId);
+            // 獲取該時相剩餘綠燈/黃燈秒數
+            remainingTime = tfl.getPedestrianRemainingTime(simTime, cw.turnGroupId);
         }
 
         if (this.state === 'WAITING') {
-            // ★[修改] 只有正港的綠燈 (Green = 行綠) 才可以起步
-            // 避免行人在行閃 (Yellow) 時才開始過馬路
+            if (signal === 'Green') {
+                this.state = 'CROSSING';
+                this.speed = this.baseSpeed;
+            }
+        }
+        else if (this.state === 'WAITING_AT_ISLAND') {
+            // ★ 行人在庇護島等待，直到下一次變成綠燈
             if (signal === 'Green') {
                 this.state = 'CROSSING';
                 this.speed = this.baseSpeed;
             }
         }
         else if (this.state === 'CROSSING') {
-            // ★ [修改] 走到一半遇到 Yellow(行閃) 或 Red(行停遲閉)，自動加快腳步清道
-            if (signal === 'Yellow' || signal === 'Red') {
-                this.speed = 1.5;
+            // ★★★ 計算目標點：預設是走到對面 (pathLength) ★★★
+            let targetDistance = this.pathLength;
+
+            // 判斷是否需要停在中央庇護島
+            if (this.hasRefuge && this.distanceTraveled < this.midPoint) {
+                // 計算若要走到「對面」，需要的時間
+                const distToTarget = this.pathLength - this.distanceTraveled;
+                const timeNeeded = distToTarget / this.baseSpeed;
+
+                // 如果剩餘秒數不夠，或者已經是黃/紅燈了，把目標設為中央庇護島
+                if (timeNeeded > remainingTime || signal === 'Yellow' || signal === 'Red') {
+                    targetDistance = this.midPoint;
+                }
+            }
+
+            // 依據號誌與目標調整步伐
+            // 如果目標是對面，且燈號快結束了，加速跑完；若目標只是庇護島則維持原速
+            if (targetDistance === this.pathLength && (signal === 'Yellow' || signal === 'Red')) {
+                this.speed = 1.8; // 加速跑起來
             } else {
                 this.speed = this.baseSpeed;
             }
 
-            // 簡單防碰撞 (同向且橫向偏移接近者，避免穿模)
+            // 簡單防碰撞
             let actualSpeed = this.speed;
             for (const other of allPedestrians) {
                 if (other.id === this.id || other.state !== 'CROSSING') continue;
                 if (other.currentCrosswalkIndex !== this.currentCrosswalkIndex) continue;
-
-                // 若兩者距離很近 (小於 0.6m)，且在正前方
                 const distFwd = other.distanceTraveled - this.distanceTraveled;
                 const distLat = Math.abs(other.lateralOffset - this.lateralOffset);
                 if (distFwd > 0 && distFwd < 0.6 && distLat < 0.4) {
-                    actualSpeed = Math.min(actualSpeed, other.speed * 0.9); // 減速跟隨
+                    actualSpeed = Math.min(actualSpeed, other.speed * 0.9); 
                 }
             }
 
             // 移動
             this.distanceTraveled += actualSpeed * dt;
-            this.walkCycle += actualSpeed * dt * 5.0; // 步伐動畫頻率
+            this.walkCycle += actualSpeed * dt * 5.0; 
 
-            // 抵達對面
-            if (this.distanceTraveled >= this.pathLength) {
+            // ★★★ 抵達檢測 ★★★
+            if (targetDistance === this.midPoint && this.distanceTraveled >= this.midPoint) {
+                // 剛好走到中央庇護島
+                this.distanceTraveled = this.midPoint; // 釘在庇護島上
+                this.state = 'WAITING_AT_ISLAND';      // 切換狀態等待
+            } 
+            else if (this.distanceTraveled >= this.pathLength) {
+                // 走完全程
                 this.handleEndOfCrosswalk();
-            } else {
-                // 更新座標
+            }
+
+            // 更新座標 (如果還沒抵達終點)
+            if (this.state !== 'FINISHED') {
                 const ratio = this.distanceTraveled / this.pathLength;
                 this.x = this.startPos.x + (this.endPos.x - this.startPos.x) * ratio;
                 this.y = this.startPos.y + (this.endPos.y - this.startPos.y) * ratio;
@@ -111,13 +144,11 @@ class Pedestrian {
 
     handleEndOfCrosswalk() {
         if (this.crossTwice && this.currentCrosswalkIndex === 0) {
-            // 尋找第二條行穿線 (需與第一條不同，且端點靠近目前位置)
             const nextCw = this.spawner.findConnectingCrosswalk(this.crosswalks[0], this.x, this.y);
             if (nextCw) {
                 this.crosswalks.push(nextCw);
                 this.currentCrosswalkIndex = 1;
                 this.state = 'WAITING';
-                // 設定新路徑 (看從 p1 出發還是 p2 出發)
                 const d1 = Math.hypot(this.x - nextCw.p1.x, this.y - nextCw.p1.y);
                 const d2 = Math.hypot(this.x - nextCw.p2.x, this.y - nextCw.p2.y);
                 if (d1 < d2) this.setupPath(nextCw.p1, nextCw.p2);
@@ -125,7 +156,6 @@ class Pedestrian {
                 return;
             }
         }
-        // 沒有二次穿越或找不到，結束
         this.state = 'FINISHED';
     }
 }
@@ -185,7 +215,7 @@ class PedestrianSimManager {
     extractCrosswalks(nodeId) {
         const cws = [];
         const diagonals = []; // ★ 新增對角線陣列
-        if (!this.network.roadMarkings) return cws;
+        if (!this.network.roadMarkings) return { cws, diagonals };
 
         this.network.roadMarkings.forEach(mark => {
             if (mark.type === 'crosswalk') {
@@ -202,11 +232,11 @@ class PedestrianSimManager {
                     if (lineData) {
                         let turnGroupId = null;
 
-                        // ★ [新增] 1. 優先使用 XML 中明確綁定的行人號誌群組
+                        // 1. 優先使用 XML 中明確綁定的行人號誌群組
                         if (mark.signalGroupId) {
                             turnGroupId = mark.signalGroupId;
                         }
-                        // ★ [相容舊版] 2. 若未綁定，使用幾何推算平行的車輛直行號誌
+                        // 2. 若未綁定，使用幾何推算平行的車輛直行號誌
                         else {
                             const cwVecX = lineData.p2.x - lineData.p1.x;
                             const cwVecY = lineData.p2.y - lineData.p1.y;
@@ -235,26 +265,29 @@ class PedestrianSimManager {
                                 }
                             }
                         }
-                        cws.push({ id: mark.id, p1: lineData.p1, p2: lineData.p2, width: lineData.width, turnGroupId: turnGroupId });
+                        // ★ 標記這是一般斑馬線 (isDiagonal: false)
+                        cws.push({ id: mark.id, p1: lineData.p1, p2: lineData.p2, width: lineData.width, turnGroupId: turnGroupId, isDiagonal: false });
                     }
                 }
             }
-            // ★★★ [新增] 讀取對角線資料給行人使用 ★★★
+            // 讀取對角線資料給行人使用
             else if (mark.type === 'diagonal_crosswalk' && mark.nodeId === nodeId) {
-                // 將角落對分，形成兩條 4m 寬的 X 型虛擬通道
+                // ★ 標記這是對角線行穿線 (isDiagonal: true)
                 diagonals.push({
                     id: mark.id + '_1',
                     p1: mark.corners[0],
                     p2: mark.corners[2],
-                    width: 4.0, // ★ 通道總寬 4m
-                    turnGroupId: mark.signalGroupId
+                    width: 4.0, 
+                    turnGroupId: mark.signalGroupId,
+                    isDiagonal: true
                 });
                 diagonals.push({
                     id: mark.id + '_2',
                     p1: mark.corners[1],
                     p2: mark.corners[3],
-                    width: 4.0, // ★ 通道總寬 4m
-                    turnGroupId: mark.signalGroupId
+                    width: 4.0, 
+                    turnGroupId: mark.signalGroupId,
+                    isDiagonal: true
                 });
             }
         });
@@ -272,18 +305,13 @@ class PedestrianSimManager {
                 let crossTwice = rand > sp.crossOnceProb && rand <= (sp.crossOnceProb + sp.crossTwiceProb);
 
                 let cw;
-                // ★★★ 需求 4: 模擬行人動畫時，讓需走兩次行穿線的行人，才改走對角線 ★★★
                 if (crossTwice && sp.diagonals && sp.diagonals.length > 0) {
-                    // 若這路口有對角線，且被分配要走兩次，則直接分配對角線
                     cw = sp.diagonals[Math.floor(Math.random() * sp.diagonals.length)];
-                    // 因為對角線一次就穿越完了，所以關閉 crossTwice 的兩段式尋路邏輯
                     crossTwice = false; 
                 } else {
-                    // 若無對角線，或只需走一次，就走一般斑馬線
                     cw = sp.crosswalks[Math.floor(Math.random() * sp.crosswalks.length)];
                 }
 
-                // 決定過馬路方向 (50% 機率 p1->p2 或 p2->p1)
                 const startP = Math.random() > 0.5 ? cw.p1 : cw.p2;
                 const endP = startP === cw.p1 ? cw.p2 : cw.p1;
 
@@ -294,12 +322,12 @@ class PedestrianSimManager {
 
         // 2. 處理移動與狀態
         this.pedestrians.forEach(ped => {
-            // 【修復關鍵】：crosswalk 裡面沒有 spawner 屬性，
-            // 應直接讀取行人身上綁定的 ped.spawner.nodeId 來獲取對應的號誌。
             const tfl = this.simulation.trafficLights.find(t => t.nodeId === ped.spawner.nodeId);
-
-            ped.update(dt, tfl, this.pedestrians);
-            this.update3DMesh(ped); // 更新 3D
+            
+            // ★ 修改：傳入 this.simulation.time 以供計算剩餘秒數
+            ped.update(dt, tfl, this.pedestrians, this.simulation.time); 
+            
+            this.update3DMesh(ped); 
         });
 
         // 3. 清理已完成的行人

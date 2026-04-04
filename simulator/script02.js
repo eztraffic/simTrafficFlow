@@ -2538,7 +2538,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 // ★★★[新增] 2D 繪製對角線行人穿越道 ★★★
                 // ★★★[新增] 2D 繪製對角線行人穿越道 ★★★
                 if (mark.type === 'diagonal_crosswalk') {
-                    const[c0, c1, c2, c3] = mark.corners;
+                    const [c0, c1, c2, c3] = mark.corners;
                     const halfW = 2.0; // 通道半寬 (總寬 4m)
 
                     const getNorm = (pA, pB) => {
@@ -2551,11 +2551,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     const nB = getNorm(c1, c3);
 
                     // 定義兩條對角線向外平移的 4 條虛擬外框線
-                    const linesA =[
+                    const linesA = [
                         { p1: { x: c0.x + nA.x * halfW, y: c0.y + nA.y * halfW }, p2: { x: c2.x + nA.x * halfW, y: c2.y + nA.y * halfW } },
                         { p1: { x: c0.x - nA.x * halfW, y: c0.y - nA.y * halfW }, p2: { x: c2.x - nA.x * halfW, y: c2.y - nA.y * halfW } }
                     ];
-                    const linesB =[
+                    const linesB = [
                         { p1: { x: c1.x + nB.x * halfW, y: c1.y + nB.y * halfW }, p2: { x: c3.x + nB.x * halfW, y: c3.y + nB.y * halfW } },
                         { p1: { x: c1.x - nB.x * halfW, y: c1.y - nB.y * halfW }, p2: { x: c3.x - nB.x * halfW, y: c3.y - nB.y * halfW } }
                     ];
@@ -2603,7 +2603,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     const lineData = calculateCrosswalkLine(mark, netData);
                     if (lineData) {
                         ctx2D.save();
-                        
+
                         // --- [新增] 1. 繪製柏油路面底色，蓋住中央分隔線 ---
                         ctx2D.strokeStyle = '#666666'; // 與 2D 道路顏色相同
                         ctx2D.lineWidth = lineData.width / scale;
@@ -2622,7 +2622,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         ctx2D.moveTo(lineData.p1.x, lineData.p1.y);
                         ctx2D.lineTo(lineData.p2.x, lineData.p2.y);
                         ctx2D.stroke();
-                        
+
                         ctx2D.restore();
                     }
                     return; // 畫完斑馬線就跳過，不執行下方一般四角形繪製
@@ -3211,7 +3211,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 let zHeight = 0.12;
                 if (mk.isFree || mk.nodeId) zHeight = 0.22;
 
-                // [新增] 3D 斑馬線處理
+                // [修正] 3D 斑馬線處理與圓弧庇護島 (含單側標誌)
                 if (mk.type === 'crosswalk') {
                     const lineData = calculateCrosswalkLine(mk, netData);
                     if (lineData) {
@@ -3223,69 +3223,193 @@ document.addEventListener('DOMContentLoaded', () => {
 
                         const dirX = dx / dist;
                         const dirY = dy / dist;
-                        const nx = -dirY;
-                        const ny = dirX;
+                        const nx = -dirY; // 道路縱向向量 X
+                        const ny = dirX;  // 道路縱向向量 Y
 
-                        // --- [新增] 繪製 3D 柏油路面底墊以遮蔽中央分隔線 ---
                         const midX = (p1.x + p2.x) / 2;
                         const midY = (p1.y + p2.y) / 2;
-                        const angle = Math.atan2(dy, dx);
-                        
+                        const cwAngle = Math.atan2(dy, dx);
+
+                        // --- 1. 綠色防滑底墊 ---
                         const bgGeo = new THREE.PlaneGeometry(dist, w);
                         const bgMat = new THREE.MeshBasicMaterial({
-                            color: 0x008000, // 與道路材質 (asphaltMat) 顏色一致
+                            color: 0x008000,
                             side: THREE.DoubleSide,
-                            polygonOffset: true,
-                            polygonOffsetFactor: -1, // 優先級高於分隔線
-                            polygonOffsetUnits: -1
+                            polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1
                         });
                         const bgMesh = new THREE.Mesh(bgGeo, bgMat);
                         bgMesh.rotation.x = -Math.PI / 2;
-                        bgMesh.rotation.z = -angle;
-                        // 高度設在 zHeight(0.12) 與 分隔線(0.11) 之間，完美夾在中間
-                        bgMesh.position.set(midX, zHeight - 0.005, midY); 
+                        bgMesh.rotation.z = -cwAngle;
+                        bgMesh.position.set(midX, zHeight - 0.005, midY);
                         networkGroup.add(bgMesh);
-                        // --------------------------------------------------
 
-                        // 產生個別的枕木紋方塊
-                        const stripeLength = 0.6; // 枕木寬度
-                        const stripeGap = 0.6;    // 間隙
+                        // --- 2. 白漆枕木紋 ---
+                        const stripeLength = 0.6; const stripeGap = 0.6;
                         const totalStripe = stripeLength + stripeGap;
                         const numStripes = Math.floor(dist / totalStripe);
-
-                        // 置中偏移，讓頭尾對稱
                         const leftover = dist - (numStripes * totalStripe - stripeGap);
                         const startOffset = Math.max(0, leftover / 2);
 
                         for (let i = 0; i < numStripes; i++) {
                             const cx = p1.x + dirX * (startOffset + i * totalStripe + stripeLength / 2);
                             const cy = p1.y + dirY * (startOffset + i * totalStripe + stripeLength / 2);
-
-                            const hw = stripeLength / 2;
-                            const hh = w / 2; // 縱向長度的一半
-
-                            // 產生旋轉後的四個角點
+                            const hw = stripeLength / 2; const hh = w / 2;
                             const pts = [
                                 { x: cx + dirX * hw + nx * hh, y: cy + dirY * hw + ny * hh },
                                 { x: cx + dirX * hw - nx * hh, y: cy + dirY * hw - ny * hh },
                                 { x: cx - dirX * hw - nx * hh, y: cy - dirY * hw - ny * hh },
                                 { x: cx - dirX * hw + nx * hh, y: cy - dirY * hw + ny * hh }
                             ];
-
                             const shape = new THREE.Shape();
-                            shape.moveTo(pts[0].x, -pts[0].y); // 注意 3D Y軸轉換
-                            shape.lineTo(pts[1].x, -pts[1].y);
-                            shape.lineTo(pts[2].x, -pts[2].y);
-                            shape.lineTo(pts[3].x, -pts[3].y);
-
+                            shape.moveTo(pts[0].x, -pts[0].y); shape.lineTo(pts[1].x, -pts[1].y);
+                            shape.lineTo(pts[2].x, -pts[2].y); shape.lineTo(pts[3].x, -pts[3].y);
                             const geom = new THREE.ShapeGeometry(shape);
                             geom.rotateX(-Math.PI / 2);
                             const mesh = new THREE.Mesh(geom, whiteMat);
                             mesh.position.y = zHeight;
                             networkGroup.add(mesh);
                         }
+
+                        // =========================================================
+                        // ★★★ [修正] 圓弧庇護島頭與朝外標誌 ★★★
+                        // =========================================================
+                        if (mk.spanToLinkId || dist > 12) {
+                            // 動態生成黃黑斜紋材質 (島頭邊緣)
+                            if (!window.chevronMaterial) {
+                                const cvs = document.createElement('canvas'); cvs.width = 256; cvs.height = 256;
+                                const ctx = cvs.getContext('2d');
+                                ctx.fillStyle = '#FFCC00'; ctx.fillRect(0, 0, 256, 256);
+                                ctx.fillStyle = '#111111'; ctx.beginPath();
+                                for (let i = -256; i < 512; i += 64) {
+                                    ctx.moveTo(i, 0); ctx.lineTo(i + 128, 256); ctx.lineTo(i + 128 + 32, 256); ctx.lineTo(i + 32, 0);
+                                }
+                                ctx.fill();
+                                const tex = new THREE.CanvasTexture(cvs);
+                                tex.wrapS = THREE.RepeatWrapping; tex.wrapT = THREE.RepeatWrapping; tex.repeat.set(1, 0.5);
+                                window.chevronMaterial = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.7 });
+                            }
+
+                            // 動態生成標誌材質 (遵18、違3)
+                            if (!window.matZun18) {
+                                const c1 = document.createElement('canvas'); c1.width = 128; c1.height = 128;
+                                const ctx1 = c1.getContext('2d');
+                                ctx1.fillStyle = '#0044CC'; ctx1.beginPath(); ctx1.arc(64, 64, 60, 0, Math.PI * 2); ctx1.fill();
+                                ctx1.strokeStyle = '#FFFFFF'; ctx1.lineWidth = 14; ctx1.lineCap = 'round'; ctx1.lineJoin = 'round';
+                                ctx1.beginPath(); ctx1.moveTo(40, 40); ctx1.lineTo(84, 84); ctx1.stroke();
+                                ctx1.beginPath(); ctx1.moveTo(54, 84); ctx1.lineTo(84, 84); ctx1.lineTo(84, 54); ctx1.stroke();
+                                window.matZun18 = new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(c1), transparent: true });
+
+                                const c2 = document.createElement('canvas'); c2.width = 128; c2.height = 128;
+                                const ctx2 = c2.getContext('2d');
+                                ctx2.translate(64, 64); ctx2.rotate(Math.PI / 4);
+                                ctx2.fillStyle = '#000000'; ctx2.fillRect(-45, -45, 90, 90);
+                                ctx2.strokeStyle = '#FFCC00'; ctx2.lineWidth = 6; ctx2.strokeRect(-45, -45, 90, 90);
+                                ctx2.fillStyle = '#FFCC00';
+                                for (let x = -1; x <= 1; x++) for (let y = -1; y <= 1; y++) {
+                                    ctx2.beginPath(); ctx2.arc(x * 22, y * 22, 6, 0, Math.PI * 2); ctx2.fill();
+                                }
+                                window.matWei3 = new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(c2), transparent: true });
+                            }
+
+                            // --- [優化 1] 縮小庇護島尺寸以適應狹小空間 ---
+                            const islandWidth = 1.0;  // 略微變窄 (原 1.2)
+                            const islandLength = 1.6; // 縮短長度防止越界 (原 2.0)
+                            const islandHeight = 0.25;
+                            const radius = islandWidth / 2;
+
+                            // 繪製圓弧前端的 2D Shape
+                            const islandShape = new THREE.Shape();
+                            islandShape.moveTo(-radius, -islandLength / 2);
+                            islandShape.lineTo(-radius, islandLength / 2 - radius);
+                            islandShape.absarc(0, islandLength / 2 - radius, radius, Math.PI, 0, true);
+                            islandShape.lineTo(radius, -islandLength / 2);
+                            islandShape.lineTo(-radius, -islandLength / 2);
+
+                            const extrudeSettings = { depth: islandHeight, bevelEnabled: false };
+                            const islandGeo = new THREE.ExtrudeGeometry(islandShape, extrudeSettings);
+                            // 將 Shape 平躺至 XZ 平面 (此時圓弧頭落在 -Z 方向，平坦尾端在 +Z)
+                            islandGeo.rotateX(-Math.PI / 2);
+
+                            const concreteMat = new THREE.MeshStandardMaterial({ color: 0x888888 });
+                            const islandMats = [concreteMat, window.chevronMaterial];
+
+                            // --- [優化 2] 絕對精準的路口方向判定 (基於拓樸流向，不依賴幾何形狀) ---
+                            let fwdX = nx, fwdY = ny;
+                            const link = netData.links[mk.linkId];
+
+                            if (link) {
+                                // 判斷這條路是「進入」還是「離開」該路口
+                                const isEntering = (link.destination === mk.nodeId);
+                                const isLeaving = (link.source === mk.nodeId);
+
+                                const lanes = Object.values(link.lanes);
+                                if (lanes.length > 0 && lanes[0].path.length >= 2) {
+                                    const path = lanes[0].path;
+                                    // 計算車流向量
+                                    const flowDx = path[path.length - 1].x - path[0].x;
+                                    const flowDy = path[path.length - 1].y - path[0].y;
+
+                                    // 判斷斑馬線法向量 (nx, ny) 是否與車流同向
+                                    const dotFlow = nx * flowDx + ny * flowDy;
+
+                                    if (isEntering) {
+                                        // 進入路口：車流方向就是路口方向，fwd 必須與車流同向
+                                        if (dotFlow < 0) { fwdX = -nx; fwdY = -ny; }
+                                    } else if (isLeaving) {
+                                        // 離開路口：車流遠離路口，fwd 必須與車流反向
+                                        if (dotFlow > 0) { fwdX = -nx; fwdY = -ny; }
+                                    }
+                                }
+                            }
+
+                            // 將庇護島放在斑馬線的「外側」(嚴格朝向路口中心)
+                            const ix = midX + fwdX * (w / 2 + islandLength / 2 - radius + 0.1);
+                            const iy = midY + fwdY * (w / 2 + islandLength / 2 - radius + 0.1);
+
+                            const islandMesh = new THREE.Mesh(islandGeo, islandMats);
+                            islandMesh.position.set(ix, 0.1, iy);
+
+                            // --- [優化 3] 修正 lookAt 特性 ---
+                            // Three.js 的 lookAt 會將物件的「正 Z 軸 (+Z)」對準目標。
+                            // 因為我們的圓弧頭在「負 Z 軸 (-Z)」，所以我們必須讓它看向「反方向 (-fwd)」，
+                            // 這樣圓弧頭 (-Z) 就會精準朝向路口中心 (fwd)。
+                            islandMesh.lookAt(ix - fwdX, islandMesh.position.y, iy - fwdY);
+
+                            islandMesh.castShadow = true;
+                            islandMesh.receiveShadow = true;
+                            networkGroup.add(islandMesh);
+
+                            // --- 生成交通標誌立桿 ---
+                            // 標誌立桿位置：在圓弧頭的圓心位置 (Local Z = -(islandLength/2 - radius))
+                            const poleLocalZ = -(islandLength / 2 - radius) + 0.1;
+
+                            const postGeo = new THREE.CylinderGeometry(0.04, 0.04, 2.5, 8);
+                            const postMat = new THREE.MeshStandardMaterial({ color: 0xdddddd });
+                            const signGroup = new THREE.Group();
+
+                            const post = new THREE.Mesh(postGeo, postMat);
+                            post.position.y = 1.25;
+                            signGroup.add(post);
+
+                            const planeZun18 = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 0.6), window.matZun18);
+                            planeZun18.position.set(0, 2.1, 0.05);
+                            signGroup.add(planeZun18);
+
+                            const planeWei3 = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 0.6), window.matWei3);
+                            planeWei3.position.set(0, 1.4, 0.05);
+                            signGroup.add(planeWei3);
+
+                            // --- [優化 4] 統一標誌朝向 ---
+                            // islandMesh 的 -Z 目前朝向路口。
+                            // PlaneGeometry 的正面預設是 +Z。
+                            // 旋轉 180 度 (Math.PI) 讓 Plane 的正面朝向 -Z，確保標誌永遠面朝路口。
+                            signGroup.position.set(0, 0, poleLocalZ);
+                            signGroup.rotation.y = Math.PI;
+
+                            islandMesh.add(signGroup);
+                        }
                     }
-                    return; // 畫完跳過
+                    return;
                 }
 
                 const corners = calculateMarkingCorners(mk, netData);
@@ -3388,6 +3512,193 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             return best;
         };
+
+        // =================================================================
+        // 0.5 Build Medians (中央分隔島 / 雙黃線與路面填縫)
+        // =================================================================
+        if (netData.medians) {
+            netData.medians.forEach(median => {
+                const { gapWidth, l1Edge, l2Edge } = median;
+
+                // 1. 底層填補：整段空隙都鋪滿柏油（消除朝向路口時的白邊，讓路口庇護島外側呈現路面）
+                const shape = new THREE.Shape();
+                shape.moveTo(l1Edge[0].x, -l1Edge[0].y);
+                for (let i = 1; i < l1Edge.length; i++) shape.lineTo(l1Edge[i].x, -l1Edge[i].y);
+                for (let i = 0; i < l2Edge.length; i++) shape.lineTo(l2Edge[i].x, -l2Edge[i].y);
+                shape.lineTo(l1Edge[0].x, -l1Edge[0].y);
+
+                const geom = new THREE.ShapeGeometry(shape);
+                geom.rotateX(-Math.PI / 2);
+
+                const fillerMesh = new THREE.Mesh(geom, asphaltMat);
+                fillerMesh.position.y = 0.1; // 平齊於路面
+                fillerMesh.receiveShadow = true;
+                networkGroup.add(fillerMesh);
+
+                // 2. 實體分隔島 / 標線：動態計算自兩端內縮的距離，避免覆蓋行人穿越線與路口庇護島
+                let l1TrimStart = 1.0;
+                let l1TrimEnd = 1.0;
+                let l2TrimStart = 1.0;
+                let l2TrimEnd = 1.0;
+
+                const l1 = netData.links[median.l1Id];
+                const l2 = netData.links[median.l2Id];
+                let l1Len = 0, l2Len = 0;
+                if (l1 && l1.lanes) { const lanes = Object.values(l1.lanes); if (lanes.length > 0) l1Len = lanes[0].length; }
+                if (l2 && l2.lanes) { const lanes = Object.values(l2.lanes); if (lanes.length > 0) l2Len = lanes[0].length; }
+
+                const processMarking = (mk, linkLen, isL1) => {
+                    if (mk.type === 'crosswalk' || mk.type === 'diagonal_crosswalk' || mk.type === 'stop_line') {
+                        const mkPos = mk.position || 0;
+                        const mkW = mk.type === 'stop_line' ? 1.0 : (mk.length || 4.0);
+                        if (linkLen <= 0) return;
+
+                        if (mkPos < linkLen / 2) {
+                            const trim = mkPos + mkW / 2 + 0.5;
+                            if (trim < linkLen * 0.45) { // 避免影響到道路中段
+                                if (isL1) l1TrimStart = Math.max(l1TrimStart, trim);
+                                else l2TrimStart = Math.max(l2TrimStart, trim);
+                            }
+                        } else {
+                            const trim = (linkLen - mkPos) + mkW / 2 + 0.5;
+                            if (trim < linkLen * 0.45) {
+                                if (isL1) l1TrimEnd = Math.max(l1TrimEnd, trim);
+                                else l2TrimEnd = Math.max(l2TrimEnd, trim);
+                            }
+                        }
+                    }
+                };
+
+                if (netData.roadMarkings) {
+                    netData.roadMarkings.forEach(mk => {
+                        if (mk.linkId === median.l1Id || mk.spanToLinkId === median.l1Id) processMarking(mk, l1Len, true);
+                        if (mk.linkId === median.l2Id || mk.spanToLinkId === median.l2Id) processMarking(mk, l2Len, false);
+                    });
+                }
+
+                // 預設立場至少退縮 4.0 公尺（防止與預設路口弧形庇護島相撞）
+                l1TrimStart = Math.max(4.0, l1TrimStart);
+                l1TrimEnd = Math.max(4.0, l1TrimEnd);
+                l2TrimStart = Math.max(4.0, l2TrimStart);
+                l2TrimEnd = Math.max(4.0, l2TrimEnd);
+
+                // 因為 L1、L2 拓樸方向剛好相反，所以必須將 L1 起點與 L2 終點的退縮量取最大值來強制對齊
+                const maxStart = Math.max(l1TrimStart, l2TrimEnd);
+                const maxEnd = Math.max(l1TrimEnd, l2TrimStart);
+                l1TrimStart = l2TrimEnd = maxStart;
+                l1TrimEnd = l2TrimStart = maxEnd;
+
+                const getShrinkedPolyline = (pts, distStart, distEnd) => {
+                    let newPts = [];
+                    let totalLen = 0;
+                    for (let i = 0; i < pts.length - 1; i++) {
+                        totalLen += Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y);
+                    }
+                    if (totalLen <= distStart + distEnd) return null; // 太短不畫
+
+                    let curLen = 0;
+                    let started = false;
+                    for (let i = 0; i < pts.length - 1; i++) {
+                        let d = Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y);
+                        if (!started) {
+                            if (curLen + d > distStart) {
+                                let t = (distStart - curLen) / d;
+                                newPts.push({ x: pts[i].x + t * (pts[i + 1].x - pts[i].x), y: pts[i].y + t * (pts[i + 1].y - pts[i].y) });
+                                started = true;
+                            }
+                        }
+                        if (started) {
+                            if (curLen + d >= totalLen - distEnd) {
+                                let t2 = (totalLen - distEnd - curLen) / d;
+                                newPts.push({ x: pts[i].x + t2 * (pts[i + 1].x - pts[i].x), y: pts[i].y + t2 * (pts[i + 1].y - pts[i].y) });
+                                break;
+                            } else {
+                                newPts.push(pts[i + 1]);
+                            }
+                        }
+                        curLen += d;
+                    }
+                    return newPts.length > 1 ? newPts : null;
+                };
+
+                const shrinkL1 = getShrinkedPolyline(l1Edge, l1TrimStart, l1TrimEnd);
+                const shrinkL2 = getShrinkedPolyline(l2Edge, l2TrimStart, l2TrimEnd);
+
+                if (shrinkL1 && shrinkL2) {
+                    const mShape = new THREE.Shape();
+                    mShape.moveTo(shrinkL1[0].x, -shrinkL1[0].y);
+                    for (let i = 1; i < shrinkL1.length; i++) mShape.lineTo(shrinkL1[i].x, -shrinkL1[i].y);
+                    for (let i = 0; i < shrinkL2.length; i++) mShape.lineTo(shrinkL2[i].x, -shrinkL2[i].y);
+                    mShape.lineTo(shrinkL1[0].x, -shrinkL1[0].y);
+
+                    const mGeom = new THREE.ShapeGeometry(mShape);
+                    mGeom.rotateX(-Math.PI / 2);
+
+if (gapWidth > 1.2) {
+                        // 1. 植栽帶 (綠色並有厚度)
+                        const grassMat = new THREE.MeshStandardMaterial({ color: 0x2d4c1e, roughness: 0.9 });
+                        const extrudeSettings = { depth: 0.25, bevelEnabled: false };
+                        const exGeom = new THREE.ExtrudeGeometry(mShape, extrudeSettings);
+                        exGeom.rotateX(-Math.PI / 2);
+                        const mMesh = new THREE.Mesh(exGeom, grassMat);
+                        mMesh.position.y = 0.1;
+                        mMesh.castShadow = true;
+                        mMesh.receiveShadow = true;
+                        networkGroup.add(mMesh);
+                    } else if (gapWidth >= 0.4 && gapWidth <= 1.2) {
+                        // 2. 黃黑斜紋槽化線
+                        if (!window.medianChevronMat) {
+                            const cvs = document.createElement('canvas'); 
+                            cvs.width = 512; cvs.height = 512;
+                            const ctx = cvs.getContext('2d');
+                            ctx.fillStyle = '#111111'; // 黑灰底色
+                            ctx.fillRect(0, 0, 512, 512);
+                            ctx.fillStyle = '#FFCC00'; // 黃色斜紋
+                            ctx.beginPath();
+                            // ★ 修正：從右上畫到左下 (/)
+                            for (let i = 0; i < 1024; i += 64) {
+                                ctx.moveTo(i, 0); 
+                                ctx.lineTo(i - 512, 512); 
+                                ctx.lineTo(i - 512 + 32, 512); 
+                                ctx.lineTo(i + 32, 0);
+                            }
+                            ctx.fill();
+                            const tex = new THREE.CanvasTexture(cvs);
+                            tex.wrapS = THREE.RepeatWrapping; 
+                            tex.wrapT = THREE.RepeatWrapping;
+                            window.medianChevronMat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.8 });
+                        }
+
+                        // 重新計算 UV，避免拉伸
+                        const posAttr = mGeom.attributes.position;
+                        const uvAttr = mGeom.attributes.uv;
+                        for (let i = 0; i < posAttr.count; i++) {
+                            uvAttr.setXY(i, posAttr.getX(i) * 0.5, -posAttr.getZ(i) * 0.5);
+                        }
+                        uvAttr.needsUpdate = true;
+
+                        const mMesh = new THREE.Mesh(mGeom, window.medianChevronMat);
+                        mMesh.position.y = 0.11; // 略高於路面
+                        networkGroup.add(mMesh);
+                    } else if (gapWidth >= 0.1 && gapWidth < 0.4) {
+                        // 3. 雙黃線區域 (只畫兩條邊緣線)
+                        const yellowLineMat = new THREE.LineBasicMaterial({ color: 0xffcc00, linewidth: 2 });
+                        
+                        // ★ 修正：Z 軸座標應該是 p.y，拿掉錯誤的負號
+                        const ptsL1 = shrinkL1.map(p => new THREE.Vector3(p.x, 0.115, p.y));
+                        const geoL1 = new THREE.BufferGeometry().setFromPoints(ptsL1);
+                        const line1 = new THREE.Line(geoL1, yellowLineMat);
+                        networkGroup.add(line1);
+
+                        // ★ 修正：Z 軸座標應該是 p.y，拿掉錯誤的負號
+                        const ptsL2 = shrinkL2.map(p => new THREE.Vector3(p.x, 0.115, p.y));
+                        const geoL2 = new THREE.BufferGeometry().setFromPoints(ptsL2);
+                        const line2 = new THREE.Line(geoL2, yellowLineMat);
+                        networkGroup.add(line2);
+                    }
+                }
+            });
+        }
 
         // =================================================================
         // 1. Draw Links (Roads) - 使用 asphaltMat 且高度設為 0.1
@@ -3763,6 +4074,7 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
 
+
         // --- 4. Traffic Light Poles ---
         if (simulation && simulation.trafficLights) {
             simulation.trafficLights.forEach(tfl => {
@@ -3923,8 +4235,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
             netData.roadMarkings.forEach(mk => {
 
-                                // ★★★ [新增] 3D 繪製對角線行人穿越道 ★★★
-// ★★★[新增] 3D 繪製對角線行人穿越道 ★★★
+                // ★★★ [新增] 3D 繪製對角線行人穿越道 ★★★
+                // ★★★[新增] 3D 繪製對角線行人穿越道 ★★★
                 if (mk.type === 'diagonal_crosswalk') {
                     const [c0, c1, c2, c3] = mk.corners;
                     const halfW = 2.0;
@@ -3938,11 +4250,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     const nA = getNorm(c0, c2);
                     const nB = getNorm(c1, c3);
 
-                    const linesA =[
+                    const linesA = [
                         { p1: { x: c0.x + nA.x * halfW, y: c0.y + nA.y * halfW }, p2: { x: c2.x + nA.x * halfW, y: c2.y + nA.y * halfW } },
                         { p1: { x: c0.x - nA.x * halfW, y: c0.y - nA.y * halfW }, p2: { x: c2.x - nA.x * halfW, y: c2.y - nA.y * halfW } }
                     ];
-                    const linesB =[
+                    const linesB = [
                         { p1: { x: c1.x + nB.x * halfW, y: c1.y + nB.y * halfW }, p2: { x: c3.x + nB.x * halfW, y: c3.y + nB.y * halfW } },
                         { p1: { x: c1.x - nB.x * halfW, y: c1.y - nB.y * halfW }, p2: { x: c3.x - nB.x * halfW, y: c3.y - nB.y * halfW } }
                     ];
@@ -3977,19 +4289,19 @@ document.addEventListener('DOMContentLoaded', () => {
                         const ldx = seg.p2.x - seg.p1.x;
                         const ldy = seg.p2.y - seg.p1.y;
                         const segmentLen = Math.hypot(ldx, ldy);
-                        if(segmentLen < 0.1) return;
-                        
-                        const midX = (seg.p1.x + seg.p2.x)/2, midY = (seg.p1.y + seg.p2.y)/2;
+                        if (segmentLen < 0.1) return;
+
+                        const midX = (seg.p1.x + seg.p2.x) / 2, midY = (seg.p1.y + seg.p2.y) / 2;
                         const angle = Math.atan2(ldy, ldx);
-                        
+
                         const geo = new THREE.PlaneGeometry(segmentLen, 0.4); // 白線寬 0.4m
                         const mesh = new THREE.Mesh(geo, whiteMat);
-                        mesh.position.set(midX, 0.13, midY); 
+                        mesh.position.set(midX, 0.13, midY);
                         mesh.rotation.x = -Math.PI / 2;
                         mesh.rotation.z = -angle;
                         networkGroup.add(mesh);
                     });
-                    return; 
+                    return;
                 }
                 // [修正] 動態調整高度
                 // 如果是 Link 上的標線，高度 0.12 (高於路面 0.10)
@@ -6698,13 +7010,13 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             return totalWaitTime;
         }
-// ★★★ [新增此方法] 專門給行人號誌使用：計算包含綠燈與黃燈(行閃)的總剩餘秒數 ★★★
+        // ★★★ [新增此方法] 專門給行人號誌使用：計算包含綠燈與黃燈(行閃)的總剩餘秒數 ★★★
         getPedestrianRemainingTime(time, groupId) {
             if (this.cycleDuration <= 0 || !groupId) return 0;
             const actualId = this.groupNameMap[groupId] || groupId;
             const effectiveTime = time - this.timeShift;
             let timeInCycle = ((effectiveTime % this.cycleDuration) + this.cycleDuration) % this.cycleDuration;
-            
+
             let currentPeriodIndex = 0;
             for (let i = 0; i < this.schedule.length; i++) {
                 if (timeInCycle < this.schedule[i].duration) {
@@ -10470,6 +10782,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         leftEdgePoints.push(Geom.Vec.add(centerPoint, Geom.Vec.scale(normal, -halfWidth)));
                         rightEdgePoints.push(Geom.Vec.add(centerPoint, Geom.Vec.scale(normal, halfWidth)));
                     }
+                    link.leftEdgePoints = leftEdgePoints;
+                    link.rightEdgePoints = rightEdgePoints;
                     link.geometry.push({ type: 'polygon', points: [...leftEdgePoints, ...rightEdgePoints.reverse()] });
 
                     if (link.roadSigns.length === 0) {
@@ -10910,7 +11224,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     roadMarkings.push(mk);
                 });
             }
-// ★★★ [新增] 自動偵測十字路口並生成對角線行人穿越道 ★★★
+            // ★★★ [新增] 自動偵測十字路口並生成對角線行人穿越道 ★★★
             const nodeCrosswalks = {};
             roadMarkings.forEach(mark => {
                 if (mark.type === 'crosswalk') {
@@ -10969,16 +11283,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (cws.length === 4) {
                     let sharedGroupId = null;
                     let allSame = true;
-                    const cwDataList =[];
+                    const cwDataList = [];
 
                     for (const cw of cws) {
                         // 借用全域的 calculateCrosswalkLine 取得端點
-                        const lineData = window.calculateCrosswalkLine ? window.calculateCrosswalkLine(cw, {links, nodes}) : null;
+                        const lineData = window.calculateCrosswalkLine ? window.calculateCrosswalkLine(cw, { links, nodes }) : null;
                         if (!lineData) { allSame = false; break; }
 
                         const tGroupId = getCrosswalkSignalGroupId(cw, nodeId, lineData);
                         if (!tGroupId) { allSame = false; break; }
-                        
+
                         // 需求 5: 對應的行人時相是共用相同的編號
                         if (!sharedGroupId) sharedGroupId = tGroupId;
                         if (tGroupId !== sharedGroupId) { allSame = false; break; }
@@ -10997,8 +11311,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
                         // 依據相對於中心的角度排序 (構成環狀 0, 1, 2, 3)
                         cwDataList.sort((a, b) => {
-                            const aAngle = Math.atan2((a.line.p1.y + a.line.p2.y)/2 - cy, (a.line.p1.x + a.line.p2.x)/2 - cx);
-                            const bAngle = Math.atan2((b.line.p1.y + b.line.p2.y)/2 - cy, (b.line.p1.x + b.line.p2.x)/2 - cx);
+                            const aAngle = Math.atan2((a.line.p1.y + a.line.p2.y) / 2 - cy, (a.line.p1.x + a.line.p2.x) / 2 - cx);
+                            const bAngle = Math.atan2((b.line.p1.y + b.line.p2.y) / 2 - cy, (b.line.p1.x + b.line.p2.x) / 2 - cx);
                             return aAngle - bAngle;
                         });
 
@@ -11007,13 +11321,13 @@ document.addEventListener('DOMContentLoaded', () => {
                             let minDist = Infinity;
                             let bestCorner = { x: 0, y: 0 };
                             const ptsA = [lineA.p1, lineA.p2];
-                            const ptsB =[lineB.p1, lineB.p2];
-                            for(let pa of ptsA) {
-                                for(let pb of ptsB) {
+                            const ptsB = [lineB.p1, lineB.p2];
+                            for (let pa of ptsA) {
+                                for (let pb of ptsB) {
                                     const d = Math.hypot(pa.x - pb.x, pa.y - pb.y);
-                                    if(d < minDist) {
+                                    if (d < minDist) {
                                         minDist = d;
-                                        bestCorner = { x: (pa.x + pb.x)/2, y: (pa.y + pb.y)/2 };
+                                        bestCorner = { x: (pa.x + pb.x) / 2, y: (pa.y + pb.y) / 2 };
                                     }
                                 }
                             }
@@ -11296,6 +11610,52 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             // =========================================================            
+            // ★ [新增] 判讀平行對向道路，並計算 Median (中央分隔) ★
+            // =========================================================
+            const medians = [];
+            const linksArray = Object.values(links);
+            for (let i = 0; i < linksArray.length; i++) {
+                const l1 = linksArray[i];
+                if (!l1.leftEdgePoints || !l1.rightEdgePoints || l1.leftEdgePoints.length < 2) continue;
+                for (let j = i + 1; j < linksArray.length; j++) {
+                    const l2 = linksArray[j];
+                    if (!l2.leftEdgePoints || !l2.rightEdgePoints || l2.leftEdgePoints.length < 2) continue;
+
+                    // 1. 判斷是否為對向連接的道路 (拓樸相反)
+                    const isOppositeTopo = (l1.source === l2.destination && l1.destination === l2.source && l1.source !== '-1');
+
+                    // 2. 自動匹配距離最近的兩條邊緣
+                    const getMinGap = (e1, e2) => {
+                        // L2 方向與 L1 相反，因此 L1起點配 L2終點，L1終點配 L2起點
+                        const distA = Math.hypot(e1[0].x - e2[e2.length - 1].x, e1[0].y - e2[e2.length - 1].y);
+                        const distB = Math.hypot(e1[e1.length - 1].x - e2[0].x, e1[e1.length - 1].y - e2[0].y);
+                        return { distA, distB, avg: (distA + distB) / 2 };
+                    };
+
+                    const checks = [
+                        { val: getMinGap(l1.leftEdgePoints, l2.leftEdgePoints), e1: l1.leftEdgePoints, e2: l2.leftEdgePoints },
+                        { val: getMinGap(l1.rightEdgePoints, l2.rightEdgePoints), e1: l1.rightEdgePoints, e2: l2.rightEdgePoints },
+                        { val: getMinGap(l1.leftEdgePoints, l2.rightEdgePoints), e1: l1.leftEdgePoints, e2: l2.rightEdgePoints },
+                        { val: getMinGap(l1.rightEdgePoints, l2.leftEdgePoints), e1: l1.rightEdgePoints, e2: l2.leftEdgePoints }
+                    ];
+
+                    checks.sort((a, b) => a.val.avg - b.val.avg);
+                    const best = checks[0];
+
+                    // 如果拓樸相反且兩端距離合理 (<20m)，或者純幾何上兩端非常靠近 (<5m) (視為無連接但平行的繪圖)
+                    if ((isOppositeTopo && best.val.distA < 20 && best.val.distB < 20) || (best.val.distA < 5 && best.val.distB < 5)) {
+                        if (best.val.avg > 0.05 && best.val.avg < 20) {
+                            medians.push({
+                                l1Id: l1.id,
+                                l2Id: l2.id,
+                                gapWidth: best.val.avg,
+                                l1Edge: best.e1,
+                                l2Edge: best.e2
+                            });
+                        }
+                    }
+                }
+            }
 
             Promise.all(imagePromises).then(() => {
                 resolve({
@@ -11308,6 +11668,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     sectionMeters,
                     parkingLots,
                     roadMarkings,
+                    medians, // [新增]
                     geoAnchors, // ★★★ 最重要的一行：必須把 geoAnchors 放進這裡，滑鼠事件才讀得到！ ★★★
                     bounds: { minX, minY, maxX, maxY },
                     pathfinder: new Pathfinder(links, nodes),

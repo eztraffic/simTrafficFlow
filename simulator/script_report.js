@@ -3,7 +3,6 @@ class SignalReportGenerator {
     static init() {
         if (document.getElementById('signal-report-style')) return;
 
-        // 注入報表專用 CSS (加入分頁設定與選擇器樣式)
         const style = document.createElement('style');
         style.id = 'signal-report-style';
         style.innerHTML = `
@@ -20,7 +19,6 @@ class SignalReportGenerator {
             .report-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
             .report-header h1 { font-size: 24px; margin: 0; font-weight: bold; }
             
-            /* 控制列樣式 */
             .report-controls {
                 background: #f0f4f8; padding: 10px; border-radius: 6px; margin-bottom: 20px;
                 border: 1px solid #ccc;
@@ -33,13 +31,11 @@ class SignalReportGenerator {
             .node-checkbox-label { cursor: pointer; display: flex; align-items: center; font-size: 14px; background: #e2e8f0; padding: 4px 8px; border-radius: 4px; }
             .node-checkbox-label input { margin-right: 5px; }
             
-            /* 按鈕樣式 */
             .btn-print { background: #06b6d4; color: white; border: none; padding: 8px 15px; cursor: pointer; border-radius: 4px; font-weight: bold; }
             .btn-close { background: #ff4444; color: white; border: none; padding: 8px 15px; cursor: pointer; border-radius: 4px; font-weight: bold; margin-left: 10px; }
             .btn-mini-action { background: #64748b; color: white; border: none; padding: 4px 8px; cursor: pointer; border-radius: 4px; font-size: 12px; }
             .btn-render { background: #10b981; color: white; border: none; padding: 6px 12px; cursor: pointer; border-radius: 4px; font-weight: bold; }
 
-            /* 表格與分頁樣式 */
             .page-break {
                 page-break-after: always; 
                 break-after: page;
@@ -151,44 +147,170 @@ class SignalReportGenerator {
         }, 150);
     }
 
-    static extractPhases(scheduleDef) {
+    // ★★★ 智慧型時相解析核心：精準判斷行人專用時相 ★★★
+    static extractPhases(scheduleDef, nodeId, networkData) {
         let phases = [];
-        let currentPhase = { G: 0, Y: 0, R: 0, greenGroups: [] };
+        let currentPhasePeriods = [];
         const periods = scheduleDef.phases || scheduleDef;
         
-        for (let period of periods) {
-            let hasGreen = false;
-            let hasYellow = false;
-            let periodGroups = [];
-
-            let entries = Array.isArray(period.signals) ? period.signals : Object.entries(period.signals).map(([k,v]) => ({groupId: k, state: v}));
-
-            for (let sig of entries) {
-                if (sig.state === 'Green') { hasGreen = true; periodGroups.push(sig.groupId); }
-                if (sig.state === 'Yellow') hasYellow = true;
-            }
-
-            if (hasGreen) {
-                if (currentPhase.G > 0 && currentPhase.Y > 0) {
-                    phases.push(currentPhase);
-                    currentPhase = { G: 0, Y: 0, R: 0, greenGroups: [] };
+        // 1. 取得該路口「車輛專用」的 turnGroupId 集合 (用來判斷是否為行人專用時相)
+        const node = networkData.nodes[nodeId];
+        const tflCtrl = networkData.trafficLights.find(t => t.nodeId === nodeId);
+        const nameMap = tflCtrl && tflCtrl.groupNameMap ? tflCtrl.groupNameMap : {};
+        
+        let vehicleGroupIds = new Set();
+        if (node && node.transitions) {
+            node.transitions.forEach(t => {
+                if (t.turnGroupId) {
+                    const actualId = nameMap[t.turnGroupId] ? String(nameMap[t.turnGroupId]) : String(t.turnGroupId);
+                    vehicleGroupIds.add(actualId);
                 }
-                currentPhase.G += period.duration;
-                currentPhase.greenGroups = [...new Set([...currentPhase.greenGroups, ...periodGroups])];
-            } else if (hasYellow) {
-                currentPhase.Y += period.duration;
-            } else {
-                currentPhase.R += period.duration;
-            }
+            });
         }
-        if (currentPhase.G > 0 || currentPhase.Y > 0) phases.push(currentPhase);
-        return phases;
+
+        // 2. 切分原始 periods 成為單獨的 Phase
+        for (let i = 0; i < periods.length; i++) {
+            let period = periods[i];
+            let entries = Array.isArray(period.signals) ? period.signals : Object.entries(period.signals).map(([k,v]) => ({groupId: k, state: v}));
+            
+            let hasGreen = entries.some(sig => sig.state === 'Green' || sig.state === 'FlashingGreen');
+            
+            let currentHasYellowOrRed = false;
+            if (currentPhasePeriods.length > 0) {
+                let hasY = currentPhasePeriods.some(p => {
+                    let e = Array.isArray(p.signals) ? p.signals : Object.entries(p.signals).map(([k,v]) => ({state: v}));
+                    return e.some(sig => sig.state === 'Yellow');
+                });
+                
+                let lastP = currentPhasePeriods[currentPhasePeriods.length - 1];
+                let eLast = Array.isArray(lastP.signals) ? lastP.signals : Object.entries(lastP.signals).map(([k,v]) => ({state: v}));
+                let isAllRed = !eLast.some(sig => sig.state === 'Green' || sig.state === 'FlashingGreen' || sig.state === 'Yellow');
+                
+                if (hasY || isAllRed) currentHasYellowOrRed = true;
+            }
+
+            if (hasGreen && currentHasYellowOrRed && currentPhasePeriods.length > 0) {
+                phases.push(currentPhasePeriods);
+                currentPhasePeriods = [];
+            }
+            currentPhasePeriods.push(period);
+        }
+        if (currentPhasePeriods.length > 0) phases.push(currentPhasePeriods);
+
+        // 3. 針對每個 Phase 分析是否為行人專用
+        let parsedPhases = phases.map(phasePeriods => {
+            let pData = { G: 0, Y: 0, R: 0, pg: '*', pf: '*', pr: '*', displayY: '*', displayR: '*', greenGroups: [] };
+            
+            // 判斷是否為「行人專用時相」 (該時相內沒有任何車輛軌跡是 Green/FlashingGreen/Yellow)
+            let isPedestrianOnly = true;
+            for (let p of phasePeriods) {
+                let e = Array.isArray(p.signals) ? p.signals : Object.entries(p.signals).map(([k,v]) => ({groupId: k, state: v}));
+                for (let sig of e) {
+                    const actualId = nameMap[sig.groupId] ? String(nameMap[sig.groupId]) : String(sig.groupId);
+                    if ((sig.state === 'Green' || sig.state === 'FlashingGreen' || sig.state === 'Yellow') && vehicleGroupIds.has(actualId)) {
+                        isPedestrianOnly = false;
+                        break;
+                    }
+                }
+                if (!isPedestrianOnly) break;
+            }
+
+            // 收集該時相可通行的群組 (給行車簡圖畫綠色標線用)
+            phasePeriods.forEach(p => {
+                let e = Array.isArray(p.signals) ? p.signals : Object.entries(p.signals).map(([k,v]) => ({groupId: k, state: v}));
+                e.forEach(sig => {
+                    if (sig.state === 'Green' || sig.state === 'FlashingGreen') {
+                        const actualId = nameMap[sig.groupId] ? String(nameMap[sig.groupId]) : String(sig.groupId);
+                        pData.greenGroups.push(actualId);
+                    }
+                });
+            });
+            pData.greenGroups = [...new Set(pData.greenGroups)];
+
+            if (isPedestrianOnly) {
+                // ============== 情境 B：行人專用時相 ==============
+                // 全部分配給行人，車輛黃燈與全紅直接設為 '*'
+                let len = phasePeriods.length;
+                if (len === 1) {
+                    pData.pg = phasePeriods[0].duration;
+                } else if (len === 2) {
+                    pData.pg = phasePeriods[0].duration;
+                    pData.pf = phasePeriods[1].duration;
+                } else if (len >= 3) {
+                    pData.pg = phasePeriods[0].duration;
+                    pData.pf = phasePeriods[1].duration;
+                    pData.pr = phasePeriods.slice(2).reduce((sum, p) => sum + p.duration, 0);
+                }
+                
+                pData.G = '*';
+                pData.displayY = '*';
+                pData.displayR = '*'; 
+            } else {
+                // ============== 情境 A：一般車輛時相 (或人車共用) ==============
+                let yellowIndex = -1;
+                for (let i = 0; i < phasePeriods.length; i++) {
+                    let e = Array.isArray(phasePeriods[i].signals) ? phasePeriods[i].signals : Object.entries(phasePeriods[i].signals).map(([k,v]) => ({groupId: k, state: v}));
+                    if (e.some(sig => {
+                        const actualId = nameMap[sig.groupId] ? String(nameMap[sig.groupId]) : String(sig.groupId);
+                        return sig.state === 'Yellow' && vehicleGroupIds.has(actualId);
+                    })) {
+                        yellowIndex = i;
+                        break;
+                    }
+                }
+
+                if (yellowIndex !== -1) {
+                    let greenSubPeriods = phasePeriods.slice(0, yellowIndex);
+                    pData.G = greenSubPeriods.reduce((sum, p) => sum + p.duration, 0);
+                    
+                    if (greenSubPeriods.length === 1) {
+                        pData.pg = greenSubPeriods[0].duration;
+                    } else if (greenSubPeriods.length === 2) {
+                        pData.pg = greenSubPeriods[0].duration;
+                        pData.pf = greenSubPeriods[1].duration;
+                    } else if (greenSubPeriods.length >= 3) {
+                        pData.pg = greenSubPeriods[0].duration;
+                        pData.pf = greenSubPeriods[1].duration;
+                        pData.pr = greenSubPeriods.slice(2).reduce((sum, p) => sum + p.duration, 0);
+                    }
+
+                    pData.Y = phasePeriods[yellowIndex].duration;
+                    pData.displayY = pData.Y;
+
+                    let redSubPeriods = phasePeriods.slice(yellowIndex + 1);
+                    pData.R = redSubPeriods.reduce((sum, p) => sum + p.duration, 0);
+                    pData.displayR = pData.R > 0 ? pData.R : '*';
+                } else {
+                    pData.G = phasePeriods.reduce((sum, p) => sum + p.duration, 0);
+                    pData.pg = pData.G;
+                    pData.displayY = '*';
+                    pData.displayR = '*';
+                }
+            }
+
+            return pData;
+        });
+
+        return parsedPhases;
     }
 
     static formatTime(seconds) {
         const h = Math.floor(seconds / 3600).toString().padStart(2, '0');
         const m = Math.floor((seconds % 3600) / 60).toString().padStart(2, '0');
         return `${h}:${m}`;
+    }
+
+    static checkHasPedestrianSignals(nodeId, networkData) {
+        if (!networkData.roadMarkings) return false;
+        return networkData.roadMarkings.some(mark => {
+            if (mark.type !== 'crosswalk' && mark.type !== 'diagonal_crosswalk') return false;
+            let belongs = (mark.nodeId === nodeId);
+            if (!belongs && mark.linkId) {
+                const link = networkData.links[mark.linkId];
+                if (link && (link.source === nodeId || link.destination === nodeId)) belongs = true;
+            }
+            return belongs;
+        });
     }
 
     static generateSingleNodeHTML(nodeId, networkData) {
@@ -199,27 +321,23 @@ class SignalReportGenerator {
         let plans = [];
         let maxPhasesCount = 0;
         
-        // ★★★ 解析所有型態 (A, B, C...) 的時段資料 ★★★
         let planKeys = [];
         let plansData = {};
         let maxTimeSegments = 0;
-        let weeklyMapping = {1:'A', 2:'A', 3:'A', 4:'A', 5:'A', 6:'B', 7:'B'}; // 預設值
+        let weeklyMapping = {1:'A', 2:'A', 3:'A', 4:'A', 5:'A', 6:'B', 7:'B'};
 
         if (advConfig && Object.keys(advConfig.schedules).length > 0) {
-            // 解析時相秒數
             Object.values(advConfig.schedules).forEach(sched => {
-                const extractedPhases = this.extractPhases(sched);
+                const extractedPhases = this.extractPhases(sched, nodeId, networkData);
                 maxPhasesCount = Math.max(maxPhasesCount, extractedPhases.length);
                 plans.push({ id: sched.id, cycle: sched.cycleDuration, offset: sched.timeShift, phases: extractedPhases });
             });
 
-            // 解析時段計畫 (多型態)
             if (Object.keys(advConfig.dailyPlans).length > 0) {
                 planKeys = Object.keys(advConfig.dailyPlans);
                 planKeys.forEach(pk => {
                     const switches = advConfig.dailyPlans[pk];
                     maxTimeSegments = Math.max(maxTimeSegments, switches.length);
-                    
                     plansData[pk] = switches.map((sw, i) => {
                         const st = this.formatTime(sw.startSeconds);
                         const ed = (i < switches.length - 1) ? this.formatTime(switches[i+1].startSeconds) : '24:00';
@@ -229,15 +347,15 @@ class SignalReportGenerator {
             }
             if (Object.keys(advConfig.weekly).length > 0) weeklyMapping = advConfig.weekly;
         } else {
-            // 單一時制容錯
-            const extractedPhases = this.extractPhases(tflCtrl.schedule);
+            const extractedPhases = this.extractPhases(tflCtrl.schedule, nodeId, networkData);
             maxPhasesCount = extractedPhases.length;
             plans.push({ id: '1', cycle: tflCtrl.cycleDuration, offset: tflCtrl.timeShift, phases: extractedPhases });
-            
             planKeys = ['A'];
             maxTimeSegments = 1;
             plansData['A'] = [{ time: '00:00 - 24:00', scheduleId: '1' }];
         }
+
+        const hasPed = this.checkHasPedestrianSignals(nodeId, networkData);
 
         let html = `<div class="page-break">`;
         html += `<div style="margin-bottom: 10px; font-size: 18px;"><b>路口編號：</b> ${nodeId}</div>`;
@@ -247,48 +365,82 @@ class SignalReportGenerator {
             <table class="timing-table">
                 <tr>
                     <td rowspan="4" class="section-title">時制計畫</td>
-                    <th>時制</th>
+                    <th colspan="2">時制</th>
                     ${plans.map(p => `<th>${p.id}</th>`).join('')}
                     ${Array(Math.max(0, 7 - plans.length)).fill('<th>-</th>').join('')}
                 </tr>
                 <tr>
-                    <th>時差</th>
+                    <th colspan="2">時差</th>
                     ${plans.map(p => `<td>${p.offset}</td>`).join('')}
                     ${Array(Math.max(0, 7 - plans.length)).fill('<td>-</td>').join('')}
                 </tr>
                 <tr>
-                    <th>週期</th>
+                    <th colspan="2">週期</th>
                     ${plans.map(p => `<td>${p.cycle}</td>`).join('')}
                     ${Array(Math.max(0, 7 - plans.length)).fill('<td>-</td>').join('')}
                 </tr>
                 <tr class="bold-border">
-                    <th>燈號</th>
+                    <th colspan="2">燈號</th>
                     ${plans.map(p => `<th>秒數</th>`).join('')}
                     ${Array(Math.max(0, 7 - plans.length)).fill('<th>秒數</th>').join('')}
                 </tr>
         `;
 
         for (let i = 0; i < maxPhasesCount; i++) {
-            ['G', 'Y', 'R'].forEach((light, idx) => {
-                const isLast = (i === maxPhasesCount - 1 && light === 'R');
-                html += `<tr ${isLast ? 'class="bold-border"' : ''}>`;
-                if (idx === 0) html += `<td rowspan="3" class="section-title">第${i+1}時相</td>`;
-                html += `<th>${light}${i+1}</th>`;
-                plans.forEach(p => {
-                    const phase = p.phases[i];
-                    html += `<td>${phase ? phase[light] : '-'}</td>`;
-                });
+            if (hasPed) {
+                html += `<tr>`;
+                html += `<td rowspan="5" class="section-title">第${i+1}時相</td>`;
+                html += `<th rowspan="3">G${i+1}</th>`;
+                html += `<th>行綠</th>`;
+                plans.forEach(p => html += `<td>${p.phases[i] ? p.phases[i].pg : '-'}</td>`);
                 html += Array(Math.max(0, 7 - plans.length)).fill('<td>-</td>').join('');
                 html += `</tr>`;
-            });
+
+                html += `<tr><th>行閃</th>`;
+                plans.forEach(p => html += `<td>${p.phases[i] ? p.phases[i].pf : '-'}</td>`);
+                html += Array(Math.max(0, 7 - plans.length)).fill('<td>-</td>').join('');
+                html += `</tr>`;
+
+                html += `<tr><th>行停</th>`;
+                plans.forEach(p => html += `<td>${p.phases[i] ? p.phases[i].pr : '-'}</td>`);
+                html += Array(Math.max(0, 7 - plans.length)).fill('<td>-</td>').join('');
+                html += `</tr>`;
+
+                html += `<tr><th>Y${i+1}</th><th>黃燈</th>`;
+                plans.forEach(p => html += `<td>${p.phases[i] ? p.phases[i].displayY : '-'}</td>`);
+                html += Array(Math.max(0, 7 - plans.length)).fill('<td>-</td>').join('');
+                html += `</tr>`;
+
+                html += `<tr style="border-bottom: 3px solid black;">`;
+                html += `<th>R${i+1}</th><th>全紅</th>`;
+                plans.forEach(p => html += `<td>${p.phases[i] ? p.phases[i].displayR : '-'}</td>`);
+                html += Array(Math.max(0, 7 - plans.length)).fill('<td>-</td>').join('');
+                html += `</tr>`;
+            } else {
+                html += `<tr>`;
+                html += `<td rowspan="3" class="section-title">第${i+1}時相</td>`;
+                html += `<th>G${i+1}</th><th>綠燈</th>`;
+                plans.forEach(p => html += `<td>${p.phases[i] ? p.phases[i].G : '-'}</td>`);
+                html += Array(Math.max(0, 7 - plans.length)).fill('<td>-</td>').join('');
+                html += `</tr>`;
+
+                html += `<tr><th>Y${i+1}</th><th>黃燈</th>`;
+                plans.forEach(p => html += `<td>${p.phases[i] ? p.phases[i].displayY : '-'}</td>`);
+                html += Array(Math.max(0, 7 - plans.length)).fill('<td>-</td>').join('');
+                html += `</tr>`;
+
+                html += `<tr style="border-bottom: 3px solid black;">`;
+                html += `<th>R${i+1}</th><th>全紅</th>`;
+                plans.forEach(p => html += `<td>${p.phases[i] ? p.phases[i].displayR : '-'}</td>`);
+                html += Array(Math.max(0, 7 - plans.length)).fill('<td>-</td>').join('');
+                html += `</tr>`;
+            }
         }
         html += `</table>`;
 
-        // --- 報表下半部：時相行車簡圖 + 多型態時段管制 ---
+        // --- 報表下半部 ---
         const refPhases = plans[0].phases;
         const dayMap = {0: '一', 1: '二', 2: '三', 3: '四', 4: '五', 5: '六', 6: '日'};
-        
-        // 算出總行數需求：時相數 vs 每日時段數 vs 星期天數(7) 取最大值
         const maxRows = Math.max(maxPhasesCount, maxTimeSegments, 7);
 
         html += `
@@ -313,7 +465,6 @@ class SignalReportGenerator {
         for (let r = 0; r < maxRows; r++) {
             html += `<tr>`;
             
-            // 左側：時相簡圖
             if (r < maxPhasesCount) {
                 const canvasId = `phase-canvas-${nodeId}-${r}`;
                 html += `<th>G${r+1}</th><td style="padding: 10px 0;"><canvas id="${canvasId}" class="phase-diagram-container" width="200" height="200"></canvas></td>`;
@@ -321,39 +472,71 @@ class SignalReportGenerator {
                     this.drawingQueue.push({ canvasId, nodeId, greenGroups: refPhases[r].greenGroups });
                 }
             } else {
-                // 空白時相欄位 (隱藏邊界)
                 html += `<td colspan="2" style="border-top: none; border-bottom: none; border-left: none; border-right: 1px solid black;"></td>`;
             }
 
-            // 中間：時段
-            if (r < maxTimeSegments) {
-                html += `<td>${r+1}</td>`;
-            } else {
-                html += `<td></td>`; // 保留格線
-            }
+            if (r < maxTimeSegments) html += `<td>${r+1}</td>`;
+            else html += `<td></td>`;
 
-            // 右側區塊一：各型態計畫的時段
             planKeys.forEach(pk => {
                 const step = plansData[pk][r];
-                if (step) {
-                    html += `<td>${step.time}</td><td>${step.scheduleId}</td>`;
-                } else {
-                    html += `<td></td><td></td>`; // 保留格線
-                }
+                if (step) html += `<td>${step.time}</td><td>${step.scheduleId}</td>`;
+                else html += `<td></td><td></td>`;
             });
 
-            // 右側區塊二：每週型態指定
-            if (r < 7) {
-                html += `<td>${dayMap[r]}</td><td>${weeklyMapping[r+1] || '-'}</td>`;
-            } else {
-                html += `<td></td><td></td>`; // 保留格線
-            }
+            if (r < 7) html += `<td>${dayMap[r]}</td><td>${weeklyMapping[r+1] || '-'}</td>`;
+            else html += `<td></td><td></td>`;
 
             html += `</tr>`;
         }
 
         html += `</table></div>`;
         return html;
+    }
+
+    // 取得行穿線真實內部使用的對應群組 ID
+    static getCrosswalkSignalGroupId(mark, nodeId, networkData, lineData) {
+        let rawId = mark.signalGroupId;
+
+        if (!rawId && lineData) {
+            const cwVecX = lineData.p2.x - lineData.p1.x;
+            const cwVecY = lineData.p2.y - lineData.p1.y;
+            const node = networkData.nodes[nodeId];
+
+            if (node && node.transitions) {
+                for (const t of node.transitions) {
+                    if (t.sourceLinkId !== t.destLinkId && t.turnGroupId) {
+                        const srcL = networkData.links[t.sourceLinkId];
+                        const dstL = networkData.links[t.destLinkId];
+                        if (srcL && dstL && srcL.lanes[t.sourceLaneIndex || 0] && dstL.lanes[t.destLaneIndex || 0]) {
+                            const srcPath = srcL.lanes[t.sourceLaneIndex || 0].path;
+                            const dstPath = dstL.lanes[t.destLaneIndex || 0].path;
+                            if (srcPath.length > 0 && dstPath.length > 0) {
+                                const dx = dstPath[0].x - srcPath[srcPath.length - 1].x;
+                                const dy = dstPath[0].y - srcPath[srcPath.length - 1].y;
+                                const len = Math.hypot(dx, dy);
+                                if (len > 0.1) {
+                                    const dot = (cwVecX * dx + cwVecY * dy) / (Math.hypot(cwVecX, cwVecY) * len);
+                                    if (Math.abs(dot) > 0.8) {
+                                        rawId = t.turnGroupId;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (rawId) {
+            const tflCtrl = networkData.trafficLights.find(t => t.nodeId === nodeId);
+            if (tflCtrl && tflCtrl.groupNameMap && tflCtrl.groupNameMap[rawId]) {
+                return String(tflCtrl.groupNameMap[rawId]);
+            }
+            return String(rawId);
+        }
+        return null;
     }
 
     static drawPhaseDiagram(canvasId, nodeId, greenGroups, networkData) {
@@ -407,12 +590,56 @@ class SignalReportGenerator {
         ctx.closePath();
         ctx.fill();
 
+        // 3. 繪製行人穿越道 (嚴格聯動綠燈狀態)
+        if (networkData.roadMarkings) {
+            networkData.roadMarkings.forEach(mark => {
+                let belongsToNode = (mark.nodeId === nodeId);
+                if (!belongsToNode && mark.linkId) {
+                    const link = networkData.links[mark.linkId];
+                    if (link && (link.source === nodeId || link.destination === nodeId)) belongsToNode = true;
+                }
+
+                if (belongsToNode && (mark.type === 'crosswalk' || mark.type === 'diagonal_crosswalk')) {
+                    let lineData = null;
+                    if (mark.type === 'crosswalk' && typeof window.calculateCrosswalkLine === 'function') {
+                        lineData = window.calculateCrosswalkLine(mark, networkData);
+                    }
+
+                    const groupId = this.getCrosswalkSignalGroupId(mark, nodeId, networkData, lineData);
+                    const isActive = groupId && greenGroups.includes(String(groupId));
+
+                    ctx.strokeStyle = isActive ? 'rgba(16, 185, 129, 0.95)' : 'rgba(239, 68, 68, 0.85)';
+                    const dashLen = 2.0 / scale; 
+                    ctx.setLineDash([dashLen, dashLen]);
+                    ctx.lineCap = 'butt';
+
+                    if (mark.type === 'crosswalk' && lineData) {
+                        ctx.lineWidth = lineData.width;
+                        ctx.beginPath();
+                        ctx.moveTo(lineData.p1.x, lineData.p1.y);
+                        ctx.lineTo(lineData.p2.x, lineData.p2.y);
+                        ctx.stroke();
+                    } 
+                    else if (mark.type === 'diagonal_crosswalk' && mark.corners) {
+                        ctx.lineWidth = 4.0;
+                        const [c0, c1, c2, c3] = mark.corners;
+                        ctx.beginPath();
+                        ctx.moveTo(c0.x, c0.y); ctx.lineTo(c2.x, c2.y);
+                        ctx.moveTo(c1.x, c1.y); ctx.lineTo(c3.x, c3.y);
+                        ctx.stroke();
+                    }
+                    ctx.setLineDash([]); 
+                }
+            });
+        }
+
+        // 4. 繪製車流綠色軌跡與箭頭
         ctx.strokeStyle = '#00aa00';
         ctx.fillStyle = '#00aa00';
         ctx.lineWidth = 4 / scale;
 
         node.transitions.forEach(trans => {
-            if (trans.turnGroupId && greenGroups.includes(trans.turnGroupId) && trans.bezier) {
+            if (trans.turnGroupId && greenGroups.includes(String(trans.turnGroupId)) && trans.bezier) {
                 const pts = trans.bezier.points;
                 if(pts.length === 4) {
                     ctx.beginPath();
