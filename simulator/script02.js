@@ -500,6 +500,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let isChaseActive = false;
     let chaseVehicleId = null;
+    let chaseTargetId = null;       // ★ 新增：統一的目標 ID
+    let chaseTargetType = null;     // ★ 新增：'vehicle' 或是 'pedestrian'
     let chaseRaycaster = new THREE.Raycaster();
     let chasePointerNdc = new THREE.Vector2();
     let chaseSmoothedPos = new THREE.Vector3();
@@ -1229,9 +1231,10 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function startChaseMode(vehicleId, options = {}) {
-        if (!vehicleId) return;
-        const { force3D = true } = options;
+    function startChaseMode(targetId, options = {}) {
+        if (!targetId) return;
+        const { force3D = true, type = 'vehicle' } = options;
+
         if (force3D && !isDisplay3D) {
             setViewMode('3D');
         }
@@ -1240,7 +1243,12 @@ document.addEventListener('DOMContentLoaded', () => {
             setFlyoverMode(false);
         }
         isChaseActive = true;
-        chaseVehicleId = vehicleId;
+
+        // 賦值
+        chaseTargetId = targetId;
+        chaseTargetType = type;
+        chaseVehicleId = (type === 'vehicle') ? targetId : null; // 相容2D的車速標籤
+
         chaseIsFirstFrame = true;
         if (force3D || isDisplay3D) {
             if (controls) controls.enabled = false;
@@ -1251,6 +1259,8 @@ document.addEventListener('DOMContentLoaded', () => {
     function stopChaseMode() {
         isChaseActive = false;
         chaseVehicleId = null;
+        chaseTargetId = null;
+        chaseTargetType = null;
         chaseIsFirstFrame = true;
         if (controls) {
             controls.enabled = true;
@@ -1259,55 +1269,75 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function updateChaseCamera() {
-        if (!isChaseActive || !camera || !simulation || !chaseVehicleId) return;
+        if (!isChaseActive || !camera || !simulation || !chaseTargetId) return;
 
-        // 1. 取得目標車輛
-        const v = simulation.vehicles.find(vv => vv.id === chaseVehicleId);
+        // ==========================================
+        // 1. 行人視角邏輯 (越肩視角)
+        // ==========================================
+        if (chaseTargetType === 'pedestrian') {
+            const p = simulation.pedManager.pedestrians.find(pp => pp.id === chaseTargetId);
+            if (!p || p.state === 'FINISHED') {
+                stopChaseMode(); // 行人走完消失，解除追蹤
+                return;
+            }
+
+            const fx = Math.cos(p.angle);
+            const fz = Math.sin(p.angle);
+
+            const eyeHeight = p.height || 1.7; // 依據行人的實際身高設定視角高度
+            const pedForwardOffset = -1.5;     // 攝影機在行人後方 1.5 公尺
+            const pedLookAhead = 10.0;         // 視線看向前方 10 公尺
+
+            const desiredPos = new THREE.Vector3(
+                p.x + fx * pedForwardOffset,
+                eyeHeight + 0.2, // 略高於頭頂
+                p.y + fz * pedForwardOffset
+            );
+
+            const desiredLookAt = new THREE.Vector3(
+                p.x + fx * pedLookAhead,
+                eyeHeight,
+                p.y + fz * pedLookAhead
+            );
+
+            camera.position.copy(desiredPos);
+            camera.lookAt(desiredLookAt);
+            
+            // 同步避免切換時跳動
+            chaseSmoothedPos.copy(desiredPos);
+            chaseSmoothedLookAt.copy(desiredLookAt);
+            return;
+        }
+
+        // ==========================================
+        // 2. 原有的車輛視角邏輯
+        // ==========================================
+        const v = simulation.vehicles.find(vv => vv.id === chaseTargetId);
         if (!v) {
             stopChaseMode();
             return;
         }
 
-        // 2. 計算目標位置
         const fx = Math.cos(v.angle);
         const fz = Math.sin(v.angle);
 
-        // 參數：chaseForwardOffset (相機在車身後方多少), chaseLookAhead (看向車身前方多少)
-        // 注意：這裡使用 v.angle 計算出的向量是車頭方向
-        // 若要相機在「車後」，應該是減去方向向量；若要「車頂/車頭視角」，則調整參數
-        // 假設 chaseForwardOffset 是正值且放在 Vector3 計算中代表 offset
-        // 原始邏輯：
-        // desiredPos = v + forward * chaseForwardOffset
-        // desiredLookAt = v + forward * chaseLookAhead
-
-        // *修正建議*：為了讓視角更穩定，我們直接計算剛性位置
         const desiredPos = new THREE.Vector3(
             v.x + fx * chaseForwardOffset,
-            chaseEyeHeight, // 高度
+            chaseEyeHeight,
             v.y + fz * chaseForwardOffset
         );
 
         const desiredLookAt = new THREE.Vector3(
             v.x + fx * chaseLookAhead,
-            chaseEyeHeight, // 視線高度通常與相機等高或略低
+            chaseEyeHeight,
             v.y + fz * chaseLookAhead
         );
 
-        // --- [關鍵修改] 移除 Lerp 插值，消除殘影 ---
-
-        // 方案 A: 完全剛性鎖定 (最穩定，無殘影)
         camera.position.copy(desiredPos);
         camera.lookAt(desiredLookAt);
 
-        // 同步更新平滑變數，以免未來切換模式時跳動
         chaseSmoothedPos.copy(desiredPos);
         chaseSmoothedLookAt.copy(desiredLookAt);
-
-        /* 
-        // 方案 B (備選): 如果您堅持要有一點點慣性，請將 Lerp 係數提高到 0.8 以上，
-        // 並針對 LookAt 使用更強的鎖定，只讓 Position 有微小延遲。
-        // 但為了精準模擬，強烈建議使用上方的方案 A。
-        */
     }
 
     function handle3DVehiclePick(e) {
@@ -1321,21 +1351,46 @@ document.addEventListener('DOMContentLoaded', () => {
         chasePointerNdc.y = -(((e.clientY - rect.top) / rect.height) * 2 - 1);
 
         chaseRaycaster.setFromCamera(chasePointerNdc, camera);
+
+        // 收集所有可點擊的根物件 (包含車輛群組與行人群組)
         const roots = Array.from(vehicleMeshes.values());
+        if (simulation && simulation.pedManager && simulation.pedManager.group3D) {
+            roots.push(...simulation.pedManager.group3D.children);
+        }
+
         if (roots.length === 0) return;
         const hits = chaseRaycaster.intersectObjects(roots, true);
         if (hits.length === 0) return;
-        const hitObj = hits[0].object;
-        const vehicleId = hitObj?.userData?.vehicleId;
-        if (!vehicleId) return;
 
-        // 新增邏輯
-        if (driveToggle && driveToggle.checked) {
-            if (driveController) driveController.setTarget(vehicleId);
+        // 向上尋找 userData (因為點到的可能是手腳、車輪等子網格)
+        let hitObj = hits[0].object;
+        let targetId = null;
+        let targetType = null;
+
+        while (hitObj) {
+            if (hitObj.userData?.vehicleId) {
+                targetId = hitObj.userData.vehicleId;
+                targetType = 'vehicle';
+                break;
+            }
+            if (hitObj.userData?.pedestrianId) {
+                targetId = hitObj.userData.pedestrianId;
+                targetType = 'pedestrian';
+                break;
+            }
+            hitObj = hitObj.parent;
+        }
+
+        if (!targetId) return;
+
+        // 如果在駕駛模式下點到車輛，交由駕駛控制器處理
+        if (driveToggle && driveToggle.checked && targetType === 'vehicle') {
+            if (driveController) driveController.setTarget(targetId);
             return;
         }
 
-        startChaseMode(vehicleId);
+        // 啟動追蹤模式，並傳入目標類型
+        startChaseMode(targetId, { force3D: true, type: targetType });
     }
 
 

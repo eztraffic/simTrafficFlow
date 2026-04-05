@@ -13,13 +13,13 @@ class Pedestrian {
         this.id = id;
         this.spawner = spawner;
         this.network = spawner.network;
-        this.crosswalks = [crosswalk]; 
+        this.crosswalks = [crosswalk];
         this.currentCrosswalkIndex = 0;
         this.crossTwice = crossTwice;
 
         // 屬性設定
         this.isMale = Math.random() > 0.5;
-        this.height = randNormal(1.4, 1.9); 
+        this.height = randNormal(1.4, 1.9);
         this.baseSpeed = Math.random() > 0.2 ? 1.2 : 0.9; // 稍微提升步速
         this.speed = this.baseSpeed;
 
@@ -34,7 +34,7 @@ class Pedestrian {
         this.midPoint = this.pathLength / 2;
 
         this.mesh = null;
-        this.walkCycle = Math.random() * Math.PI * 2; 
+        this.walkCycle = Math.random() * Math.PI * 2;
     }
 
     setupPath(p1, p2) {
@@ -59,9 +59,9 @@ class Pedestrian {
         if (this.state === 'FINISHED') return;
 
         const cw = this.crosswalks[this.currentCrosswalkIndex];
-        let signal = 'Green'; 
+        let signal = 'Green';
         let remainingTime = 999; // 預設充裕時間
-        
+
         if (tfl && cw.turnGroupId) {
             signal = tfl.getSignalForTurnGroup(cw.turnGroupId);
             // 獲取該時相剩餘綠燈/黃燈秒數
@@ -113,20 +113,20 @@ class Pedestrian {
                 const distFwd = other.distanceTraveled - this.distanceTraveled;
                 const distLat = Math.abs(other.lateralOffset - this.lateralOffset);
                 if (distFwd > 0 && distFwd < 0.6 && distLat < 0.4) {
-                    actualSpeed = Math.min(actualSpeed, other.speed * 0.9); 
+                    actualSpeed = Math.min(actualSpeed, other.speed * 0.9);
                 }
             }
 
             // 移動
             this.distanceTraveled += actualSpeed * dt;
-            this.walkCycle += actualSpeed * dt * 5.0; 
+            this.walkCycle += actualSpeed * dt * 5.0;
 
             // ★★★ 抵達檢測 ★★★
             if (targetDistance === this.midPoint && this.distanceTraveled >= this.midPoint) {
                 // 剛好走到中央庇護島
                 this.distanceTraveled = this.midPoint; // 釘在庇護島上
                 this.state = 'WAITING_AT_ISLAND';      // 切換狀態等待
-            } 
+            }
             else if (this.distanceTraveled >= this.pathLength) {
                 // 走完全程
                 this.handleEndOfCrosswalk();
@@ -267,8 +267,8 @@ class PedestrianSimManager {
                         // ★ 新增：判斷此斑馬線是否有植栽庇護島
                         let hasRefuge = false;
                         if (mark.spanToLinkId && this.network.medians) {
-                            const median = this.network.medians.find(m => 
-                                (m.l1Id === mark.linkId && m.l2Id === mark.spanToLinkId) || 
+                            const median = this.network.medians.find(m =>
+                                (m.l1Id === mark.linkId && m.l2Id === mark.spanToLinkId) ||
                                 (m.l1Id === mark.spanToLinkId && m.l2Id === mark.linkId)
                             );
                             if (median && median.gapWidth > 1.2) {
@@ -277,15 +277,16 @@ class PedestrianSimManager {
                         }
 
                         // ★ 標記這是一般斑馬線，並傳入 hasRefuge 狀態
-                        cws.push({ 
-                            id: mark.id, 
-                            p1: lineData.p1, 
-                            p2: lineData.p2, 
-                            width: lineData.width, 
-                            turnGroupId: turnGroupId, 
+                        cws.push({
+                            id: mark.id,
+                            p1: lineData.p1,
+                            p2: lineData.p2,
+                            width: lineData.width,
+                            turnGroupId: turnGroupId,
                             isDiagonal: false,
                             hasRefuge: hasRefuge // ★ 新增參數
-                        });                    }
+                        });
+                    }
                 }
             }
             // 讀取對角線資料給行人使用
@@ -295,7 +296,7 @@ class PedestrianSimManager {
                     id: mark.id + '_1',
                     p1: mark.corners[0],
                     p2: mark.corners[2],
-                    width: 4.0, 
+                    width: 4.0,
                     turnGroupId: mark.signalGroupId,
                     isDiagonal: true
                 });
@@ -303,7 +304,7 @@ class PedestrianSimManager {
                     id: mark.id + '_2',
                     p1: mark.corners[1],
                     p2: mark.corners[3],
-                    width: 4.0, 
+                    width: 4.0,
                     turnGroupId: mark.signalGroupId,
                     isDiagonal: true
                 });
@@ -318,14 +319,14 @@ class PedestrianSimManager {
             sp.timer += dt;
             if (sp.timer >= sp.interval) {
                 sp.timer -= sp.interval;
-                
+
                 const rand = Math.random() * 100;
                 let crossTwice = rand > sp.crossOnceProb && rand <= (sp.crossOnceProb + sp.crossTwiceProb);
 
                 let cw;
                 if (crossTwice && sp.diagonals && sp.diagonals.length > 0) {
                     cw = sp.diagonals[Math.floor(Math.random() * sp.diagonals.length)];
-                    crossTwice = false; 
+                    crossTwice = false;
                 } else {
                     cw = sp.crosswalks[Math.floor(Math.random() * sp.crosswalks.length)];
                 }
@@ -341,11 +342,11 @@ class PedestrianSimManager {
         // 2. 處理移動與狀態
         this.pedestrians.forEach(ped => {
             const tfl = this.simulation.trafficLights.find(t => t.nodeId === ped.spawner.nodeId);
-            
+
             // ★ 修改：傳入 this.simulation.time 以供計算剩餘秒數
-            ped.update(dt, tfl, this.pedestrians, this.simulation.time); 
-            
-            this.update3DMesh(ped); 
+            ped.update(dt, tfl, this.pedestrians, this.simulation.time);
+
+            this.update3DMesh(ped);
         });
 
         // 3. 清理已完成的行人
@@ -376,12 +377,14 @@ class PedestrianSimManager {
     }
 
     // --- 簡單的 3D 生成與動畫 ---
-    // --- 簡單的 3D 生成與動畫 ---
     update3DMesh(ped) {
         if (!this.group3D) return;
 
         if (!ped.mesh) {
             ped.mesh = new THREE.Group();
+
+            // ★★★ 新增這行：為行人模型綁定 ID，讓點擊射線能辨識 ★★★
+            ped.mesh.userData.pedestrianId = ped.id;
 
             // 基礎顏色
             const shirtColor = ped.isMale ? 0x3b82f6 : 0xec4899;
