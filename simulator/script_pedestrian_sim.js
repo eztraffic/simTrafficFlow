@@ -29,9 +29,8 @@ class Pedestrian {
         this.state = 'WAITING'; // WAITING, CROSSING, WAITING_AT_ISLAND, FINISHED
         this.setupPath(startPoint, endPoint);
 
-        // ★★★ 修正：判斷這條斑馬線是否夠長，是否有中央庇護島 ★★★
-        // 如果是對角線行穿線 (isDiagonal)，則不管多長都「不」具備庇護島，必須一次走完
-        this.hasRefuge = this.pathLength > 12 && !crosswalk.isDiagonal;
+        // ★★★ 修正：只有當該斑馬線具備植栽庇護島，且非對角線時，才允許中途停留 ★★★
+        this.hasRefuge = crosswalk.hasRefuge && !crosswalk.isDiagonal;
         this.midPoint = this.pathLength / 2;
 
         this.mesh = null;
@@ -265,9 +264,28 @@ class PedestrianSimManager {
                                 }
                             }
                         }
-                        // ★ 標記這是一般斑馬線 (isDiagonal: false)
-                        cws.push({ id: mark.id, p1: lineData.p1, p2: lineData.p2, width: lineData.width, turnGroupId: turnGroupId, isDiagonal: false });
-                    }
+                        // ★ 新增：判斷此斑馬線是否有植栽庇護島
+                        let hasRefuge = false;
+                        if (mark.spanToLinkId && this.network.medians) {
+                            const median = this.network.medians.find(m => 
+                                (m.l1Id === mark.linkId && m.l2Id === mark.spanToLinkId) || 
+                                (m.l1Id === mark.spanToLinkId && m.l2Id === mark.linkId)
+                            );
+                            if (median && median.gapWidth > 1.2) {
+                                hasRefuge = true;
+                            }
+                        }
+
+                        // ★ 標記這是一般斑馬線，並傳入 hasRefuge 狀態
+                        cws.push({ 
+                            id: mark.id, 
+                            p1: lineData.p1, 
+                            p2: lineData.p2, 
+                            width: lineData.width, 
+                            turnGroupId: turnGroupId, 
+                            isDiagonal: false,
+                            hasRefuge: hasRefuge // ★ 新增參數
+                        });                    }
                 }
             }
             // 讀取對角線資料給行人使用

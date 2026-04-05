@@ -3271,9 +3271,21 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
 
                         // =========================================================
-                        // ★★★ [修正] 圓弧庇護島頭與朝外標誌 ★★★
+                        // ★★★ [修正] 圓弧庇護島頭與朝外標誌 (僅限植栽帶) ★★★
                         // =========================================================
-                        if (mk.spanToLinkId || dist > 12) {
+                        let hasPlantedMedian = false;
+                        if (mk.spanToLinkId && netData.medians) {
+                            const median = netData.medians.find(m =>
+                                (m.l1Id === mk.linkId && m.l2Id === mk.spanToLinkId) ||
+                                (m.l1Id === mk.spanToLinkId && m.l2Id === mk.linkId)
+                            );
+                            // 只有間距 > 1.2 (植栽帶) 才產生庇護島
+                            if (median && median.gapWidth > 1.2) {
+                                hasPlantedMedian = true;
+                            }
+                        }
+
+                        if (hasPlantedMedian) {
                             // 動態生成黃黑斜紋材質 (島頭邊緣)
                             if (!window.chevronMaterial) {
                                 const cvs = document.createElement('canvas'); cvs.width = 256; cvs.height = 256;
@@ -3634,7 +3646,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     const mGeom = new THREE.ShapeGeometry(mShape);
                     mGeom.rotateX(-Math.PI / 2);
 
-if (gapWidth > 1.2) {
+                    if (gapWidth > 1.2) {
                         // 1. 植栽帶 (綠色並有厚度)
                         const grassMat = new THREE.MeshStandardMaterial({ color: 0x2d4c1e, roughness: 0.9 });
                         const extrudeSettings = { depth: 0.25, bevelEnabled: false };
@@ -3648,7 +3660,7 @@ if (gapWidth > 1.2) {
                     } else if (gapWidth >= 0.4 && gapWidth <= 1.2) {
                         // 2. 黃黑斜紋槽化線
                         if (!window.medianChevronMat) {
-                            const cvs = document.createElement('canvas'); 
+                            const cvs = document.createElement('canvas');
                             cvs.width = 512; cvs.height = 512;
                             const ctx = cvs.getContext('2d');
                             ctx.fillStyle = '#111111'; // 黑灰底色
@@ -3657,14 +3669,14 @@ if (gapWidth > 1.2) {
                             ctx.beginPath();
                             // ★ 修正：從右上畫到左下 (/)
                             for (let i = 0; i < 1024; i += 64) {
-                                ctx.moveTo(i, 0); 
-                                ctx.lineTo(i - 512, 512); 
-                                ctx.lineTo(i - 512 + 32, 512); 
+                                ctx.moveTo(i, 0);
+                                ctx.lineTo(i - 512, 512);
+                                ctx.lineTo(i - 512 + 32, 512);
                                 ctx.lineTo(i + 32, 0);
                             }
                             ctx.fill();
                             const tex = new THREE.CanvasTexture(cvs);
-                            tex.wrapS = THREE.RepeatWrapping; 
+                            tex.wrapS = THREE.RepeatWrapping;
                             tex.wrapT = THREE.RepeatWrapping;
                             window.medianChevronMat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.8 });
                         }
@@ -3683,7 +3695,7 @@ if (gapWidth > 1.2) {
                     } else if (gapWidth >= 0.1 && gapWidth < 0.4) {
                         // 3. 雙黃線區域 (只畫兩條邊緣線)
                         const yellowLineMat = new THREE.LineBasicMaterial({ color: 0xffcc00, linewidth: 2 });
-                        
+
                         // ★ 修正：Z 軸座標應該是 p.y，拿掉錯誤的負號
                         const ptsL1 = shrinkL1.map(p => new THREE.Vector3(p.x, 0.115, p.y));
                         const geoL1 = new THREE.BufferGeometry().setFromPoints(ptsL1);
