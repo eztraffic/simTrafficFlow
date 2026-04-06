@@ -9434,13 +9434,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 const myDestLink = this.currentTransition.destLinkId;
                 const myDestLane = this.currentTransition.destLaneIndex;
                 const myDistToExit = this.currentPathLength - this.distanceOnPath;
+                const myDistFromStart = this.distanceOnPath; // 離開起點的距離
 
                 for (const other of allVehicles) {
                     if (other.id === this.id) continue;
 
                     // 忽略正在待轉區或準備前往待轉區的機車
-                    if (this.twoStageState === 'moving_to_box' ||
-                        other.twoStageState === 'moving_to_box' ||
+                    if (this.twoStageState === 'moving_to_box' || 
+                        other.twoStageState === 'moving_to_box' || 
                         other.twoStageState === 'waiting') {
                         continue;
                     }
@@ -9455,14 +9456,19 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                     // 情況 B：對方也在路口內
                     else if (other.state === 'inIntersection' && other.currentTransition) {
-
+                        
                         const otherDistToExit = other.currentPathLength - other.distanceOnPath;
+                        const otherDistFromStart = other.distanceOnPath;
 
-                        // --- B-0: 同一條軌跡 (Same Transition) ---
-                        // 【防機車穿模關鍵】在彎道內，無視機車的鑽車橫向偏移！只要對方在你前面，一律強制跟車煞車。
-                        if (this.currentTransition.id === other.currentTransition.id) {
-                            if (otherDistToExit < myDistToExit) { // 對方離出口近 (在我前面)
-                                const curveGap = (myDistToExit - otherDistToExit) - (this.length / 2) - (other.length / 2);
+                        // --- B-0: 同軌跡 OR 來自同一個車道 (Shared Origin) ---
+                        // 【修復直行撞轉彎的關鍵】只要我們從同一個車道出來，就算一個要直行、一個要轉彎而分岔，
+                        // 在路口前半段依然是前後車關係。透過「離開起點的距離」來判斷誰在前，後車強制禮讓。
+                        if (this.currentTransition.id === other.currentTransition.id ||
+                            (this.currentTransition.sourceLinkId === other.currentTransition.sourceLinkId &&
+                             this.currentTransition.sourceLaneIndex === other.currentTransition.sourceLaneIndex)) {
+                            
+                            if (otherDistFromStart > myDistFromStart) { // 對方進度比我多 (在我前面)
+                                const curveGap = (otherDistFromStart - myDistFromStart) - (this.length / 2) - (other.length / 2);
                                 if (curveGap > -1.0 && curveGap < gap) {
                                     gap = Math.max(0.1, curveGap);
                                     leader = other;
@@ -9471,7 +9477,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
                         // --- B-1: 匯流 (Merge) - 不同軌跡但同目的地 ---
                         else if (other.currentTransition.destLinkId === myDestLink &&
-                            other.currentTransition.destLaneIndex === myDestLane) {
+                                 other.currentTransition.destLaneIndex === myDestLane) {
                             if (otherDistToExit < myDistToExit) {
                                 const mergeGap = (myDistToExit - otherDistToExit) - (this.length / 2) - (other.length / 2);
                                 if (mergeGap > -1.0 && mergeGap < gap) {
@@ -9482,14 +9488,14 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
                         // --- B-2: 交叉衝突 (Crossing) - X型拓樸衝突 ---
                         else if (this.currentTransition.conflictingTransitionIds &&
-                            this.currentTransition.conflictingTransitionIds.includes(other.currentTransition.id)) {
+                                 this.currentTransition.conflictingTransitionIds.includes(other.currentTransition.id)) {
 
                             const myProgress = this.distanceOnPath / this.currentPathLength;
                             const otherProgress = other.distanceOnPath / other.currentPathLength;
-
+                            
                             let myScore = myProgress + (this.speed * 0.05);
                             let otherScore = otherProgress + (other.speed * 0.05);
-
+                            
                             if (Math.abs(myScore - otherScore) < 0.01) {
                                 myScore += (this.id > other.id ? 0.01 : -0.01);
                             }
@@ -9509,21 +9515,29 @@ document.addEventListener('DOMContentLoaded', () => {
                                 }
                             }
                         }
-                        // --- B-3: 平行轉彎側撞防護 (Parallel Sweeping Failsafe) ---
-                        // 【防機車穿模關鍵】若兩車「非交叉」也「非同軌跡」(例如相鄰車道同時左轉)，
-                        // 但物理上靠得太近(內輪差吃到空間)，且其中一台是機車時，落後者強迫減速。
-                        else if (this.isMotorcycle || other.isMotorcycle) {
-                            const distSq = (this.x - other.x) ** 2 + (this.y - other.y) ** 2;
+                        // --- B-3: 絕對物理防撞 (Universal Physical Failsafe) ---
+                        // 【修復所有死角的關鍵】不再限定機車！只要任何車輛物理上出現在我車頭極近處，
+                        // 無視以上所有規則，強制踩煞車。解決相鄰車道轉彎時的內外輪差擠壓問題。
+                        else {
+                            const dx = other.x - this.x;
+                            const dy = other.y - this.y;
+                            const distSq = dx * dx + dy * dy;
+
                             // 碰撞半徑：兩車寬度的一半 + 0.5米安全距離
-                            const collisionRadius = (this.width / 2) + (other.width / 2) + 0.5;
+                            const collisionRadius = (this.width / 2) + (other.width / 2) + 0.5; 
+                            
+                            // 只有在極近距離 (約半徑的2倍內，通常 4~6米) 才啟動，防止誤判對向車
+                            if (distSq < collisionRadius * collisionRadius * 4.0) { 
+                                const dist = Math.sqrt(distSq);
+                                
+                                // 利用向量內積判斷對方是否在我「正前方」
+                                const cos = Math.cos(this.angle);
+                                const sin = Math.sin(this.angle);
+                                const fwdDist = dx * cos + dy * sin;            // 縱向距離
+                                const sideDist = Math.abs(-dx * sin + dy * cos); // 橫向偏差
 
-                            if (distSq < collisionRadius * collisionRadius * 4.0) { // 兩倍半徑內警戒
-                                const myProgress = this.distanceOnPath / this.currentPathLength;
-                                const otherProgress = other.distanceOnPath / other.currentPathLength;
-
-                                // 誰在彎道中進度落後，誰就踩煞車 (禮讓內輪差)
-                                if (myProgress < otherProgress) {
-                                    const dist = Math.sqrt(distSq);
+                                // 如果對方確實在前方，且橫向有重疊 (擋住去路)
+                                if (fwdDist > 0 && sideDist < collisionRadius) {
                                     const proxGap = Math.max(0.1, dist - collisionRadius);
                                     if (proxGap < gap) {
                                         gap = proxGap;
