@@ -1302,7 +1302,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             camera.position.copy(desiredPos);
             camera.lookAt(desiredLookAt);
-            
+
             // 同步避免切換時跳動
             chaseSmoothedPos.copy(desiredPos);
             chaseSmoothedLookAt.copy(desiredLookAt);
@@ -9427,24 +9427,109 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
                     }
                 }
+                // =========================================================
+                // [終極版] 路口內貝茲曲線防穿模與匯流/交叉邏輯
+                // =========================================================
             } else if (this.state === 'inIntersection' && this.currentTransition) {
-                const targetDestLinkId = this.currentTransition.destLinkId;
-                const targetDestLaneIndex = this.currentTransition.destLaneIndex;
+                const myDestLink = this.currentTransition.destLinkId;
+                const myDestLane = this.currentTransition.destLaneIndex;
+                const myDistToExit = this.currentPathLength - this.distanceOnPath;
 
                 for (const other of allVehicles) {
                     if (other.id === this.id) continue;
-                    if (this.twoStageState === 'moving_to_box') {
-                        if (other.twoStageState === 'moving_to_box' || other.twoStageState === 'waiting') {
-                            continue;
+
+                    // 忽略正在待轉區或準備前往待轉區的機車
+                    if (this.twoStageState === 'moving_to_box' ||
+                        other.twoStageState === 'moving_to_box' ||
+                        other.twoStageState === 'waiting') {
+                        continue;
+                    }
+
+                    // 情況 A：對方已經駛出路口，在我的「目標車道」上
+                    if (other.state === 'onLink' && other.currentLinkId === myDestLink && other.currentLaneIndex === myDestLane) {
+                        const lookaheadGap = myDistToExit + other.distanceOnPath - (this.length / 2) - (other.length / 2);
+                        if (lookaheadGap > -1.0 && lookaheadGap < gap) {
+                            gap = Math.max(0.1, lookaheadGap);
+                            leader = other;
                         }
                     }
-                    if (other.state === 'onLink' && other.currentLinkId === targetDestLinkId && other.currentLaneIndex === targetDestLaneIndex) {
-                        if (isBlocking(other)) {
-                            // 路口內預判間距修正
-                            const lookaheadGap = (distanceToEndOfCurrentPath + other.distanceOnPath) - (this.length / 2) - (other.length / 2);
-                            if (lookaheadGap < gap) {
-                                gap = Math.max(0.1, lookaheadGap);
-                                leader = other;
+                    // 情況 B：對方也在路口內
+                    else if (other.state === 'inIntersection' && other.currentTransition) {
+
+                        const otherDistToExit = other.currentPathLength - other.distanceOnPath;
+
+                        // --- B-0: 同一條軌跡 (Same Transition) ---
+                        // 【防機車穿模關鍵】在彎道內，無視機車的鑽車橫向偏移！只要對方在你前面，一律強制跟車煞車。
+                        if (this.currentTransition.id === other.currentTransition.id) {
+                            if (otherDistToExit < myDistToExit) { // 對方離出口近 (在我前面)
+                                const curveGap = (myDistToExit - otherDistToExit) - (this.length / 2) - (other.length / 2);
+                                if (curveGap > -1.0 && curveGap < gap) {
+                                    gap = Math.max(0.1, curveGap);
+                                    leader = other;
+                                }
+                            }
+                        }
+                        // --- B-1: 匯流 (Merge) - 不同軌跡但同目的地 ---
+                        else if (other.currentTransition.destLinkId === myDestLink &&
+                            other.currentTransition.destLaneIndex === myDestLane) {
+                            if (otherDistToExit < myDistToExit) {
+                                const mergeGap = (myDistToExit - otherDistToExit) - (this.length / 2) - (other.length / 2);
+                                if (mergeGap > -1.0 && mergeGap < gap) {
+                                    gap = Math.max(0.1, mergeGap);
+                                    leader = other;
+                                }
+                            }
+                        }
+                        // --- B-2: 交叉衝突 (Crossing) - X型拓樸衝突 ---
+                        else if (this.currentTransition.conflictingTransitionIds &&
+                            this.currentTransition.conflictingTransitionIds.includes(other.currentTransition.id)) {
+
+                            const myProgress = this.distanceOnPath / this.currentPathLength;
+                            const otherProgress = other.distanceOnPath / other.currentPathLength;
+
+                            let myScore = myProgress + (this.speed * 0.05);
+                            let otherScore = otherProgress + (other.speed * 0.05);
+
+                            if (Math.abs(myScore - otherScore) < 0.01) {
+                                myScore += (this.id > other.id ? 0.01 : -0.01);
+                            }
+
+                            if (myScore < otherScore) {
+                                const distSq = (this.x - other.x) ** 2 + (this.y - other.y) ** 2;
+                                if (distSq < 225) {
+                                    const dist = Math.sqrt(distSq);
+                                    const safeRadius = (this.length / 2) + Math.max(other.width, other.length) / 2 + 0.8;
+                                    if (dist < safeRadius + 6.0) {
+                                        const crossGap = Math.max(0.1, dist - safeRadius);
+                                        if (crossGap < gap) {
+                                            gap = crossGap;
+                                            leader = other;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        // --- B-3: 平行轉彎側撞防護 (Parallel Sweeping Failsafe) ---
+                        // 【防機車穿模關鍵】若兩車「非交叉」也「非同軌跡」(例如相鄰車道同時左轉)，
+                        // 但物理上靠得太近(內輪差吃到空間)，且其中一台是機車時，落後者強迫減速。
+                        else if (this.isMotorcycle || other.isMotorcycle) {
+                            const distSq = (this.x - other.x) ** 2 + (this.y - other.y) ** 2;
+                            // 碰撞半徑：兩車寬度的一半 + 0.5米安全距離
+                            const collisionRadius = (this.width / 2) + (other.width / 2) + 0.5;
+
+                            if (distSq < collisionRadius * collisionRadius * 4.0) { // 兩倍半徑內警戒
+                                const myProgress = this.distanceOnPath / this.currentPathLength;
+                                const otherProgress = other.distanceOnPath / other.currentPathLength;
+
+                                // 誰在彎道中進度落後，誰就踩煞車 (禮讓內輪差)
+                                if (myProgress < otherProgress) {
+                                    const dist = Math.sqrt(distSq);
+                                    const proxGap = Math.max(0.1, dist - collisionRadius);
+                                    if (proxGap < gap) {
+                                        gap = proxGap;
+                                        leader = other;
+                                    }
+                                }
                             }
                         }
                     }
@@ -9652,981 +9737,176 @@ document.addEventListener('DOMContentLoaded', () => {
             return minVirtualGap;
         }
 
+        detectIntersectionConflict(allVehicles, network) {
+            const EPS = 1e-6;
 
-detectIntersectionConflict_A(allVehicles, network) {
-  // 1) 非在路口/道路上則不預測交會：返回「不干擾」的大值
-  if (this.state !== 'inIntersection' && this.state !== 'onLink') return Infinity;
+            if (this.state !== 'inIntersection' && this.state !== 'onLink') return Infinity;
 
-  const distToEnd = this.currentPathLength - this.distanceOnPath;
+            const distToEnd = this.currentPathLength - this.distanceOnPath;
+            if (this.state === 'onLink' && distToEnd > 30) return Infinity;
 
-  // 提早預判距離（30m）：確保高速車能正常煞停在停止線，而不是衝入路口被懲罰
-  if (this.state === 'onLink' && distToEnd > 30) return Infinity;
+            let minGap = Infinity;
 
-  let minGap = Infinity;
+            const sigmoid = (x) => 1 / (1 + Math.exp(-x));
 
-  // 速度朝向向量（用於決定前方干擾相對位置）
-  const cos = Math.cos(this.angle);
-  const sin = Math.sin(this.angle);
-
-  // 2) 取得我即將進入/正在行駛的路徑 (myTrans)：找到當前或下一個 transition（決定轉彎型態）
-  let myTrans = this.currentTransition;
-  if (this.state === 'onLink') {
-    const currentLink = network.links[this.currentLinkId];
-    if (currentLink && this.route.length > this.currentLinkIndex + 1) {
-      const destNode = network.nodes[currentLink.destination];
-      const nextLinkId = this.route[this.currentLinkIndex + 1];
-
-      // 考慮車道變換（若正在換道，優先用目標車道查找合法匝道）
-      let checkLane = this.currentLaneIndex;
-      if (this.laneChangeState && this.laneChangeState.progress > 0.5) {
-        checkLane = this.laneChangeState.toLaneIndex;
-      }
-
-      if (destNode) {
-        // 優先查找“來源link + 來源lane + 目的link”完全匹配，若找不到再退回到不限定 lane（兩段式機車、開放路口）
-        myTrans = destNode.transitions.find(
-          t => t.sourceLinkId === this.currentLinkId &&
-               t.sourceLaneIndex === checkLane &&
-               t.destLinkId === nextLinkId
-        ) || destNode.transitions.find(
-          t => t.sourceLinkId === this.currentLinkId &&
-               t.destLinkId === nextLinkId
-        );
-      }
-    }
-  }
-
-  // 3) 轉彎方向偵測（Canvas Y-Down 座標系）：用 Bezier 兩端切線判斷 left/straight/right
-  const getTurnType = (trans) => {
-    if (!trans || !trans.bezier || trans.bezier.points.length < 4) return 'straight';
-    const pts = trans.bezier.points;
-    const aStart = Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x);
-    const aEnd = Math.atan2(pts[3].y - pts[2].y, pts[3].x - pts[2].x);
-    let diff = aEnd - aStart;
-    while (diff <= -Math.PI) diff += Math.PI * 2;
-    while (diff > Math.PI) diff -= Math.PI * 2;
-
-    if (diff < -0.15) return 'left';
-    if (diff > 0.15) return 'right';
-    return 'straight';
-  };
-  const myTurnType = getTurnType(myTrans);
-
-  // 執行進度（用於「已轉大半」等路權邏輯）：避免 division by zero 和抖動
-  const myProgress = this.distanceOnPath / Math.max(0.1, this.currentPathLength);
-
-  // 我的 (半徑+緩衝) 作為碰撞基準
-  const myRadius = Math.max(this.width, this.length) / 2;
-  const mySafeBuffer = 0.4; // 物理緩衝（與擬真 B-Box 判定一致）
-
-  // 4) 與所有其他車輛進行預測檢查（以最嚴格但平順的安全為優先）
-  for (const other of allVehicles) {
-    // 排除自己；排除不在路口/道路上的車（因為它們不會構成切入交會）
-    if (other.id === this.id) continue;
-    if (other.state !== 'inIntersection' && other.state !== 'onLink') continue;
-
-    // 排除同一條路段前方的車輛（前車跟隨由 IDM 完成；路口控制專注於交會與路權）
-    if (this.state === 'onLink' && other.state === 'onLink' && this.currentLinkId === other.currentLinkId) continue;
-
-    // 排除同軌跡轉彎車（在路口與同一 transition 的車不計衝突，避免雙向互煞）
-    if (this.state === 'inIntersection' && myTrans && other.currentTransition && myTrans.id === other.currentTransition.id) continue;
-
-    // 排除二段式轉彎車（如機車待轉區、等待事件態）—這些車暫不在公用轉彎軌道爭奪主路權
-    if (other.twoStageState && other.twoStageState !== 'none') continue;
-
-    // 早期粗篩：距離平方過大（>30m）則不檢查
-    const dx = other.x - this.x;
-    const dy = other.y - this.y;
-    const distSq = dx * dx + dy * dy;
-    if (distSq > 900) continue;
-
-    const otherRadius = Math.max(other.width, other.length) / 2;
-    let safeDist = myRadius + otherRadius + mySafeBuffer;
-
-    // 5) 軌跡交會判定（核心安全濾網）
-    let pathsConflict = false;
-    const otherTurnType = getTurnType(other.currentTransition);
-
-    // (a) 使用預計算的交會表（network/transition.conflictingTransitionIds）
-    //    最可靠：如果已建表，包含衝突 transition id 即視為確定交會
-    if (myTrans && other.currentTransition && myTrans.conflictingTransitionIds) {
-      if (myTrans.conflictingTransitionIds.includes(other.currentTransition.id)) {
-        pathsConflict = true;
-      }
-    }
-
-    // (b) 補網：對向直行 vs 左轉（對向源 link 不同，且轉彎型態不同時更易交會）
-    if (!pathsConflict && myTrans && other.currentTransition) {
-      const mySrc = myTrans.sourceLinkId;
-      const otherSrc = other.currentTransition.sourceLinkId;
-      if (mySrc !== otherSrc && myTurnType !== otherTurnType) {
-        pathsConflict = true;
-      }
-    }
-
-    // (c) 物理極度靠近時：不論「已知」交會與否，強制偵測碰撞風險（防止錯誤幾何/動態誤判）
-    if (!pathsConflict && distSq < safeDist * safeDist) {
-      pathsConflict = true;
-    }
-
-    if (!pathsConflict) continue;
-
-    // 6) 真實距離算術（僅做安全比較用途）
-    const distToOther = Math.sqrt(distSq);
-
-    // 前方相對位置判定（fwd >= 0 表示對方在我車前方）：僅用於過濾車尾已遠離的車
-    const fwd = dx * cos + dy * sin;
-    if (fwd < -(this.length / 2) - otherRadius - mySafeBuffer) continue;
-
-    // 對方進度（用於路口內優先權/脫困決策）
-    const otherProgress = other.distanceOnPath / Math.max(0.1, other.currentPathLength);
-
-    // 進入威脅指標（用於判斷何時「不能再等」）
-    const isMeLeftOtherStraight = (myTurnType === 'left' && otherTurnType === 'straight');
-    const isMeStraightOtherLeft = (myTurnType === 'straight' && otherTurnType === 'left');
-    const otherTimeToReach = distToOther / Math.max(other.speed, 0.1);
-    const isOtherApproaching = (other.speed > 2.0 && otherTimeToReach < 8.0);
-    const isOtherVeryClose = (distToOther < 30.0 && other.speed > 0.5);
-
-    // 7) ★ 絕對路權判定 + 死結破局策略 ★
-    let shouldYield = false;
-    const deadlockRisk = (distSq < 400 && this.speed < 2.0 && other.speed < 2.0); // < 20m 且雙方都慢 (< 2.0 m/s)
-
-    if (deadlockRisk) {
-      // 死結時放寬安全距離：到擴大到可容忍的穿模前提，但仍保護其他狀況
-      safeDist = myRadius + otherRadius - 1.0;
-
-      // “核心脫困”：如果對方卡在路口內幾乎不動，為了車流穩態，暫時不讓它阻塞我（此處破局，不會完全放棄其他正當策略）
-      if (other.state === 'inIntersection' && other.speed < 0.5) {
-        continue; // 我無視它直接進（其他車同樣會再判斷）
-      }
-
-      // 處理我 vs 對方不同狀態的死結切換策略
-      if (this.state === 'inIntersection' && other.state === 'onLink') {
-        continue; // 我在路口內，我先走（我有局部優先）
-      } else if (this.state === 'onLink' && other.state === 'inIntersection') {
-        shouldYield = true; // 我在線外，死守停止線等待路口淨空
-      } else {
-        // 雙方都在線內或都在線外：以 ID 判斷（公平制+破局），如果我 ID 大則直接走（假設相對公平、避免長時間鎖死）
-        shouldYield = (this.id <= other.id); // 大 ID 代表可「不可阻擋」的過渡權（無永恆鎖）
-      }
-    } else {
-      // 正常路權規則（接近現實，包含強制脫困的風險控制）
-
-      // 狀況 A：對方已在路口內，我還在路段上（綠燈路口淨空原則）
-      if (this.state === 'onLink' && other.state === 'inIntersection') {
-        // 保護正在轉彎/在路口的車：對方速度低且進度未近終點時 yield
-        if (other.speed < 2.0 || otherProgress < 0.85) {
-          shouldYield = true;
-        } else {
-          shouldYield = false;
-        }
-      }
-      // 狀況 B：我在路口內，對方在路段上（我已佔有路口）
-      else if (this.state === 'inIntersection' && other.state === 'onLink') {
-        if (isMeLeftOtherStraight) {
-          // 【脫困防撞策略】：如果對向直行車極度靠近且速度高，且我才剛起步（進度 < 50%），考慮讓行以免 T-Bone
-          const isTboneThreat = (distToOther < 20.0 && other.speed > 3.0 && myProgress < 0.5);
-          shouldYield = isTboneThreat; // 否則果斷踩油門清空路口
-        } else {
-          shouldYield = false; // 我有「路口佔有」優先權，繼續清空
-        }
-      }
-      // 狀況 C：雙方都在路口內（求「誰最先完成」 + 转彎優先原則）
-      else if (this.state === 'inIntersection' && other.state === 'inIntersection') {
-        if (isMeStraightOtherLeft) {
-          // 直行 > 左轉：若左轉已轉大半，給通行；否則我繼續
-          shouldYield = (otherProgress > 0.5);
-        } else if (isMeLeftOtherStraight) {
-          // 左轉 v 直行：若我已轉大半，死不退讓；否則慎重讓直行
-          shouldYield = (myProgress <= 0.5);
-        } else {
-          // 其他交會（右轉/右V直/同向等）：以轉換進度比較，或 ID 作為決策錨點
-          if (otherProgress > myProgress + 0.1) shouldYield = true;
-          else if (myProgress > otherProgress + 0.1) shouldYield = false;
-          else shouldYield = (this.id <= other.id);
-        }
-      }
-      // 狀況 D：雙方都在路段上（準備起步爭奪路口）
-      else {
-        if (isMeLeftOtherStraight) {
-          // 左轉 vs 直行：如果對方高速逼近或極度靠近，讓直行車（標準路權）
-          shouldYield = (isOtherApproaching || isOtherVeryClose);
-        } else if (isMeStraightOtherLeft) {
-          shouldYield = false; // 直行絕對不讓左轉
-        } else {
-          // 右轉 vs 其他 / 同向優先化：合理「先來先行」或「右轉讓左/直」
-          if (myTurnType === 'left' && otherTurnType === 'right') shouldYield = true;
-          else if (myTurnType === 'right' && otherTurnType === 'left') shouldYield = false;
-          else if (myTurnType === 'right' && otherTurnType === 'straight') shouldYield = true;
-          else if (myTurnType === 'straight' && otherTurnType === 'right') shouldYield = false;
-          else shouldYield = (this.id <= other.id);
-        }
-      }
-    }
-
-    // 8) 根據 shouldYield 決定最低需要的停車距離 (minGap)
-    if (shouldYield) {
-      // 在 onLink 狀態時，優先以實體停止線對齊（消除末端硬衝、穩定煞車）
-      if (this.state === 'onLink') {
-        let checkLane = this.currentLaneIndex;
-        if (this.laneChangeState && this.laneChangeState.progress > 0.5) {
-          checkLane = this.laneChangeState.toLaneIndex;
-        }
-
-        // 停止線位置（機車 vs 普通車：若有不同停止線配置，會更準確）
-        let stopLinePos;
-        if (this.isMotorcycle) {
-          stopLinePos = network.motoStopLineMap ? network.motoStopLineMap[this.currentLinkId]?.[checkLane] : undefined;
-        } else {
-          stopLinePos = network.stopLineMap ? network.stopLineMap[this.currentLinkId]?.[checkLane] : undefined;
-        }
-
-        // 根據停止線算出我需要停的實際距離（如果沒有配置則回退到路徑長尾）
-        let actualDistToStop;
-        if (stopLinePos !== undefined) {
-          actualDistToStop = stopLinePos - this.distanceOnPath - (this.length / 2);
-        } else {
-          actualDistToStop = distToEnd - (this.length / 2);
-        }
-
-        // 如果實際距離在可接受範圍（> -1.0 可解讀為我還不完全越過停止線）
-        if (actualDistToStop > -1.0) {
-          const stopLineGap = actualDistToStop + this.minGap - 0.5; // this.minGap 是 IDM 的最低車距（取決於駕駛行為），-0.5 是穩定性緩衝
-          minGap = Math.min(minGap, Math.max(0.1, stopLineGap));
-          continue; // 此時我以停止線為安全點，不用真實 other 距離
-        }
-      }
-
-      // 如果我已在路口內，或停止線無法決定（例如下游路徑未知），以真實直線距離作安全間距
-      if (distSq < safeDist * safeDist) {
-        // 直接觸發緊急煞車（最小間距）
-        minGap = Math.min(minGap, 0.1);
-      } else {
-        // **消除轉彎幽靈煞車**：實體距離 - 我車長半徑 - 對方半徑 - 緩衝
-        const virtualGap = Math.max(0.1, distToOther - (this.length / 2) - otherRadius - mySafeBuffer);
-        minGap = Math.min(minGap, virtualGap);
-      }
-    }
-  }
-
-  return minGap;
-}
-
-//openAI
-detectIntersectionConflict_B(allVehicles, network) {
-    const EPS = 1e-6;
-
-    // ===== 基本條件（這裡保留必要 early return，不屬於決策邏輯）=====
-    if (this.state !== 'inIntersection' && this.state !== 'onLink') return Infinity;
-
-    const distToEnd = this.currentPathLength - this.distanceOnPath;
-    if (this.state === 'onLink' && distToEnd > 30) return Infinity;
-
-    let minGap = Infinity;
-
-    const cos = Math.cos(this.angle);
-    const sin = Math.sin(this.angle);
-
-    // ===== Smooth functions =====
-    const sigmoid = (x) => 1 / (1 + Math.exp(-x));
-    const smoothstep = (x, edge0, edge1) => {
-        const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0 + EPS)));
-        return t * t * (3 - 2 * t);
-    };
-    const relu = (x) => Math.max(0, x);
-
-    // ===== 取得 transition =====
-    let myTrans = this.currentTransition;
-    if (this.state === 'onLink') {
-        const currentLink = network.links[this.currentLinkId];
-        if (currentLink && this.route.length > this.currentLinkIndex + 1) {
-            const destNode = network.nodes[currentLink.destination];
-            const nextLinkId = this.route[this.currentLinkIndex + 1];
-
-            let checkLane = this.currentLaneIndex;
-            if (this.laneChangeState && this.laneChangeState.progress > 0.5) {
-                checkLane = this.laneChangeState.toLaneIndex;
+            // =========================================================
+            // 1️⃣ 建立衝突圖（Conflict Graph）
+            // =========================================================
+            const graph = new Map();
+            for (const v of allVehicles) {
+                graph.set(v.id, []);
             }
 
-            if (destNode) {
-                myTrans =
-                    destNode.transitions.find(t =>
-                        t.sourceLinkId === this.currentLinkId &&
-                        t.sourceLaneIndex === checkLane &&
-                        t.destLinkId === nextLinkId
-                    ) ||
-                    destNode.transitions.find(t =>
-                        t.sourceLinkId === this.currentLinkId &&
-                        t.destLinkId === nextLinkId
-                    );
-            }
-        }
-    }
+            for (let i = 0; i < allVehicles.length; i++) {
+                for (let j = i + 1; j < allVehicles.length; j++) {
+                    const a = allVehicles[i];
+                    const b = allVehicles[j];
 
-    const getTurnTypeValue = (trans) => {
-        if (!trans || !trans.bezier || trans.bezier.points.length < 4) return 0;
-        const pts = trans.bezier.points;
-        const aStart = Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x);
-        const aEnd = Math.atan2(pts[3].y - pts[2].y, pts[3].x - pts[2].x);
-        let diff = aEnd - aStart;
-        while (diff <= -Math.PI) diff += Math.PI * 2;
-        while (diff > Math.PI) diff -= Math.PI * 2;
+                    const dx = a.x - b.x;
+                    const dy = a.y - b.y;
+                    const distSq = dx * dx + dy * dy;
 
-        // left:-1, straight:0, right:+1
-        return Math.tanh(diff * 3);
-    };
+                    // 30m 內才建立衝突關係
+                    const near = Math.max(0, 900 - distSq) / 900; // soft version
 
-    const myTurn = getTurnTypeValue(myTrans);
-
-    const myRadius = Math.max(this.width, this.length) / 2;
-    const myProgress = this.distanceOnPath / Math.max(0.1, this.currentPathLength);
-
-    for (const other of allVehicles) {
-        if (other.id === this.id) continue;
-        if (other.state !== 'inIntersection' && other.state !== 'onLink') continue;
-
-        const dx = other.x - this.x;
-        const dy = other.y - this.y;
-        const distSq = dx * dx + dy * dy;
-        if (distSq > 900) continue;
-
-        const dist = Math.sqrt(distSq + EPS);
-
-        const otherRadius = Math.max(other.width, other.length) / 2;
-
-        const fwd = dx * cos + dy * sin;
-
-        // ===== soft 過濾（取代 if continue）=====
-        const behindFactor = sigmoid((fwd + this.length * 0.5 + otherRadius) * 2);
-
-        const otherTurn = getTurnTypeValue(other.currentTransition);
-        const otherProgress = other.distanceOnPath / Math.max(0.1, other.currentPathLength);
-
-        // ===== TTC =====
-        const relSpeed = Math.max(0.1, this.speed + other.speed);
-        const TTC = dist / relSpeed;
-
-        // ===== Conflict strength =====
-        let conflict = 0;
-
-        if (myTrans && other.currentTransition && myTrans.conflictingTransitionIds) {
-            const hit = myTrans.conflictingTransitionIds.includes(other.currentTransition.id) ? 1 : 0;
-            conflict += hit;
-        }
-
-        // 補網（連續化）
-        const turnDiff = Math.abs(myTurn - otherTurn);
-        const srcDiff = (myTrans && other.currentTransition && myTrans.sourceLinkId !== other.currentTransition.sourceLinkId) ? 1 : 0;
-
-        conflict += turnDiff * srcDiff;
-
-        // 距離過近強制 conflict
-        const closeConflict = smoothstep((myRadius + otherRadius) - dist, -1, 1);
-        conflict = Math.max(conflict, closeConflict);
-
-        // ===== Risk =====
-        const ttcRisk = 1 / (TTC + 0.1);
-        const speedRisk = relSpeed * 0.1;
-        const angleRisk = turnDiff;
-
-        // 路權（用 progress 連續化）
-        const priority = (otherProgress - myProgress);
-        const priorityRisk = sigmoid(priority * 5);
-
-        const risk =
-            2.0 * conflict +
-            3.0 * ttcRisk +
-            0.5 * speedRisk +
-            1.5 * angleRisk +
-            2.0 * priorityRisk;
-
-        // ===== yield probability =====
-        const yieldProb = sigmoid(risk - 3.0);
-
-        // ===== gap =====
-        const safeDist = myRadius + otherRadius + 0.4;
-
-        const emergency = smoothstep(safeDist - dist, 0, 2);
-
-        const brakingGap = Math.max(0.1,
-            dist - (this.length / 2) - otherRadius - 0.4
-        );
-
-        const gap =
-            yieldProb * brakingGap +
-            (1 - yieldProb) * Infinity;
-
-        const finalGap =
-            emergency * 0.1 +
-            (1 - emergency) * gap;
-
-        minGap = Math.min(minGap, finalGap * behindFactor + (1 - behindFactor) * Infinity);
-    }
-
-    return minGap;
-}
-
-detectIntersectionConflict_C(allVehicles, network) {
-    const EPS = 1e-6;
-
-    if (this.state !== 'inIntersection' && this.state !== 'onLink') return Infinity;
-
-    const distToEnd = this.currentPathLength - this.distanceOnPath;
-    if (this.state === 'onLink' && distToEnd > 30) return Infinity;
-
-    let minGap = Infinity;
-
-    const cos = Math.cos(this.angle);
-    const sin = Math.sin(this.angle);
-
-    // ===== math utils =====
-    const sigmoid = (x) => 1 / (1 + Math.exp(-x));
-    const smoothstep = (x, e0, e1) => {
-        const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0 + EPS)));
-        return t * t * (3 - 2 * t);
-    };
-
-    // ===== Bezier sampling =====
-    const sampleBezier = (b, t) => {
-        const p = b.points;
-        const x =
-            (1 - t) ** 3 * p[0].x +
-            3 * (1 - t) ** 2 * t * p[1].x +
-            3 * (1 - t) * t ** 2 * p[2].x +
-            t ** 3 * p[3].x;
-
-        const y =
-            (1 - t) ** 3 * p[0].y +
-            3 * (1 - t) ** 2 * t * p[1].y +
-            3 * (1 - t) * t ** 2 * p[2].y +
-            t ** 3 * p[3].y;
-
-        return { x, y };
-    };
-
-    // ===== 找近似交會點 =====
-    const findConflictPoint = (b1, b2) => {
-        let best = null;
-        let minDist = Infinity;
-
-        for (let t1 = 0; t1 <= 1; t1 += 0.1) {
-            const p1 = sampleBezier(b1, t1);
-
-            for (let t2 = 0; t2 <= 1; t2 += 0.1) {
-                const p2 = sampleBezier(b2, t2);
-
-                const dx = p1.x - p2.x;
-                const dy = p1.y - p2.y;
-                const d = dx * dx + dy * dy;
-
-                if (d < minDist) {
-                    minDist = d;
-                    best = { t1, t2 };
+                    if (near > 0) {
+                        graph.get(a.id).push(b.id);
+                        graph.get(b.id).push(a.id);
+                    }
                 }
             }
-        }
 
-        return best;
-    };
+            // =========================================================
+            // 2️⃣ 計算優先權（Priority Score）
+            // =========================================================
+            const priorityMap = new Map();
 
-    const pathDist = (len, t, progress) =>
-        Math.max(0, len * (t - progress));
+            for (const v of allVehicles) {
+                const wait = v.waitTime || 0;
 
-    // ===== transition =====
-    let myTrans = this.currentTransition;
+                const progress = v.distanceOnPath / Math.max(0.1, v.currentPathLength);
 
-    if (this.state === 'onLink') {
-        const currentLink = network.links[this.currentLinkId];
-        if (currentLink && this.route.length > this.currentLinkIndex + 1) {
-            const destNode = network.nodes[currentLink.destination];
-            const nextLinkId = this.route[this.currentLinkIndex + 1];
+                const urgency = 1 - progress;
 
-            let checkLane = this.currentLaneIndex;
-            if (this.laneChangeState && this.laneChangeState.progress > 0.5) {
-                checkLane = this.laneChangeState.toLaneIndex;
+                const speedFactor = v.speed;
+
+                // 可自行調權重
+                const score =
+                    2.0 * wait +
+                    3.0 * urgency +
+                    0.5 * speedFactor;
+
+                priorityMap.set(v.id, score);
             }
 
-            if (destNode) {
-                myTrans =
-                    destNode.transitions.find(t =>
-                        t.sourceLinkId === this.currentLinkId &&
-                        t.sourceLaneIndex === checkLane &&
-                        t.destLinkId === nextLinkId
-                    ) ||
-                    destNode.transitions.find(t =>
-                        t.sourceLinkId === this.currentLinkId &&
-                        t.destLinkId === nextLinkId
-                    );
+            // =========================================================
+            // 3️⃣ 全局排序（Scheduling）
+            // =========================================================
+            const order = allVehicles
+                .map(v => ({
+                    id: v.id,
+                    score: priorityMap.get(v.id)
+                }))
+                .sort((a, b) => b.score - a.score)
+                .map(v => v.id);
+
+            // =========================================================
+            // 4️⃣ 分配時間窗（Time Slots）
+            // =========================================================
+            const slotMap = new Map();
+
+            const baseSlotTime = 2.0; // 每車通過時間（秒）
+
+            for (let i = 0; i < order.length; i++) {
+                slotMap.set(order[i], i * baseSlotTime);
             }
-        }
-    }
 
-    const myProgress = this.distanceOnPath / Math.max(0.1, this.currentPathLength);
-    const myRadius = Math.max(this.width, this.length) / 2;
+            const mySlot = slotMap.get(this.id) || 0;
 
-    for (const other of allVehicles) {
-        if (other.id === this.id) continue;
-        if (other.state !== 'inIntersection' && other.state !== 'onLink') continue;
+            // =========================================================
+            // 5️⃣ 轉成連續讓行決策（核心）
+            // =========================================================
+            for (const other of allVehicles) {
+                if (other.id === this.id) continue;
+                if (other.state !== 'inIntersection' && other.state !== 'onLink') continue;
 
-        const dx = other.x - this.x;
-        const dy = other.y - this.y;
-        const distSq = dx * dx + dy * dy;
-        if (distSq > 900) continue;
+                const otherSlot = slotMap.get(other.id) || 0;
 
-        const dist = Math.sqrt(distSq + EPS);
-        const otherRadius = Math.max(other.width, other.length) / 2;
+                // 👉 時間差（核心）
+                const dt = otherSlot - mySlot;
 
-        // ===== 前後過濾（soft）=====
-        const fwd = dx * cos + dy * sin;
-        const frontFactor = sigmoid((fwd + this.length * 0.5 + otherRadius) * 2);
+                // 👉 轉成連續讓行機率（無 if）
+                const yieldProb = sigmoid(dt);
 
-        // ===== Bezier TTC =====
-        let TTC = 10;
+                // =====================================================
+                // 距離（仍保留物理安全）
+                // =====================================================
+                const dx = other.x - this.x;
+                const dy = other.y - this.y;
+                const dist = Math.sqrt(dx * dx + dy * dy + EPS);
 
-        if (myTrans && other.currentTransition &&
-            myTrans.bezier && other.currentTransition.bezier) {
+                const myRadius = Math.max(this.width, this.length) / 2;
+                const otherRadius = Math.max(other.width, other.length) / 2;
 
-            const cp = findConflictPoint(
-                myTrans.bezier,
-                other.currentTransition.bezier
-            );
+                const safeDist = myRadius + otherRadius + 0.4;
 
-            if (cp) {
-                const dMe = pathDist(
-                    this.currentPathLength,
-                    cp.t1,
-                    myProgress
+                // 緊急風險（避免穿模）
+                const emergency = Math.max(0, (safeDist - dist) / safeDist);
+
+                const brakingGap = Math.max(
+                    0.1,
+                    dist - (this.length / 2) - otherRadius - 0.4
                 );
 
-                const dOther = pathDist(
-                    other.currentPathLength,
-                    cp.t2,
-                    other.distanceOnPath / Math.max(0.1, other.currentPathLength)
+                const gap =
+                    yieldProb * brakingGap +
+                    (1 - yieldProb) * Infinity;
+
+                const finalGap =
+                    emergency * 0.1 +
+                    (1 - emergency) * gap;
+
+                minGap = Math.min(minGap, finalGap);
+            }
+
+            // =========================================================
+            // 6️⃣ 停止線控制（保留）
+            // =========================================================
+            if (this.state === 'onLink') {
+                let checkLane = this.currentLaneIndex;
+                if (this.laneChangeState && this.laneChangeState.progress > 0.5) {
+                    checkLane = this.laneChangeState.toLaneIndex;
+                }
+
+                let stopLinePos;
+                if (this.isMotorcycle) {
+                    stopLinePos = network.motoStopLineMap?.[this.currentLinkId]?.[checkLane];
+                } else {
+                    stopLinePos = network.stopLineMap?.[this.currentLinkId]?.[checkLane];
+                }
+
+                let distToStop;
+                if (stopLinePos !== undefined) {
+                    distToStop = stopLinePos - this.distanceOnPath - this.length / 2;
+                } else {
+                    distToStop = distToEnd - this.length / 2;
+                }
+
+                const stopFactor = sigmoid((distToStop + 1.0) * 2);
+
+                const stopGap = Math.max(
+                    0.1,
+                    distToStop + this.minGap - 0.5
                 );
 
-                const tMe = dMe / Math.max(this.speed, 0.1);
-                const tOther = dOther / Math.max(other.speed, 0.1);
-
-                TTC = Math.abs(tMe - tOther);
-            }
-        }
-
-        // ===== risk =====
-        const safeDist = myRadius + otherRadius + 0.4;
-
-        const closeRisk = smoothstep(safeDist - dist, -1, 1);
-        const ttcRisk = 1 / (TTC + 0.3);
-        const speedRisk = (this.speed + other.speed) * 0.1;
-
-        const otherProgress = other.distanceOnPath / Math.max(0.1, other.currentPathLength);
-        const priorityRisk = sigmoid((otherProgress - myProgress) * 5);
-
-        const risk =
-            2.5 * closeRisk +
-            3.5 * ttcRisk +
-            0.5 * speedRisk +
-            2.0 * priorityRisk;
-
-        const yieldProb = sigmoid(risk - 3.0);
-
-        // ===== gap =====
-        const emergency = smoothstep(safeDist - dist, 0, 2);
-
-        const brakingGap = Math.max(
-            0.1,
-            dist - (this.length / 2) - otherRadius - 0.4
-        );
-
-        const gap =
-            yieldProb * brakingGap +
-            (1 - yieldProb) * Infinity;
-
-        const finalGap =
-            emergency * 0.1 +
-            (1 - emergency) * gap;
-
-        minGap = Math.min(
-            minGap,
-            finalGap * frontFactor + (1 - frontFactor) * Infinity
-        );
-
-        // ===== 停止線（保留）=====
-        if (this.state === 'onLink') {
-            let checkLane = this.currentLaneIndex;
-            if (this.laneChangeState && this.laneChangeState.progress > 0.5) {
-                checkLane = this.laneChangeState.toLaneIndex;
-            }
-
-            let stopLinePos;
-            if (this.isMotorcycle) {
-                stopLinePos = network.motoStopLineMap?.[this.currentLinkId]?.[checkLane];
-            } else {
-                stopLinePos = network.stopLineMap?.[this.currentLinkId]?.[checkLane];
-            }
-
-            let distToStop;
-            if (stopLinePos !== undefined) {
-                distToStop = stopLinePos - this.distanceOnPath - this.length / 2;
-            } else {
-                distToStop = distToEnd - this.length / 2;
-            }
-
-            const stopFactor = sigmoid((distToStop + 1.0) * 2);
-
-            const stopGap = Math.max(
-                0.1,
-                distToStop + this.minGap - 0.5
-            );
-
-            minGap = Math.min(
-                minGap,
-                stopFactor * stopGap + (1 - stopFactor) * minGap
-            );
-        }
-    }
-
-    return minGap;
-}
-
-detectIntersectionConflict_D(allVehicles, network) {
-    const EPS = 1e-6;
-
-    if (this.state !== 'inIntersection' && this.state !== 'onLink') return Infinity;
-
-    const distToEnd = this.currentPathLength - this.distanceOnPath;
-    if (this.state === 'onLink' && distToEnd > 30) return Infinity;
-
-    let minGap = Infinity;
-
-    const cos = Math.cos(this.angle);
-    const sin = Math.sin(this.angle);
-
-    const sigmoid = (x) => 1 / (1 + Math.exp(-x));
-    const smoothstep = (x, e0, e1) => {
-        const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0 + EPS)));
-        return t * t * (3 - 2 * t);
-    };
-
-    // ===== Bezier =====
-    const sampleBezier = (b, t) => {
-        const p = b.points;
-        return {
-            x:
-                (1 - t) ** 3 * p[0].x +
-                3 * (1 - t) ** 2 * t * p[1].x +
-                3 * (1 - t) * t ** 2 * p[2].x +
-                t ** 3 * p[3].x,
-            y:
-                (1 - t) ** 3 * p[0].y +
-                3 * (1 - t) ** 2 * t * p[1].y +
-                3 * (1 - t) * t ** 2 * p[2].y +
-                t ** 3 * p[3].y
-        };
-    };
-
-    // ===== 產生掃掠路徑（含車寬）=====
-    const buildSweep = (vehicle, trans) => {
-        if (!trans || !trans.bezier) return null;
-
-        const samples = [];
-        const N = 8; // 可調：越高越精準
-
-        for (let i = 0; i <= N; i++) {
-            const t = i / N;
-            const p = sampleBezier(trans.bezier, t);
-
-            samples.push({
-                x: p.x,
-                y: p.y,
-                r: Math.max(vehicle.width, vehicle.length) / 2
-            });
-        }
-
-        return samples;
-    };
-
-    // ===== 線段距離（核心）=====
-    const segDist = (a, b, c, d) => {
-        // 線段 AB vs CD 最短距離（2D）
-        const dot = (x1,y1,x2,y2)=>x1*x2+y1*y2;
-
-        const ux = b.x - a.x;
-        const uy = b.y - a.y;
-        const vx = d.x - c.x;
-        const vy = d.y - c.y;
-        const wx = a.x - c.x;
-        const wy = a.y - c.y;
-
-        const a1 = dot(ux,uy,ux,uy);
-        const b1 = dot(ux,uy,vx,vy);
-        const c1 = dot(vx,vy,vx,vy);
-        const d1 = dot(ux,uy,wx,wy);
-        const e1 = dot(vx,vy,wx,wy);
-
-        const D = a1*c1 - b1*b1 + EPS;
-
-        let s = (b1*e1 - c1*d1) / D;
-        let t = (a1*e1 - b1*d1) / D;
-
-        s = Math.max(0, Math.min(1, s));
-        t = Math.max(0, Math.min(1, t));
-
-        const px = a.x + s * ux;
-        const py = a.y + s * uy;
-        const qx = c.x + t * vx;
-        const qy = c.y + t * vy;
-
-        const dx = px - qx;
-        const dy = py - qy;
-
-        return Math.sqrt(dx*dx + dy*dy);
-    };
-
-    // ===== transition =====
-    let myTrans = this.currentTransition;
-    if (this.state === 'onLink') {
-        const currentLink = network.links[this.currentLinkId];
-        if (currentLink && this.route.length > this.currentLinkIndex + 1) {
-            const destNode = network.nodes[currentLink.destination];
-            const nextLinkId = this.route[this.currentLinkIndex + 1];
-
-            if (destNode) {
-                myTrans =
-                    destNode.transitions.find(t =>
-                        t.sourceLinkId === this.currentLinkId &&
-                        t.destLinkId === nextLinkId
-                    );
-            }
-        }
-    }
-
-    const mySweep = buildSweep(this, myTrans);
-    const myProgress = this.distanceOnPath / Math.max(0.1, this.currentPathLength);
-
-    for (const other of allVehicles) {
-        if (other.id === this.id) continue;
-        if (other.state !== 'inIntersection' && other.state !== 'onLink') continue;
-
-        const dx = other.x - this.x;
-        const dy = other.y - this.y;
-        const fwd = dx * cos + dy * sin;
-        if (fwd < -5) continue;
-
-        const otherSweep = buildSweep(other, other.currentTransition);
-        if (!mySweep || !otherSweep) continue;
-
-        // ===== Swept collision（核心）=====
-        let minDist = Infinity;
-
-        for (let i = 0; i < mySweep.length - 1; i++) {
-            for (let j = 0; j < otherSweep.length - 1; j++) {
-                const d = segDist(
-                    mySweep[i], mySweep[i+1],
-                    otherSweep[j], otherSweep[j+1]
+                minGap = Math.min(
+                    minGap,
+                    stopFactor * stopGap + (1 - stopFactor) * minGap
                 );
-
-                const r = mySweep[i].r + otherSweep[j].r;
-
-                minDist = Math.min(minDist, d - r);
             }
+
+            return minGap;
         }
-
-        // ===== 完全物理碰撞 =====
-        const collisionRisk = smoothstep(-minDist, 0, 2);
-
-        // ===== TTC（輔助）=====
-        const relSpeed = Math.max(0.1, this.speed + other.speed);
-        const TTC = Math.max(0.1, minDist / relSpeed);
-
-        const ttcRisk = 1 / (TTC + 0.2);
-
-        const risk = 4.0 * collisionRisk + 2.5 * ttcRisk;
-
-        const yieldProb = sigmoid(risk - 2.5);
-
-        const brakingGap = Math.max(0.1, minDist);
-
-        const gap =
-            yieldProb * brakingGap +
-            (1 - yieldProb) * Infinity;
-
-        minGap = Math.min(minGap, gap);
-    }
-
-    return minGap;
-}
-
-detectIntersectionConflict(allVehicles, network) {
-    const EPS = 1e-6;
-
-    if (this.state !== 'inIntersection' && this.state !== 'onLink') return Infinity;
-
-    const distToEnd = this.currentPathLength - this.distanceOnPath;
-    if (this.state === 'onLink' && distToEnd > 30) return Infinity;
-
-    let minGap = Infinity;
-
-    const sigmoid = (x) => 1 / (1 + Math.exp(-x));
-
-    // =========================================================
-    // 1️⃣ 建立衝突圖（Conflict Graph）
-    // =========================================================
-    const graph = new Map();
-    for (const v of allVehicles) {
-        graph.set(v.id, []);
-    }
-
-    for (let i = 0; i < allVehicles.length; i++) {
-        for (let j = i + 1; j < allVehicles.length; j++) {
-            const a = allVehicles[i];
-            const b = allVehicles[j];
-
-            const dx = a.x - b.x;
-            const dy = a.y - b.y;
-            const distSq = dx * dx + dy * dy;
-
-            // 30m 內才建立衝突關係
-            const near = Math.max(0, 900 - distSq) / 900; // soft version
-
-            if (near > 0) {
-                graph.get(a.id).push(b.id);
-                graph.get(b.id).push(a.id);
-            }
-        }
-    }
-
-    // =========================================================
-    // 2️⃣ 計算優先權（Priority Score）
-    // =========================================================
-    const priorityMap = new Map();
-
-    for (const v of allVehicles) {
-        const wait = v.waitTime || 0;
-
-        const progress = v.distanceOnPath / Math.max(0.1, v.currentPathLength);
-
-        const urgency = 1 - progress;
-
-        const speedFactor = v.speed;
-
-        // 可自行調權重
-        const score =
-            2.0 * wait +
-            3.0 * urgency +
-            0.5 * speedFactor;
-
-        priorityMap.set(v.id, score);
-    }
-
-    // =========================================================
-    // 3️⃣ 全局排序（Scheduling）
-    // =========================================================
-    const order = allVehicles
-        .map(v => ({
-            id: v.id,
-            score: priorityMap.get(v.id)
-        }))
-        .sort((a, b) => b.score - a.score)
-        .map(v => v.id);
-
-    // =========================================================
-    // 4️⃣ 分配時間窗（Time Slots）
-    // =========================================================
-    const slotMap = new Map();
-
-    const baseSlotTime = 2.0; // 每車通過時間（秒）
-
-    for (let i = 0; i < order.length; i++) {
-        slotMap.set(order[i], i * baseSlotTime);
-    }
-
-    const mySlot = slotMap.get(this.id) || 0;
-
-    // =========================================================
-    // 5️⃣ 轉成連續讓行決策（核心）
-    // =========================================================
-    for (const other of allVehicles) {
-        if (other.id === this.id) continue;
-        if (other.state !== 'inIntersection' && other.state !== 'onLink') continue;
-
-        const otherSlot = slotMap.get(other.id) || 0;
-
-        // 👉 時間差（核心）
-        const dt = otherSlot - mySlot;
-
-        // 👉 轉成連續讓行機率（無 if）
-        const yieldProb = sigmoid(dt);
-
-        // =====================================================
-        // 距離（仍保留物理安全）
-        // =====================================================
-        const dx = other.x - this.x;
-        const dy = other.y - this.y;
-        const dist = Math.sqrt(dx * dx + dy * dy + EPS);
-
-        const myRadius = Math.max(this.width, this.length) / 2;
-        const otherRadius = Math.max(other.width, other.length) / 2;
-
-        const safeDist = myRadius + otherRadius + 0.4;
-
-        // 緊急風險（避免穿模）
-        const emergency = Math.max(0, (safeDist - dist) / safeDist);
-
-        const brakingGap = Math.max(
-            0.1,
-            dist - (this.length / 2) - otherRadius - 0.4
-        );
-
-        const gap =
-            yieldProb * brakingGap +
-            (1 - yieldProb) * Infinity;
-
-        const finalGap =
-            emergency * 0.1 +
-            (1 - emergency) * gap;
-
-        minGap = Math.min(minGap, finalGap);
-    }
-
-    // =========================================================
-    // 6️⃣ 停止線控制（保留）
-    // =========================================================
-    if (this.state === 'onLink') {
-        let checkLane = this.currentLaneIndex;
-        if (this.laneChangeState && this.laneChangeState.progress > 0.5) {
-            checkLane = this.laneChangeState.toLaneIndex;
-        }
-
-        let stopLinePos;
-        if (this.isMotorcycle) {
-            stopLinePos = network.motoStopLineMap?.[this.currentLinkId]?.[checkLane];
-        } else {
-            stopLinePos = network.stopLineMap?.[this.currentLinkId]?.[checkLane];
-        }
-
-        let distToStop;
-        if (stopLinePos !== undefined) {
-            distToStop = stopLinePos - this.distanceOnPath - this.length / 2;
-        } else {
-            distToStop = distToEnd - this.length / 2;
-        }
-
-        const stopFactor = sigmoid((distToStop + 1.0) * 2);
-
-        const stopGap = Math.max(
-            0.1,
-            distToStop + this.minGap - 0.5
-        );
-
-        minGap = Math.min(
-            minGap,
-            stopFactor * stopGap + (1 - stopFactor) * minGap
-        );
-    }
-
-    return minGap;
-}
         // ==================================================================================
         // 輔助與繪圖
         // ==================================================================================
