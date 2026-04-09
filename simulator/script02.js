@@ -7719,26 +7719,22 @@ document.addEventListener('DOMContentLoaded', () => {
             if (this.isMotorcycle) {
                 this.accel = Math.min(this.accel, 4.5);
             }
+
             // =================================================================
-            // ★★★ [終極修復] 強化追撞防護與絕對物理夾緊 (Physics Clamp) ★★★
+            // ★★★ [修復] 同車道煞停穿模：運動學煞停計算 + 動態防護膜 ★★★
             // =================================================================
             if (leader) {
                 const speedDiff = this.speed - leader.speed;
+                const criticalGap = this.minGap + 0.3; // 臨界安全距離
 
-                if (gap <= 0.2) {
-                    // 極近距離：強迫煞停，移除舊版的「倒退瞬移」避免畫面抽搐
-                    this.accel = -10.0;
-                    this.speed = Math.min(this.speed, Math.max(0, leader.speed));
-                } else if (gap < 1.5 && speedDiff > 1.0) {
-                    this.accel = this.isMotorcycle ? -8.5 : -7.0; // 危險急煞
-                } else if (gap < 2.5 && speedDiff > 0) {
-                    if (speedDiff > 1.5) {
-                        this.accel = this.isMotorcycle ? -9.0 : -6.0;
-                    } else if (leader.speed < 2.0) {
-                        this.accel = -3.0;
-                    } else if (speedDiff > 0.2) {
-                        this.accel = -2.0;
-                    }
+                // 當間距逼近安全極限且正在接近時，觸發運動學煞停
+                if (gap <= criticalGap && speedDiff > 0) {
+                    const distAvailable = Math.max(0.01, gap - this.minGap);
+                    const targetSpeed = Math.max(0, leader.speed);
+                    // v^2 = u^2 + 2as => a = (v_target^2 - v_self^2) / (2 * dist)
+                    const reqDecel = (this.speed * this.speed - targetSpeed * targetSpeed) / (2 * distAvailable);
+                    // 限制減速在 4.0 ~ 9.0 m/s² 之間，避免數值震盪
+                    this.accel = Math.min(this.accel, -Math.min(9.0, Math.max(4.0, reqDecel)));
                 }
             }
 
@@ -7750,20 +7746,31 @@ document.addEventListener('DOMContentLoaded', () => {
             let moveDist = this.speed * dt;
 
             // 2. 絕對物理防穿透 (防微步 Creeping 與高速 Teleport)
-            const isStuckAtEnd = gap <= 0.1 && (this.currentPathLength - this.distanceOnPath) <= 0.1;
+            const isStuckAtEnd = gap <= 0.05 && (this.currentPathLength - this.distanceOnPath) <= 0.05;
 
             if (isStuckAtEnd) {
                 // 卡在路段末端
-                moveDist = this.currentPathLength - this.distanceOnPath;
+                moveDist = Math.max(0, this.currentPathLength - this.distanceOnPath);
                 this.speed = 0;
             } else if (leader) {
-                // ★ 物理夾緊核心：如果這幀的移動距離會吃掉安全間隙，強制截斷！(保留 0.05m 絕對防護膜)
-                if (moveDist > gap - 0.05) {
-                    moveDist = Math.max(0, gap - 0.05);
-                    // 貼齊前車時，車速絕對不可超過前車
-                    this.speed = Math.min(this.speed, Math.max(0, leader.speed));
+                // ★ 動態防護膜：依據當前速度與時間步長自動調整緩衝，消除離散誤差
+                const dynamicBuffer = 0.02 + Math.min(0.15, this.speed * 0.008);
+                const safeThreshold = Math.max(0.02, gap - dynamicBuffer);
+
+                if (moveDist > safeThreshold) {
+                    moveDist = safeThreshold;
+
+                    // ★ 核心防穿模：若已貼近至 minGap 容差內，直接定桿，徹底消除後車擠入
+                    if (gap <= this.minGap + 0.12) {
+                        this.speed = 0;
+                        moveDist = 0; // 本幀停止移動
+                    } else {
+                        // 否則限制移動距離，並同步速度不超過前車
+                        this.speed = Math.min(this.speed, Math.max(0, leader.speed));
+                    }
                 }
             }
+
 
             // 3. 套用絕對安全的移動距離
             this.distanceOnPath += moveDist;
@@ -8413,11 +8420,22 @@ document.addEventListener('DOMContentLoaded', () => {
                         const distSq = (this.x - p0.x) ** 2 + (this.y - p0.y) ** 2;
 
                         if (distSq > 2.25) {
-                            points[0] = { x: this.x, y: this.y };
-                            this.lateralOffset = 0; // 距離太遠則瞬間拉回
+                            // ★★★ [修正 3] 漸進式修正起點，避免路徑瞬間跳變導致穿模 ★★★
+                            const p0 = points[0];
+                            const lerpFactor = 0.25; // 每幀平滑修正 25% 的偏差
+                            p0.x += (this.x - p0.x) * lerpFactor;
+                            p0.y += (this.y - p0.y) * lerpFactor;
+                            this.lateralOffset = 0;
+
                             const [np0, np1, np2, np3] = points;
-                            this.currentPathLength = Geom.Bezier.getLength(np0, np1, np2, np3);
+                            const newLength = Geom.Bezier.getLength(np0, np1, np2, np3);
+                            this.currentPathLength = newLength;
                             this.currentPath = points;
+
+                            // 保護機制：防止 leftoverDistance 因曲線縮短而超出範圍造成瞬移
+                            if (leftoverDistance > newLength) {
+                                this.distanceOnPath = newLength - 0.01;
+                            }
                         } else {
                             this.currentPath = points;
                             this.currentPathLength = transition.bezier.length;
@@ -9039,9 +9057,40 @@ document.addEventListener('DOMContentLoaded', () => {
         // 跟車與路權邏輯 (包含紅燈停止位置修正)
         // ==================================================================================
         findLeader(allVehicles, network) {
-            // 1. [既有邏輯] 進入待轉區：盲衝 (保持不變)
+            // 1. [修正] 進入待轉區：改為動態幾何掃描，解決與左轉車/對向車穿模
             if (this.twoStageState === 'moving_to_box') {
-                return { leader: null, gap: Infinity };
+                let closestLeader = null;
+                let minGap = Infinity;
+
+                for (const other of allVehicles) {
+                    if (other.id === this.id) continue;
+                    // 忽略已停等在待轉區的機車，避免互相干擾
+                    if (other.twoStageState === 'waiting') continue;
+
+                    const dx = other.x - this.x;
+                    const dy = other.y - this.y;
+                    const distSq = dx * dx + dy * dy;
+                    if (distSq > 225) continue; // 僅掃描 15m 內
+
+                    // 投影至機車當前行進方向
+                    const cos = Math.cos(this.angle);
+                    const sin = Math.sin(this.angle);
+                    const fwd = dx * cos + dy * sin;
+                    const side = Math.abs(-dx * sin + dy * cos);
+                    // 碰撞寬度計算 (含額外安全緩衝)
+                    const collisionWidth = (this.width + other.width) / 2 + 0.6;
+
+                    // 若在正前方或斜前方，且橫向有交集
+                    if (fwd > 0.3 && fwd < 15.0 && side < collisionWidth) {
+                        const gap = fwd - (this.length / 2) - (other.length / 2) - 0.2;
+                        if (gap < minGap) {
+                            minGap = gap;
+                            closestLeader = other;
+                        }
+                    }
+                }
+                // 回傳有效間隙，讓 IDM 模型能正常觸發減速
+                return { leader: closestLeader, gap: Math.max(0.1, minGap) };
             }
 
             let leader = null;
@@ -9558,6 +9607,49 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
             }
+            // ★★★ [優化修正 v2] 同車道分流防撞：排除兩段式左轉干擾 ★★★
+            // 目的：防止機車進入待轉區前被直行車擋住，同時解決直左車尾重疊
+            if (this.state === 'onLink' && !this.isPreparingForTwoStageTurn(network)) {
+                for (const other of allVehicles) {
+                    if (other.id === this.id) continue;
+
+                    // 條件 A：同路段同車道
+                    const sameLane = (other.currentLinkId === this.currentLinkId &&
+                        other.currentLaneIndex === this.currentLaneIndex);
+                    // 條件 B：剛進入路口的轉彎車 (車道索引可能已更新，但來源相同)
+                    const enteringTurn = (other.state === 'inIntersection' &&
+                        other.currentTransition?.sourceLinkId === this.currentLinkId &&
+                        other.currentTransition?.sourceLaneIndex === this.currentLaneIndex);
+
+                    if (sameLane || enteringTurn) {
+                        const dx = other.x - this.x;
+                        const dy = other.y - this.y;
+                        if (dx * dx + dy * dy > 36.0) continue; // 預篩選：距離 >6m 不計算，節省效能
+
+                        const cos = Math.cos(this.angle);
+                        const sin = Math.sin(this.angle);
+                        const fwdDist = dx * cos + dy * sin;
+                        const latDist = Math.abs(-dx * sin + dy * cos);
+
+                        if (fwdDist > 0) {
+                            // 真實縱向淨空 (扣除兩車半長)
+                            const realFwdGap = fwdDist - (this.length / 2) - (other.length / 2);
+                            // 動態橫向安全閾值：車寬和的一半 + 0.8m 容錯緩衝
+                            const safeLateralThreshold = (this.width + other.width) / 2 + 0.8;
+
+                            // 介入條件：縱向極近 (<2.0m) 且 橫向尚未完全錯開
+                            if (realFwdGap >= 0 && realFwdGap < 2.0 && latDist < safeLateralThreshold) {
+                                // ★ 關鍵防干擾：僅當計算出的 gap 比當前系統找到的 gap 更小時才覆蓋
+                                if (realFwdGap < gap) {
+                                    gap = Math.max(0.05, realFwdGap);
+                                    leader = other;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             return { leader, gap: Math.max(0.1, gap) };
         }
         // ==================================================================================
@@ -9790,8 +9882,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     const distSq = dx * dx + dy * dy;
 
                     // 30m 內才建立衝突關係
-                    const near = Math.max(0, 900 - distSq) / 900; // soft version
-
+                    //const near = Math.max(0, 900 - distSq) / 900; // soft version
+                    // ★ [修正 2-1] 45m 內建立衝突關係 (原為 30m，提前偵測避免高速穿模)
+                    const near = Math.max(0, 2025 - distSq) / 2025; // 45^2 = 2025
                     if (near > 0) {
                         graph.get(a.id).push(b.id);
                         graph.get(b.id).push(a.id);
