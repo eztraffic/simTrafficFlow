@@ -9057,41 +9057,49 @@ document.addEventListener('DOMContentLoaded', () => {
         // 跟車與路權邏輯 (包含紅燈停止位置修正)
         // ==================================================================================
         findLeader(allVehicles, network) {
-            // 1. [修正] 進入待轉區：改為動態幾何掃描，解決與左轉車/對向車穿模
+            // ==========================================
+            // [P0 修正] 兩段式前往待轉區：基礎前車偵測 (取代盲目豁免)
+            // ==========================================
             if (this.twoStageState === 'moving_to_box') {
+                let closestGap = Infinity;
                 let closestLeader = null;
-                let minGap = Infinity;
+                const scanRange = 30.0; // 掃描前方 30 公尺
+
+                // 使用當前路徑切線角度作為前進向量
+                const cosA = Math.cos(this.angle);
+                const sinA = Math.sin(this.angle);
 
                 for (const other of allVehicles) {
                     if (other.id === this.id) continue;
-                    // 忽略已停等在待轉區的機車，避免互相干擾
-                    if (other.twoStageState === 'waiting') continue;
+                    // 忽略已經在待轉區停等或離開的車輛，避免誤判擋住路徑
+                    if (other.twoStageState === 'waiting' || other.twoStageState === 'leaving_box') continue;
 
                     const dx = other.x - this.x;
                     const dy = other.y - this.y;
-                    const distSq = dx * dx + dy * dy;
-                    if (distSq > 225) continue; // 僅掃描 15m 內
 
-                    // 投影至機車當前行進方向
-                    const cos = Math.cos(this.angle);
-                    const sin = Math.sin(this.angle);
-                    const fwd = dx * cos + dy * sin;
-                    const side = Math.abs(-dx * sin + dy * cos);
-                    // 碰撞寬度計算 (含額外安全緩衝)
-                    const collisionWidth = (this.width + other.width) / 2 + 0.6;
+                    // 投影至機車當前行進方向 (Forward) 與側向 (Side)
+                    const fwdDist = dx * cosA + dy * sinA;
+                    const sideDist = Math.abs(-dx * sinA + dy * cosA);
 
-                    // 若在正前方或斜前方，且橫向有交集
-                    if (fwd > 0.3 && fwd < 15.0 && side < collisionWidth) {
-                        const gap = fwd - (this.length / 2) - (other.length / 2) - 0.2;
-                        if (gap < minGap) {
-                            minGap = gap;
-                            closestLeader = other;
+                    // 判斷是否在前方掃描區內
+                    if (fwdDist > 0 && fwdDist < scanRange) {
+                        // 動態橫向安全閾值：雙方半寬 + 0.3m 緩衝
+                        const safeSideThreshold = (this.width / 2) + (other.width / 2) + 0.3;
+
+                        if (sideDist < safeSideThreshold) {
+                            // 計算實際車頭至前方車尾的淨空距離
+                            const gap = fwdDist - (this.length / 2) - (other.length / 2);
+                            if (gap < closestGap) {
+                                closestGap = gap;
+                                closestLeader = other;
+                            }
                         }
                     }
                 }
-                // 回傳有效間隙，讓 IDM 模型能正常觸發減速
-                return { leader: closestLeader, gap: Math.max(0.1, minGap) };
+                // 回傳偵測結果，若無前車則給予合理大距離 (避免下游除以零或邏輯異常)
+                return { leader: closestLeader, gap: Math.max(0.1, closestGap) };
             }
+            // ==========================================
 
             let leader = null;
             let gap = Infinity;
@@ -9607,49 +9615,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
             }
-            // ★★★ [優化修正 v2] 同車道分流防撞：排除兩段式左轉干擾 ★★★
-            // 目的：防止機車進入待轉區前被直行車擋住，同時解決直左車尾重疊
-            if (this.state === 'onLink' && !this.isPreparingForTwoStageTurn(network)) {
-                for (const other of allVehicles) {
-                    if (other.id === this.id) continue;
-
-                    // 條件 A：同路段同車道
-                    const sameLane = (other.currentLinkId === this.currentLinkId &&
-                        other.currentLaneIndex === this.currentLaneIndex);
-                    // 條件 B：剛進入路口的轉彎車 (車道索引可能已更新，但來源相同)
-                    const enteringTurn = (other.state === 'inIntersection' &&
-                        other.currentTransition?.sourceLinkId === this.currentLinkId &&
-                        other.currentTransition?.sourceLaneIndex === this.currentLaneIndex);
-
-                    if (sameLane || enteringTurn) {
-                        const dx = other.x - this.x;
-                        const dy = other.y - this.y;
-                        if (dx * dx + dy * dy > 36.0) continue; // 預篩選：距離 >6m 不計算，節省效能
-
-                        const cos = Math.cos(this.angle);
-                        const sin = Math.sin(this.angle);
-                        const fwdDist = dx * cos + dy * sin;
-                        const latDist = Math.abs(-dx * sin + dy * cos);
-
-                        if (fwdDist > 0) {
-                            // 真實縱向淨空 (扣除兩車半長)
-                            const realFwdGap = fwdDist - (this.length / 2) - (other.length / 2);
-                            // 動態橫向安全閾值：車寬和的一半 + 0.8m 容錯緩衝
-                            const safeLateralThreshold = (this.width + other.width) / 2 + 0.8;
-
-                            // 介入條件：縱向極近 (<2.0m) 且 橫向尚未完全錯開
-                            if (realFwdGap >= 0 && realFwdGap < 2.0 && latDist < safeLateralThreshold) {
-                                // ★ 關鍵防干擾：僅當計算出的 gap 比當前系統找到的 gap 更小時才覆蓋
-                                if (realFwdGap < gap) {
-                                    gap = Math.max(0.05, realFwdGap);
-                                    leader = other;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
             return { leader, gap: Math.max(0.1, gap) };
         }
         // ==================================================================================
