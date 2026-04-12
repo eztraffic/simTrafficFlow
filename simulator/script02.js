@@ -8046,11 +8046,40 @@ document.addEventListener('DOMContentLoaded', () => {
             const lane = link.lanes[this.currentLaneIndex];
             if (!lane) return;
 
-            if (this.isPreparingForTwoStageTurn(network)) {
+            // =================================================================
+            // ★★★ [修正] 兩段式左轉機車：精準控制在「車道右側 1/3 範圍」 ★★★
+            // =================================================================
+if (this.isPreparingForTwoStageTurn(network)) {
+                this.decisionTimer -= dt;
+                if (this.decisionTimer > 0) return;
+
                 const laneWidth = lane.width || 3.5;
-                const maxRightOffset = -(laneWidth / 2) + (this.width / 2) + 0.15; // 修正靠右應為負值
-                this.targetLateralOffset = maxRightOffset;
-                this.decisionTimer = 1.0;
+                const halfWidth = laneWidth / 2;
+                const myHalfWidth = this.width / 2;
+
+                // ★ 核心修正：在這套引擎中，Lateral Offset 的 正值 (+) 代表靠右，負值 (-) 代表靠左
+                
+                // 1. 物理安全右極限 (最靠右，避免壓線或撞路緣)
+                // 從車道中心 (0) 往右 (+halfWidth)，再扣除機車半寬與安全距離
+                const maxRightOffset = halfWidth - myHalfWidth - 0.15; 
+
+                // 2. 右側三分之一的左邊界 (確保不會騎到車道中間)
+                // 從車道最右側往左推算 1/3 個車道寬
+                const rightThirdLeftBoundary = halfWidth - (laneWidth / 3); 
+
+                // 3. 取右側 1/3 的中心點作為動態擺動基準
+                // 從車道最右側往左推算 1/6 個車道寬 (剛好是右側 1/3 的正中間)
+                const centerOfRightThird = halfWidth - (laneWidth / 6); 
+
+                // 4. 加上微小的隨機擺動 (Jitter)，模擬真實騎乘的微調
+                const jitter = (Math.random() - 0.5) * (laneWidth / 6); 
+                let desiredOffset = centerOfRightThird + jitter;
+
+                // 5. 嚴格限制在安全範圍內
+                // 因為是正值，Math.max 確保不小於左邊界 (不跨入中間)，Math.min 確保不大於右極限 (不撞邊緣)
+                this.targetLateralOffset = Math.min(maxRightOffset, Math.max(rightThirdLeftBoundary, desiredOffset));
+
+                this.decisionTimer = 1.0 + Math.random(); 
                 return;
             }
 
@@ -8626,6 +8655,41 @@ document.addEventListener('DOMContentLoaded', () => {
 
             return (boxes && boxes.length > 0);
         }
+// --- [新增] 輔助：判斷是否右轉 ---
+        checkIsRightTurn(network, linkIn, linkOut) {
+            if (!linkIn || !linkOut) return false;
+            const getAngle = (l, isStart) => {
+                const lanes = Object.values(l.lanes);
+                if (lanes.length === 0) return 0;
+                const path = lanes[0].path;
+                if (path.length < 2) return 0;
+                const p1 = isStart ? path[0] : path[path.length - 2];
+                const p2 = isStart ? path[1] : path[path.length - 1];
+                return Math.atan2(p2.y - p1.y, p2.x - p1.x);
+            };
+            const a1 = getAngle(linkIn, false);
+            const a2 = getAngle(linkOut, true);
+            let diff = a2 - a1;
+            while (diff <= -Math.PI) diff += Math.PI * 2;
+            while (diff > Math.PI) diff -= Math.PI * 2;
+
+            // Canvas座標系(Y-Down)：右轉為正角度
+            return (diff > 0.2 && diff < 2.8);
+        }
+
+        // --- [新增] 輔助：判斷是否準備進行右轉 ---
+        isPreparingForRightTurn(network) {
+            if (!this.isMotorcycle) return false;
+            const nextLinkIndex = this.currentLinkIndex + 1;
+            if (nextLinkIndex >= this.route.length) return false;
+
+            const currentLink = network.links[this.currentLinkId];
+            const nextLinkId = this.route[nextLinkIndex];
+            const nextLink = network.links[nextLinkId];
+            if (!currentLink || !nextLink) return false;
+
+            return this.checkIsRightTurn(network, currentLink, nextLink);
+        }
 
         // 輔助函式：找待轉格 (通常在車輛右前方)
         findBestBox(boxes, currentLink) {
@@ -8901,24 +8965,24 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!lane) return;
 
             // =================================================================
-            // [修正] 兩段式左轉：絕對優先權 (加強版)
+            // ★★★ [修正] 兩段式左轉 與 右轉：絕對優先權 (提早 100m 靠右) ★★★
             // =================================================================
             const distToEnd = this.currentPathLength - this.distanceOnPath;
-            if (this.isPreparingForTwoStageTurn(network) && distToEnd < 100.0) {
+            const isTwoStage = this.isPreparingForTwoStageTurn(network);
+            const isRightTurn = this.isPreparingForRightTurn(network);
+
+            if ((isTwoStage || isRightTurn) && distToEnd < 100.0) {
                 const laneIndices = Object.keys(link.lanes).map(Number);
                 const rightmostLaneIndex = Math.max(...laneIndices);
 
                 // 如果不在最外側，強制往右切
                 if (this.currentLaneIndex < rightmostLaneIndex) {
-                    // 檢查右側安全性 (簡化版：只要不是極度危險就切，或者等待下一幀)
                     if (this.isSafeToChange(this.currentLaneIndex + 1, allVehicles)) {
                         this.laneChangeGoal = this.currentLaneIndex + 1;
                     }
-                    // ★ 關鍵：強制阻斷，不讓下方的 Graph 邏輯有機會叫它往左切
-                    return;
+                    return; // 強制阻斷，不執行下方 Graph 換道邏輯
                 }
-                // 已經在最右側，直接返回，什麼都不做 (保持在右側)
-                return;
+                return; // 已經在最右側，保持現狀
             }
             // =================================================================
 
