@@ -8049,7 +8049,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // =================================================================
             // ★★★ [修正] 兩段式左轉機車：精準控制在「車道右側 1/3 範圍」 ★★★
             // =================================================================
-if (this.isPreparingForTwoStageTurn(network)) {
+            if (this.isPreparingForTwoStageTurn(network)) {
                 this.decisionTimer -= dt;
                 if (this.decisionTimer > 0) return;
 
@@ -8058,28 +8058,28 @@ if (this.isPreparingForTwoStageTurn(network)) {
                 const myHalfWidth = this.width / 2;
 
                 // ★ 核心修正：在這套引擎中，Lateral Offset 的 正值 (+) 代表靠右，負值 (-) 代表靠左
-                
+
                 // 1. 物理安全右極限 (最靠右，避免壓線或撞路緣)
                 // 從車道中心 (0) 往右 (+halfWidth)，再扣除機車半寬與安全距離
-                const maxRightOffset = halfWidth - myHalfWidth - 0.15; 
+                const maxRightOffset = halfWidth - myHalfWidth - 0.15;
 
                 // 2. 右側三分之一的左邊界 (確保不會騎到車道中間)
                 // 從車道最右側往左推算 1/3 個車道寬
-                const rightThirdLeftBoundary = halfWidth - (laneWidth / 3); 
+                const rightThirdLeftBoundary = halfWidth - (laneWidth / 3);
 
                 // 3. 取右側 1/3 的中心點作為動態擺動基準
                 // 從車道最右側往左推算 1/6 個車道寬 (剛好是右側 1/3 的正中間)
-                const centerOfRightThird = halfWidth - (laneWidth / 6); 
+                const centerOfRightThird = halfWidth - (laneWidth / 6);
 
                 // 4. 加上微小的隨機擺動 (Jitter)，模擬真實騎乘的微調
-                const jitter = (Math.random() - 0.5) * (laneWidth / 6); 
+                const jitter = (Math.random() - 0.5) * (laneWidth / 6);
                 let desiredOffset = centerOfRightThird + jitter;
 
                 // 5. 嚴格限制在安全範圍內
                 // 因為是正值，Math.max 確保不小於左邊界 (不跨入中間)，Math.min 確保不大於右極限 (不撞邊緣)
                 this.targetLateralOffset = Math.min(maxRightOffset, Math.max(rightThirdLeftBoundary, desiredOffset));
 
-                this.decisionTimer = 1.0 + Math.random(); 
+                this.decisionTimer = 1.0 + Math.random();
                 return;
             }
 
@@ -8655,7 +8655,7 @@ if (this.isPreparingForTwoStageTurn(network)) {
 
             return (boxes && boxes.length > 0);
         }
-// --- [新增] 輔助：判斷是否右轉 ---
+        // --- [新增] 輔助：判斷是否右轉 ---
         checkIsRightTurn(network, linkIn, linkOut) {
             if (!linkIn || !linkOut) return false;
             const getAngle = (l, isStart) => {
@@ -9337,7 +9337,7 @@ if (this.isPreparingForTwoStageTurn(network)) {
                     leader = null;
                 }
             }
-            // --- C. [改善 #4] 通用路口軌跡衝突偵測 ---
+// --- C. [改善 #4] 通用路口軌跡衝突偵測 ---
             {
                 const intersectionGap = this.detectIntersectionConflict(allVehicles, network);
                 if (intersectionGap < gap) {
@@ -9345,6 +9345,60 @@ if (this.isPreparingForTwoStageTurn(network)) {
                     leader = null;
                 }
             }
+
+            // =================================================================
+            // ★★★ [新增] 直前 OBB 物理防穿模雷達 (解決微小轉向卡點) ★★★
+            // 專治：前車在路口內微小轉向(如等待左轉)，後方直行車因目的地不同而忽略前車
+            // =================================================================
+            if (this.state === 'onLink') {
+                const cosA = Math.cos(this.angle);
+                const sinA = Math.sin(this.angle);
+
+                for (const other of allVehicles) {
+                    if (other.id === this.id) continue;
+                    
+                    // 只抓已經進入路口的車輛 (可能正在等待轉彎)
+                    if (other.state !== 'inIntersection') continue;
+
+                    // 忽略正在機車待轉區的機車 (不干擾正常車道)
+                    if (other.twoStageState === 'waiting' || other.twoStageState === 'moving_to_box') continue;
+
+                    const dx = other.x - this.x;
+                    const dy = other.y - this.y;
+                    const distSq = dx * dx + dy * dy;
+
+                    // 掃描前方 30 公尺內 (30^2 = 900)
+                    if (distSq < 900) {
+                        const fwdA = dx * cosA + dy * sinA;
+                        
+                        // 確保對方在我車頭前方
+                        if (fwdA > 0 && fwdA < 30) {
+                            const sideA = Math.abs(-dx * sinA + dy * cosA);
+
+                            // ★ OBB 動態投影：計算對方車體投影到我橫向的有效寬度
+                            // 當對方微轉向時，這個寬度會包覆它的傾斜車身
+                            const angleDiff = other.angle - this.angle;
+                            const effWidthB = Math.abs(Math.cos(angleDiff)) * other.width + Math.abs(Math.sin(angleDiff)) * other.length;
+                            
+                            // 加上我的半寬與安全緩衝，求出橫向碰撞半徑
+                            const hitMargin = (this.width / 2) + (effWidthB / 2) + 0.3;
+
+                            // 如果對方的橫向偏移小於碰撞半徑，代表實體已經擋住我了！
+                            if (sideA < hitMargin) {
+                                // 計算真實「車頭到車尾」的物理距離
+                                const effLengthB = Math.abs(Math.sin(angleDiff)) * other.width + Math.abs(Math.cos(angleDiff)) * other.length;
+                                const physGap = fwdA - (this.length / 2) - (effLengthB / 2) - 0.2;
+
+                                if (physGap > -1.0 && physGap < gap) {
+                                    gap = Math.max(0.1, physGap);
+                                    leader = other; // 強制將該車設為前車，觸發 IDM 煞車
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // 4. [修正核心] 預判：檢查號誌、路口衝突、下游回堵
             if (this.state === 'onLink') {
                 // =================================================================
@@ -9489,8 +9543,9 @@ if (this.isPreparingForTwoStageTurn(network)) {
                                     // 機車起步與邊界並排豁免邏輯
                                     if (this.isMotorcycle && other.isMotorcycle && this.state === 'onLink' && other.state === 'onLink') {
                                         const isSwarmStart = (this.swarmTimer > 0) || (this.speed < 3.0 && other.speed > 0.1);
-                                        if ((other.speed > 1.5 && physicalGap < 8.0) ||
-                                            (isSwarmStart && physicalGap < 5.0 && other.speed > 0.1)) {
+                                        if (isSwarmStart) {
+                                            // 允許更小 gap，但不能忽略
+                                            targetLeaderGap = Math.min(targetLeaderGap, physicalGap * 0.7);
                                             continue;
                                         }
                                     }
@@ -9881,7 +9936,61 @@ if (this.isPreparingForTwoStageTurn(network)) {
             return minVirtualGap;
         }
 
+
         detectIntersectionConflict(allVehicles, network) {
+// =========================================================
+            // ★★★ [修正] 起步防追撞 (Launch Anti-Rear-End) ★★★
+            // 專治：機車 swarm 起步撞前車，並修復轉彎後的停頓卡頓
+            // =========================================================
+            // 改善點：加入 distanceOnPath > 5.0 過濾剛轉彎角度未回正的狀態
+            if (this.state === 'onLink' && this.speed < 6.0 && this.distanceOnPath > 5.0) {
+
+                let minStartGap = Infinity;
+
+                const cos = Math.cos(this.angle);
+                const sin = Math.sin(this.angle);
+
+                for (const other of allVehicles) {
+                    if (other.id === this.id) continue;
+
+                    // 只看「同方向 + 同路段」
+                    if (other.currentLinkId !== this.currentLinkId) continue;
+
+                    // ★ 關鍵修正 1：利用穩定的 1D 拓樸距離過濾，必須真的在我們「前方」
+                    const distDiff = other.distanceOnPath - this.distanceOnPath;
+                    if (distDiff <= 0 || distDiff > 20.0) continue; // 排除後方車與遠處車輛
+
+                    // 向量投影 (檢測實際物理方向)
+                    const dx = other.x - this.x;
+                    const dy = other.y - this.y;
+
+                    const fwd = dx * cos + dy * sin;
+                    const side = Math.abs(-dx * sin + dy * cos);
+
+                    // ★ 關鍵修正 2：收窄橫向判定，改為「雙方半寬 + 0.3m 緩衝」
+                    // 這樣才不會把隔壁車道的車子誤判為正前方障礙
+                    if (fwd > 0 && side < ((this.width + other.width) / 2 + 0.3)) {
+
+                        const gap = fwd - (this.length / 2) - (other.length / 2);
+
+                        // 動態安全距離
+                        const relSpeed = this.speed - other.speed;
+                        const safeGap =
+                            1.2 +                 // 基礎安全距離 (微調至 1.2m 讓起步更順)
+                            this.speed * 0.5 +    // 速度補償
+                            Math.max(0, relSpeed) * 1.2; // 追撞補償
+
+                        if (gap < safeGap) {
+                            minStartGap = Math.min(minStartGap, gap);
+                        }
+                    }
+                }
+
+                if (minStartGap < Infinity) {
+                    return Math.max(0.1, minStartGap);
+                }
+            }
+
             const EPS = 1e-6;
 
             if (this.state !== 'inIntersection' && this.state !== 'onLink') return Infinity;
