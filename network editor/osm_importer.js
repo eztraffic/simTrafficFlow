@@ -92,7 +92,7 @@ const OSMImporter = (() => {
         document.body.appendChild(div);
     }
 
-    // 初始化 Leaflet 地圖
+  // 初始化 Leaflet 地圖
     function initMap() {
         if (map) return;
 
@@ -100,14 +100,61 @@ const OSMImporter = (() => {
         map = L.map('osm-map', {
             attributionControl: false,
             zoomControl: true
-        }).setView([24.1375386,120.684663], 17);
+        }).setView([24.1375386, 120.684663], 17);
 
-        // 使用 OpenStreetMap Tile
-        mapLayer = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            maxZoom: 19,
-            // 關鍵：必須允許 Cross-Origin 才能在 Canvas 中繪製並導出為 DataURL
-            crossOrigin: true 
-        }).addTo(map);
+        // ==========================================
+        // 1. Google 圖層系列 (最強大的混合圖與街景)
+        // ==========================================
+        const googleHybridLayer = L.tileLayer('https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', {
+            maxZoom: 20, crossOrigin: true 
+        });
+        const googleStreetLayer = L.tileLayer('https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', {
+            maxZoom: 20, crossOrigin: true
+        });
+
+        // ==========================================
+        // 2. 台灣國土測繪中心 (NLSC) 官方圖層系列
+        // 特色：台灣在地更新最快、新建重劃區道路最準確
+        // ==========================================
+        // 台灣官方正射影像 (最高畫質空照圖)
+        const taiwanPhotoLayer = L.tileLayer('https://wmts.nlsc.gov.tw/wmts/PHOTO2/default/GoogleMapsCompatible/{z}/{y}/{x}', {
+            maxZoom: 20, 
+            crossOrigin: true,
+            attribution: '© 內政部國土測繪中心'
+        });
+        
+        // 台灣通用電子地圖 (台灣最精準的街道圖，包含精確的建築物輪廓)
+        const taiwanEmapLayer = L.tileLayer('https://wmts.nlsc.gov.tw/wmts/EMAP/default/GoogleMapsCompatible/{z}/{y}/{x}', {
+            maxZoom: 20, 
+            crossOrigin: true,
+            attribution: '© 內政部國土測繪中心'
+        });
+
+        // ==========================================
+        // 3. 國際備用圖層 (穩定度最高)
+        // ==========================================
+        const cartoStreetLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+            maxZoom: 19, crossOrigin: true 
+        });
+        const esriSatLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+            maxZoom: 19, crossOrigin: true
+        });
+
+        // 預設載入 Google 混合圖 (畫路網最好用)
+        googleHybridLayer.addTo(map);
+
+        // 建立右上角的圖層切換選單
+        const baseMaps = {
+            "🛰️ 衛星+標籤 (Google)": googleHybridLayer,
+            "🇹🇼 台灣官方空照 (國土測繪)": taiwanPhotoLayer,
+            "🛰️ 純衛星圖 (Esri 備用)": esriSatLayer,
+            "🗺️ 街道地圖 (Google)": googleStreetLayer,
+            "🇹🇼 台灣官方地圖 (國土測繪)": taiwanEmapLayer,
+            "🗺️ 街道地圖 (CartoDB 備用)": cartoStreetLayer
+        };
+
+        // 將切換選單加入地圖
+        L.control.layers(baseMaps, null, { position: 'topright' }).addTo(map);
 
         // 監聽移動事件以更新座標資訊
         map.on('moveend', updateInfo);

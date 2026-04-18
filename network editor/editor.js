@@ -5184,13 +5184,34 @@ document.addEventListener('DOMContentLoaded', () => {
                              <input type="number" id="prop-lanes" class="prop-input" value="${obj.lanes.length}" min="1" max="10">
                          </div>`;
 
-                content += `<label class="prop-label" style="font-size:0.75rem; margin-top:8px; display:block;">Individual Widths (m)</label>`;
-                content += `<div class="prop-grid-container" id="lane-widths-container">`;
+// 確保預設車種存在
+                if (Object.keys(network.vehicleProfiles).length === 0) {
+                    network.vehicleProfiles['car'] = { id: 'car', length: 4.5, width: 1.8, maxSpeed: 16.67, maxAcceleration: 3.0, comfortDeceleration: 2.5, minDistance: 2.5, desiredHeadwayTime: 1.5 };
+                    network.vehicleProfiles['motor'] = { id: 'motor', length: 2.0, width: 0.8, maxSpeed: 16.67, maxAcceleration: 3.5, comfortDeceleration: 3.0, minDistance: 1.0, desiredHeadwayTime: 0.8 };
+                    network.vehicleProfiles['Truck/Bus'] = { id: 'Truck/Bus', length: 12.0, width: 2.6, maxSpeed: 16.67, maxAcceleration: 0.8, comfortDeceleration: 1.0, minDistance: 3.0, desiredHeadwayTime: 3.0 };
+                }
+                const availableProfiles = Object.keys(network.vehicleProfiles);
+
+                content += `<label class="prop-label" style="font-size:0.75rem; margin-top:8px; display:block;">Individual Lanes Setup</label>`;
+                content += `<div class="prop-grid-container" id="lane-widths-container" style="display:flex; flex-direction:column; gap:8px;">`;
                 obj.lanes.forEach((lane, index) => {
-                    content += `<div class="prop-grid-item">
-                                 <span class="prop-grid-label">L${index + 1}</span>
-                                 <input type="number" id="prop-lane-width-${index}" class="prop-grid-input prop-lane-width" data-index="${index}" value="${lane.width.toFixed(2)}" step="0.1" min="1">
-                             </div>`;
+                    content += `<div class="prop-card" style="padding:8px; background:#f8fafc; border:1px solid #e2e8f0;">
+                                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                                        <span style="font-weight:bold; color:#475569; font-size:0.8rem;">L${index + 1} Width (m)</span>
+                                        <input type="number" id="prop-lane-width-${index}" class="prop-grid-input prop-lane-width" data-index="${index}" value="${lane.width.toFixed(2)}" step="0.1" min="1" style="width:70px;">
+                                    </div>
+                                    <div style="font-size:0.7rem; color:#64748b; margin-bottom:4px;">Allowed Vehicles (Uncheck to restrict)</div>
+                                    <div style="display:flex; flex-wrap:wrap; gap:6px;">`;
+                    
+                    availableProfiles.forEach(profId => {
+                        // 若 allowedVehicleProfiles 不存在或為空陣列，代表全部允許 (預設勾選)
+                        const isChecked = (!lane.allowedVehicleProfiles || lane.allowedVehicleProfiles.length === 0 || lane.allowedVehicleProfiles.includes(profId)) ? 'checked' : '';
+                        content += `<label style="font-size:0.75rem; display:flex; align-items:center; gap:2px; cursor:pointer;">
+                                        <input type="checkbox" class="prop-lane-vehicle-cb" data-lane="${index}" value="${profId}" ${isChecked}> ${profId}
+                                    </label>`;
+                    });
+                    content += `    </div>
+                                </div>`;
                 });
                 content += `</div>`;
 
@@ -6850,7 +6871,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (newLaneCount > currentLaneCount) {
                     for (let i = 0; i < newLaneCount - currentLaneCount; i++) {
                         const lastLaneWidth = currentLaneCount > 0 ? obj.lanes[currentLaneCount - 1].width : LANE_WIDTH;
-                        obj.lanes.push({ width: lastLaneWidth });
+                        const lastAllowed = currentLaneCount > 0 ? (obj.lanes[currentLaneCount - 1].allowedVehicleProfiles || []) : [];
+                        obj.lanes.push({ width: lastLaneWidth, allowedVehicleProfiles: [...lastAllowed] });
                     }
                 } else if (newLaneCount < currentLaneCount) {
                     obj.lanes.splice(newLaneCount);
@@ -6884,6 +6906,34 @@ document.addEventListener('DOMContentLoaded', () => {
                         updatePropertiesPanel(obj);
                         saveState();
                     }
+                });
+            });
+
+            // [新增] 監聽車道允許車種變更
+            document.querySelectorAll('.prop-lane-vehicle-cb').forEach(cb => {
+                cb.addEventListener('change', (e) => {
+                    const laneIdx = parseInt(e.target.dataset.lane, 10);
+                    
+                    // 取得該車道所有的 checkbox 狀態
+                    const allCbsForLane = document.querySelectorAll(`.prop-lane-vehicle-cb[data-lane="${laneIdx}"]`);
+                    const checkedProfiles = [];
+                    let allChecked = true;
+
+                    allCbsForLane.forEach(checkbox => {
+                        if (checkbox.checked) {
+                            checkedProfiles.push(checkbox.value);
+                        } else {
+                            allChecked = false;
+                        }
+                    });
+
+                    // 如果全勾選，我們將陣列清空 (Empty array 代表不受限，以節省 XML 空間並保持向後相容)
+                    if (allChecked) {
+                        obj.lanes[laneIdx].allowedVehicleProfiles = [];
+                    } else {
+                        obj.lanes[laneIdx].allowedVehicleProfiles = checkedProfiles;
+                    }
+                    saveState();
                 });
             });
 
@@ -9600,8 +9650,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             }
 
-            // --- FIX: 修正車道讀取邏輯 (深入 Segments 尋找) ---
-            const laneWidths = [];
+// --- FIX: 修正車道讀取邏輯 (深入 Segments 尋找並加入車種限制解析) ---
+            const importedLanes = [];
             let lanesContainer = null;
 
             // 嘗試從 Segments -> 第一個 Segment 中尋找 Lanes
@@ -9620,14 +9670,37 @@ document.addEventListener('DOMContentLoaded', () => {
             if (lanesContainer) {
                 getChildrenByLocalName(lanesContainer, "Lane").forEach(laneEl => {
                     const w = getChildValue(laneEl, "width");
-                    laneWidths.push(w ? parseFloat(w) : LANE_WIDTH);
+                    const laneData = { 
+                        width: w ? parseFloat(w) : LANE_WIDTH, 
+                        allowedVehicleProfiles: [] 
+                    };
+
+                    // [新增] 解析 AllowedVehicles
+                    const allowedEl = getChildrenByLocalName(laneEl, "AllowedVehicles")[0];
+                    if (allowedEl) {
+                        getChildrenByLocalName(allowedEl, "VehicleProfileId").forEach(profEl => {
+                            laneData.allowedVehicleProfiles.push(profEl.textContent);
+                        });
+                    }
+                    importedLanes.push(laneData);
                 });
             }
-            if (laneWidths.length === 0) laneWidths.push(LANE_WIDTH, LANE_WIDTH);
+            if (importedLanes.length === 0) {
+                importedLanes.push({ width: LANE_WIDTH, allowedVehicleProfiles: [] }, { width: LANE_WIDTH, allowedVehicleProfiles: [] });
+            }
             // --- END FIX ---
 
+            // 只傳入 width 給 createLink (確保相容性)
+            const laneWidths = importedLanes.map(l => l.width);
             const newLink = createLink(waypoints, laneWidths);
             xmlLinkIdMap.set(xmlId, newLink.id);
+
+            // [新增] 將剛才讀取到的車種限制掛載到建立好的車道物件上
+            newLink.lanes.forEach((lane, idx) => {
+                if (importedLanes[idx] && importedLanes[idx].allowedVehicleProfiles.length > 0) {
+                    lane.allowedVehicleProfiles = importedLanes[idx].allowedVehicleProfiles;
+                }
+            });
 
             // [新增] 如果 XML 有名稱則套用，否則使用 ID
             if (xmlName) {
@@ -10673,7 +10746,22 @@ document.addEventListener('DOMContentLoaded', () => {
             xml += '            <tm:Lanes>\n';
             for (let j = 0; j < link.lanes.length; j++) {
                 const lane = link.lanes[j];
-                xml += `              <tm:Lane><tm:index>${j}</tm:index><tm:length>${linkLength.toFixed(4)}</tm:length><tm:width>${lane.width.toFixed(2)}</tm:width><tm:prevLaneIndex>-1</tm:prevLaneIndex><tm:nextLaneIndex>-1</tm:nextLaneIndex></tm:Lane>\n`;
+                xml += `              <tm:Lane>\n`;
+                xml += `                <tm:index>${j}</tm:index>\n`;
+                xml += `                <tm:length>${linkLength.toFixed(4)}</tm:length>\n`;
+                xml += `                <tm:width>${lane.width.toFixed(2)}</tm:width>\n`;
+                xml += `                <tm:prevLaneIndex>-1</tm:prevLaneIndex>\n`;
+                xml += `                <tm:nextLaneIndex>-1</tm:nextLaneIndex>\n`;
+                
+                // [新增] 如果有設定車種限制，則匯出 AllowedVehicles
+                if (lane.allowedVehicleProfiles && lane.allowedVehicleProfiles.length > 0) {
+                    xml += `                <tm:AllowedVehicles>\n`;
+                    lane.allowedVehicleProfiles.forEach(prof => {
+                        xml += `                  <tm:VehicleProfileId>${prof}</tm:VehicleProfileId>\n`;
+                    });
+                    xml += `                </tm:AllowedVehicles>\n`;
+                }
+                xml += `              </tm:Lane>\n`;
             }
             xml += '            </tm:Lanes>\n';
 
