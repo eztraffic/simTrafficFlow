@@ -2537,6 +2537,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 ctx2D.setLineDash([]);
             }
             if (vehiclesOnLink[link.id]) vehiclesOnLink[link.id].forEach(v => drawVehicle2D(v));
+
+            // =================================================================
+            // ★★★ [新增] 2D 繪製交通錐與連桿 (距離 < 3.0m) ★★★
+            // =================================================================
+            if (link.trafficCones) {
+
+            }
+            // =================================================================
+
         });
 
         if (vehiclesInIntersection.length > 0) vehiclesInIntersection.forEach(v => drawVehicle2D(v));
@@ -2713,6 +2722,59 @@ document.addEventListener('DOMContentLoaded', () => {
                     ctx2D.closePath();
                     ctx2D.stroke();
                 }
+
+                ctx2D.restore();
+            });
+        }
+        // =================================================================
+        // ★★★ [新增] 統整並繪製 2D 交通錐與連桿 (包含 Link 與 Free 模式) ★★★
+        // =================================================================
+        const allCones2D = [];
+
+        // 收集道路上的交通錐
+        Object.values(netData.links).forEach(link => {
+            if (link.trafficCones) allCones2D.push(...link.trafficCones);
+        });
+
+        // 收集自由模式(路口內)的交通錐
+        if (netData.freeRoadSigns) {
+            netData.freeRoadSigns.forEach(sign => {
+                if (sign.signType === 'traffic_cone') allCones2D.push(sign);
+            });
+        }
+
+        if (allCones2D.length > 0) {
+            // 1. 先畫黑色細管連桿 (畫在下層)
+            ctx2D.save();
+            ctx2D.strokeStyle = '#111111'; // 黑色
+            ctx2D.lineWidth = 0.06;        // 細管寬度
+            for (let i = 0; i < allCones2D.length; i++) {
+                for (let j = i + 1; j < allCones2D.length; j++) {
+                    const c1 = allCones2D[i];
+                    const c2 = allCones2D[j];
+                    if (Math.hypot(c1.x - c2.x, c1.y - c2.y) < 3.0) {
+                        ctx2D.beginPath();
+                        ctx2D.moveTo(c1.x, c1.y);
+                        ctx2D.lineTo(c2.x, c2.y);
+                        ctx2D.stroke();
+                    }
+                }
+            }
+            ctx2D.restore();
+
+            // 2. 畫交通錐本體
+            allCones2D.forEach(cone => {
+                ctx2D.save();
+                ctx2D.translate(cone.x, cone.y);
+                ctx2D.rotate(cone.angle);
+
+                const size = 0.4;
+                ctx2D.fillStyle = '#ff0000'; // 紅底
+                ctx2D.fillRect(-size / 2, -size / 2, size, size);
+
+                ctx2D.lineWidth = 0.05;
+                ctx2D.strokeStyle = 'white'; // 白框
+                ctx2D.strokeRect(-size / 2, -size / 2, size, size);
 
                 ctx2D.restore();
             });
@@ -3770,9 +3832,36 @@ document.addEventListener('DOMContentLoaded', () => {
         // =================================================================
         // 1. Draw Links (Roads) - 使用 asphaltMat 且高度設為 0.1
         // =================================================================
+
+        // ★★★ [新增] 建立交通錐的 3D 模型共用樣板 ★★★
+        const coneGroupDef = new THREE.Group();
+        // 底座 (黑色正方形: 長寬0.4m, 高0.05m)
+        const coneBaseGeo = new THREE.BoxGeometry(0.4, 0.05, 0.4);
+        const coneBaseMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.9 });
+        const coneBase = new THREE.Mesh(coneBaseGeo, coneBaseMat);
+        coneBase.position.y = 0.025;
+        coneBase.castShadow = true;
+        coneGroupDef.add(coneBase);
+
+        // 錐體 (紅/橘色圓錐: 總高0.5m，扣除底座0.05m = 0.45m)
+        const coneBodyGeo = new THREE.ConeGeometry(0.15, 0.45, 16);
+        const coneBodyMat = new THREE.MeshStandardMaterial({ color: 0xff3300, roughness: 0.5 });
+        const coneBody = new THREE.Mesh(coneBodyGeo, coneBodyMat);
+        coneBody.position.y = 0.05 + 0.225; // 放在底座之上
+        coneBody.castShadow = true;
+        coneGroupDef.add(coneBody);
+
+        // ★★★ [新增] 連桿材質與幾何 (黑色細圓柱) ★★★
+        // 半徑 0.03m，長度 1m (渲染時會利用 scale 動態拉長)
+        const rodGeo = new THREE.CylinderGeometry(0.03, 0.03, 1, 8);
+        rodGeo.rotateX(Math.PI / 2); // 轉向 Z 軸，方便使用 lookAt 對齊目標
+        const rodMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.8 });
+        // =================================================================
+
         Object.values(netData.links).forEach(link => {
             if (link.geometry) {
                 link.geometry.forEach(geo => {
+                    // ... (原有道路幾何繪製保持不變) ...
                     if (geo.points.length < 3) return;
                     const shape = new THREE.Shape();
                     shape.moveTo(geo.points[0].x, -geo.points[0].y);
@@ -3780,29 +3869,31 @@ document.addEventListener('DOMContentLoaded', () => {
                     const geom = new THREE.ShapeGeometry(shape);
                     geom.rotateX(-Math.PI / 2);
 
-                    // [修正] 使用統一材質
                     const mesh = new THREE.Mesh(geom, asphaltMat);
                     mesh.receiveShadow = true;
-
-                    // [修正] 高度設為 0.1 (與路口一致)
                     mesh.position.y = 0.1;
-
                     networkGroup.add(mesh);
                 });
             }
-            // (分隔線繪製邏輯保持不變)
             if (link.dividingLines) {
                 link.dividingLines.forEach(line => {
+                    // ... (原有車道分隔線繪製保持不變) ...
                     if (line.path.length < 2) return;
-                    // --- [修改] 分隔線高度改為 0.11 (原本為 0.12)，避免與標線搶奪顯示權 ---
                     const points = line.path.map(p => to3D(p.x, p.y, 0.11));
                     const geometry = new THREE.BufferGeometry().setFromPoints(points);
                     const lineMesh = new THREE.Line(geometry, lineMat);
                     networkGroup.add(lineMesh);
                 });
             }
-        });
 
+            // =================================================================
+            // ★★★ [新增] 將交通錐與 3D 連桿加入場景 ★★★
+            // =================================================================
+            if (link.trafficCones && link.trafficCones.length > 0) {
+
+            }
+            // =================================================================
+        });
         // =================================================================
         // 2. Draw Nodes (Junctions) - 使用 asphaltMat 且高度設為 0.1
         // =================================================================
@@ -3840,6 +3931,55 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             }
         });
+        // =================================================================
+        // ★★★ [新增] 統整並生成 3D 交通錐與連桿 (包含 Link 與 Free 模式) ★★★
+        // =================================================================
+        const allCones3D = [];
+
+        // 收集道路上的交通錐
+        Object.values(netData.links).forEach(link => {
+            if (link.trafficCones) allCones3D.push(...link.trafficCones);
+        });
+
+        // 收集自由模式(路口內)的交通錐
+        if (netData.freeRoadSigns) {
+            netData.freeRoadSigns.forEach(sign => {
+                if (sign.signType === 'traffic_cone') allCones3D.push(sign);
+            });
+        }
+
+        if (allCones3D.length > 0) {
+            // 1. 產生交通錐
+            allCones3D.forEach(cone => {
+                const mesh = coneGroupDef.clone();
+                mesh.position.set(cone.x, 0.1, cone.y);
+                mesh.rotation.y = -cone.angle; // Three.js Y軸旋轉需加負號
+                networkGroup.add(mesh);
+            });
+
+            // 2. 產生交通錐之間的連桿 (距離 < 3.0m)
+            for (let i = 0; i < allCones3D.length; i++) {
+                for (let j = i + 1; j < allCones3D.length; j++) {
+                    const c1 = allCones3D[i];
+                    const c2 = allCones3D[j];
+                    const dist = Math.hypot(c1.x - c2.x, c1.y - c2.y);
+
+                    if (dist > 0 && dist < 3.0) {
+                        const rod = new THREE.Mesh(rodGeo, rodMat);
+                        const midX = (c1.x + c2.x) / 2;
+                        const midY = (c1.y + c2.y) / 2;
+
+                        const rodHeight = 0.45;
+                        rod.position.set(midX, rodHeight, midY);
+                        rod.scale.set(1, 1, dist);
+                        rod.lookAt(c2.x, rodHeight, c2.y);
+                        rod.castShadow = true;
+                        networkGroup.add(rod);
+                    }
+                }
+            }
+        }
+        // =================================================================
 
         // --- 3. Build Parking Lots (3D) ---
         if (netData.parkingLots) {
@@ -7441,10 +7581,249 @@ document.addEventListener('DOMContentLoaded', () => {
             // 檢查動態停車機會 (Flow Mode)
             this.checkForDynamicParking(network);
 
-            // 機車動力學更新
-            if (this.isMotorcycle) {
-                this.updateMotorcycleDynamics(dt, network, allVehicles);
+            // 機車鑽車決策
+            if (this.isMotorcycle && this.state === 'onLink') {
+                this.decideLaneFiltering(allVehicles, network);
             }
+
+            // =================================================================
+            // ★★★[終極無抖動版] 交通錐群集融合、精準閃避與阻擋換道系統 ★★★
+            // =================================================================
+            if (!this.isMotorcycle && !this.laneChangeState) {
+                this.targetLateralOffset = 0; // 汽車預設維持置中
+            }
+            let originalTarget = this.targetLateralOffset;
+
+            this.coneForcedLaneChange = false;
+            this.coneBlockingGap = Infinity;
+
+            // 輔助函式：合併重疊的障礙物區間 (Merge Intervals)
+            const mergeIntervals = (intervals) => {
+                if (intervals.length === 0) return [];
+                intervals.sort((a, b) => a.min - b.min);
+                const merged = [intervals[0]];
+                for (let i = 1; i < intervals.length; i++) {
+                    const last = merged[merged.length - 1];
+                    const curr = intervals[i];
+                    if (curr.min <= last.max) {
+                        last.max = Math.max(last.max, curr.max);
+                        last.fwdDist = Math.min(last.fwdDist, curr.fwdDist);
+                        last.physicalMin = Math.min(last.physicalMin, curr.physicalMin);
+                        last.physicalMax = Math.max(last.physicalMax, curr.physicalMax);
+                    } else {
+                        merged.push(curr);
+                    }
+                }
+                return merged;
+            };
+
+            // -------------------------------------------------------------
+            // 情境 1：直行路段 (On Link)
+            // -------------------------------------------------------------
+            if (this.state === 'onLink') {
+                const link = network.links[this.currentLinkId];
+                if (link && link.trafficCones && link.trafficCones.length > 0) {
+                    const laneWidth = link.lanes[this.currentLaneIndex] ? link.lanes[this.currentLaneIndex].width : 3.5;
+                    const myHalfWidth = this.width / 2;
+                    const coneRadius = 0.25;
+
+                    const racingBuffer = this.isMotorcycle ? 0.4 : 0.8;
+                    const requiredClearance = myHalfWidth + coneRadius + racingBuffer;
+                    const physicalClearance = myHalfWidth + coneRadius + 0.15;
+
+                    const lookaheadTime = 3.5;
+                    const dynamicLookahead = Math.max(40.0, this.maxSpeed * lookaheadTime);
+
+                    // 1. 收集所有視野內的交通錐橫向阻擋區間
+                    let rawIntervals = [];
+
+                    for (const cone of link.trafficCones) {
+                        const dx = cone.x - this.x;
+                        const dy = cone.y - this.y;
+                        const cos = Math.cos(this.angle);
+                        const sin = Math.sin(this.angle);
+
+                        const fwdDist = dx * cos + dy * sin;
+                        const sideDist = -dx * sin + dy * cos;
+
+                        if (fwdDist > -1.5 && fwdDist < dynamicLookahead) {
+                            rawIntervals.push({
+                                min: sideDist - requiredClearance,
+                                max: sideDist + requiredClearance,
+                                fwdDist: fwdDist,
+                                physicalMin: sideDist - physicalClearance,
+                                physicalMax: sideDist + physicalClearance
+                            });
+                        }
+                    }
+
+                    // 2. 融合相鄰的交通錐成為一道「隱形牆」
+                    const mergedIntervals = mergeIntervals(rawIntervals);
+
+                    if (mergedIntervals.length > 0) {
+                        // 檢查預定的目標路線是否被牆擋住
+                        const blockingInterval = mergedIntervals.find(inv => originalTarget >= inv.min && originalTarget <= inv.max);
+
+                        if (blockingInterval) {
+                            // 計算要往左閃還是往右閃 (利用車輛當前偏移 this.lateralOffset 產生慣性，防止抖動)
+                            const distToMax = Math.abs(blockingInterval.max - this.lateralOffset);
+                            const distToMin = Math.abs(blockingInterval.min - this.lateralOffset);
+
+                            const overshoot = this.isMotorcycle ? 0.2 : 0.4;
+                            let expectedOffset = (distToMax < distToMin) ? (blockingInterval.max + overshoot) : (blockingInterval.min - overshoot);
+
+                            const maxAllowedOffset = (laneWidth / 2) - myHalfWidth + 0.4;
+                            const clampedOffset = Math.max(originalTarget - maxAllowedOffset, Math.min(originalTarget + maxAllowedOffset, expectedOffset));
+
+                            // 真實物理驗證：夾鉗後的位置是否依然撞牆？
+                            const isImpassable = mergedIntervals.some(inv => clampedOffset > inv.physicalMin && clampedOffset < inv.physicalMax);
+
+                            if (isImpassable) {
+                                if (!this.isMotorcycle) this.coneForcedLaneChange = true;
+                                if (!this.laneChangeState && blockingInterval.fwdDist > 0) {
+                                    const stopGap = blockingInterval.fwdDist - (this.length / 2) - coneRadius - 1.0;
+                                    this.coneBlockingGap = Math.min(this.coneBlockingGap, Math.max(0.1, stopGap));
+                                }
+                            }
+
+                            this.targetLateralOffset = clampedOffset;
+                        } else {
+                            // 預防回切碰撞：目標雖沒被擋，但「回歸路線」被擋住時，保持目前閃避姿態
+                            const pathBlocked = mergedIntervals.find(inv =>
+                                (this.lateralOffset >= inv.min && originalTarget <= inv.max) ||
+                                (this.lateralOffset <= inv.max && originalTarget >= inv.min)
+                            );
+                            if (pathBlocked && pathBlocked.fwdDist > -1.0) {
+                                if (this.lateralOffset > pathBlocked.max) {
+                                    this.targetLateralOffset = pathBlocked.max + 0.1;
+                                } else if (this.lateralOffset < pathBlocked.min) {
+                                    this.targetLateralOffset = pathBlocked.min - 0.1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // -------------------------------------------------------------
+            // 情境 2：路口內部 (In Intersection) - 貝茲曲線跟隨
+            // -------------------------------------------------------------
+            else if (this.state === 'inIntersection' && this.currentPath && this.currentPath.length >= 4) {
+                const freeCones = network.freeRoadSigns ? network.freeRoadSigns.filter(s => s.signType === 'traffic_cone') : [];
+
+                if (freeCones.length > 0) {
+                    const myHalfWidth = this.width / 2;
+                    const coneRadius = 0.25;
+
+                    const racingBuffer = this.isMotorcycle ? 0.5 : 1.0;
+                    const requiredClearance = myHalfWidth + coneRadius + racingBuffer;
+                    const physicalClearance = myHalfWidth + coneRadius + 0.15;
+
+                    const lookaheadTime = this.isMotorcycle ? 2.0 : 3.0;
+                    const dynamicLookahead = Math.max(15.0, this.speed * lookaheadTime);
+
+                    let isDodging = false;
+                    const step = 1.0;
+                    const distToEnd = this.currentPathLength - this.distanceOnPath;
+                    const searchEnd = Math.min(this.currentPathLength, this.distanceOnPath + dynamicLookahead);
+
+                    let rawIntervals = [];
+
+                    for (const cone of freeCones) {
+                        const dx = cone.x - this.x;
+                        const dy = cone.y - this.y;
+                        if (dx * dx + dy * dy > dynamicLookahead * dynamicLookahead) continue;
+
+                        let minConeDistSq = Infinity;
+                        let bestS = 0;
+                        let bestSign = 0;
+
+                        for (let s = Math.max(0, this.distanceOnPath); s <= searchEnd; s += step) {
+                            const t = s / this.currentPathLength;
+                            const pt = Geom.Bezier.getPoint(t, this.currentPath[0], this.currentPath[1], this.currentPath[2], this.currentPath[3]);
+
+                            const cDx = cone.x - pt.x;
+                            const cDy = cone.y - pt.y;
+                            const cDistSq = cDx * cDx + cDy * cDy;
+
+                            if (cDistSq < minConeDistSq) {
+                                minConeDistSq = cDistSq;
+                                bestS = s;
+                                const tg = Geom.Bezier.getTangent(t, this.currentPath[0], this.currentPath[1], this.currentPath[2], this.currentPath[3]);
+                                const tgLen = Math.hypot(tg.x, tg.y);
+                                if (tgLen > 0) {
+                                    const normalX = -tg.y / tgLen;
+                                    const normalY = tg.x / tgLen;
+                                    bestSign = (cDx * normalX + cDy * normalY);
+                                }
+                            }
+                        }
+
+                        const fwdDist = bestS - this.distanceOnPath;
+                        if (fwdDist > -2.0 && fwdDist < dynamicLookahead) {
+                            const sideDist = Math.sign(bestSign) * Math.sqrt(minConeDistSq);
+                            rawIntervals.push({
+                                min: sideDist - requiredClearance,
+                                max: sideDist + requiredClearance,
+                                fwdDist: fwdDist,
+                                physicalMin: sideDist - physicalClearance,
+                                physicalMax: sideDist + physicalClearance
+                            });
+                        }
+                    }
+
+                    const mergedIntervals = mergeIntervals(rawIntervals);
+
+                    if (mergedIntervals.length > 0) {
+                        const blockingInterval = mergedIntervals.find(inv => originalTarget >= inv.min && originalTarget <= inv.max);
+
+                        if (blockingInterval) {
+                            isDodging = true;
+
+                            const distToMax = Math.abs(blockingInterval.max - this.lateralOffset);
+                            const distToMin = Math.abs(blockingInterval.min - this.lateralOffset);
+
+                            const overshoot = this.isMotorcycle ? 0.3 : 0.6;
+                            let expectedOffset = (distToMax < distToMin) ? (blockingInterval.max + overshoot) : (blockingInterval.min - overshoot);
+
+                            const limit = this.isMotorcycle ? 2.5 : 3.5;
+                            const clampedOffset = Math.max(-limit, Math.min(limit, expectedOffset));
+
+                            const isImpassable = mergedIntervals.some(inv => clampedOffset > inv.physicalMin && clampedOffset < inv.physicalMax);
+
+                            if (isImpassable && blockingInterval.fwdDist > 0) {
+                                const stopGap = blockingInterval.fwdDist - (this.length / 2) - coneRadius - 0.5;
+                                this.coneBlockingGap = Math.min(this.coneBlockingGap, Math.max(0.1, stopGap));
+                            }
+
+                            this.targetLateralOffset = clampedOffset;
+                        } else {
+                            const pathBlocked = mergedIntervals.find(inv =>
+                                (this.lateralOffset >= inv.min && originalTarget <= inv.max) ||
+                                (this.lateralOffset <= inv.max && originalTarget >= inv.min)
+                            );
+                            if (pathBlocked && pathBlocked.fwdDist > -1.0) {
+                                isDodging = true;
+                                if (this.lateralOffset > pathBlocked.max) {
+                                    this.targetLateralOffset = pathBlocked.max + 0.2;
+                                } else if (this.lateralOffset < pathBlocked.min) {
+                                    this.targetLateralOffset = pathBlocked.min - 0.2;
+                                }
+                            }
+                        }
+                    }
+
+                    // 強制收斂機制 (確保無縫接軌下一條路)
+                    if (distToEnd < 6.0 && !isDodging) {
+                        const decayFactor = Math.pow(distToEnd / 6.0, 2);
+                        this.targetLateralOffset = originalTarget + (this.targetLateralOffset - originalTarget) * decayFactor;
+                    }
+                }
+            }
+            // =================================================================
+
+
+            // 更新橫向位置
+            this.updateLateralPosition(dt);
 
             // 更新橫向位置
             this.updateLateralPosition(dt);
@@ -7655,6 +8034,11 @@ document.addEventListener('DOMContentLoaded', () => {
             // 將 const 替換為 let，因為我們可能需要修改 gap 和 leader
             let { leader, gap } = this.findLeader(allVehicles, network);
 
+            // ★★★ [新增] 交通錐全車道阻擋煞停邏輯 ★★★
+            if (this.coneBlockingGap < gap) {
+                gap = Math.max(0.1, this.coneBlockingGap);
+                leader = null; // 視為虛擬靜止障礙物，觸發 IDM 煞車
+            }
             // ==========================================
             // ★★★[新增] 行人防撞與轉向禮讓邏輯 (保守淨空策略) ★★★
             // ==========================================
@@ -8166,7 +8550,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         /**
-                 * 更新橫向位置 (加入機車緊急閃避爆發力)
+                 * 更新橫向位置 (加入汽車與機車的緊急閃避爆發力)
                  */
         updateLateralPosition(dt) {
             const diff = this.targetLateralOffset - this.lateralOffset;
@@ -8185,7 +8569,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (Math.abs(diff) > 0.4) {
                     speedFactor = 1.0;
                     tau = 0.15; // 極低的 tau 讓機車瞬間甩頭
-                    maxLateralSpeed = 3.5; // 允許橫向高速移動 (約 12 km/h 的橫移速度)
+                    maxLateralSpeed = 3.5; // 允許橫向高速移動
                 }
 
                 const alpha = 1 - Math.exp(-dt / tau);
@@ -8196,8 +8580,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 this.lateralOffset += move;
             } else {
+                // 【關鍵修正 3】：汽車的橫向移動敏捷度提升
                 const dir = Math.sign(diff);
-                const move = this.lateralSpeed * dt;
+
+                // 如果目標差距很大 (代表正在閃避錐筒或緊急切換)，動態提升汽車的橫向移動速度
+                let currentLatSpeed = this.lateralSpeed; // 預設為 1.5
+                if (Math.abs(diff) > 0.5) {
+                    currentLatSpeed = 2.8; // 給予汽車較高的閃避敏捷度，使其能即時避開交通錐
+                }
+
+                const move = currentLatSpeed * dt;
                 if (Math.abs(diff) < move) {
                     this.lateralOffset = this.targetLateralOffset;
                 } else {
@@ -8533,14 +8925,14 @@ document.addEventListener('DOMContentLoaded', () => {
                         // =================================================================
                         // ★★★ [終極平滑修復] 雙端點動態軌跡補償 (Start & End Morphing) ★★★
                         // =================================================================
-                        
+
                         // 1. 起點誤差：紀錄車輛「當前真實位置」與「曲線理論起點」的差距
                         const bezierP0 = points[0];
                         this.startCorrection = {
                             dx: this.x - bezierP0.x,
                             dy: this.y - bezierP0.y
                         };
-                        
+
                         // 將橫向偏移量吸收到 startCorrection 後歸零，讓軌跡純粹依賴補償滑動
                         this.lateralOffset = 0;
                         this.targetLateralOffset = 0;
@@ -9062,24 +9454,33 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!lane) return;
 
             // =================================================================
-            // ★★★ [修正] 兩段式左轉 與 右轉：絕對優先權 (提早 100m 靠右) ★★★
+            // ★★★ [新增] 交通錐佔用全車道：緊急強制換道 ★★★
             // =================================================================
-            const distToEnd = this.currentPathLength - this.distanceOnPath;
-            const isTwoStage = this.isPreparingForTwoStageTurn(network);
-            const isRightTurn = this.isPreparingForRightTurn(network);
+            if (this.coneForcedLaneChange) {
+                const adjacentLanes = [this.currentLaneIndex - 1, this.currentLaneIndex + 1];
+                let bestLane = null;
+                let maxGap = -1; // 尋找最空曠的安全車道
 
-            if ((isTwoStage || isRightTurn) && distToEnd < 100.0) {
-                const laneIndices = Object.keys(link.lanes).map(Number);
-                const rightmostLaneIndex = Math.max(...laneIndices);
+                for (const targetLane of adjacentLanes) {
+                    // 檢查車道是否存在且允許駛入
+                    if (link.lanes[targetLane] && this.isLaneAllowed(network, this.currentLinkId, targetLane)) {
+                        // 檢查換過去是否安全 (不會撞到旁邊的車)
+                        if (this.isSafeToChange(targetLane, allVehicles)) {
+                            const { leader } = this.getLaneLeader(targetLane, allVehicles);
+                            const gapToLeader = leader ? leader.distanceOnPath - this.distanceOnPath : Infinity;
 
-                // 如果不在最外側，強制往右切
-                if (this.currentLaneIndex < rightmostLaneIndex) {
-                    if (this.isSafeToChange(this.currentLaneIndex + 1, allVehicles)) {
-                        this.laneChangeGoal = this.currentLaneIndex + 1;
+                            if (gapToLeader > maxGap) {
+                                maxGap = gapToLeader;
+                                bestLane = targetLane;
+                            }
+                        }
                     }
-                    return; // 強制阻斷，不執行下方 Graph 換道邏輯
                 }
-                return; // 已經在最右側，保持現狀
+
+                if (bestLane !== null) {
+                    this.laneChangeGoal = bestLane;
+                }
+                return; // 若受交通錐壓迫，優先處理此換道，跳過後方常規導航邏輯
             }
             // =================================================================
 
@@ -9648,7 +10049,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 if (other.state === 'onLink' && other.currentLinkId === nextLinkId && other.currentLaneIndex === nextLinkTargetLane) {
                                     isTarget = true;
                                     distInNext = other.distanceOnPath;
-                                } 
+                                }
                                 // 2. 對方已經在路口內，且目的地跟我一樣
                                 else if (other.state === 'inIntersection' && other.currentTransition?.destLinkId === nextLinkId && other.currentTransition?.destLaneIndex === nextLinkTargetLane) {
                                     if (other.twoStageState && other.twoStageState !== 'none') {
@@ -9666,7 +10067,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                     if (otherNextLinkIndex < other.route.length) {
                                         const otherNextLinkId = other.route[otherNextLinkIndex];
                                         const otherDestNode = network.nodes[currentLink.destination];
-                                        
+
                                         // 找出對方的過彎規則
                                         let otherTrans = otherDestNode.transitions.find(t => t.sourceLinkId === other.currentLinkId && t.sourceLaneIndex === other.currentLaneIndex && t.destLinkId === otherNextLinkId);
                                         if (!otherTrans) {
@@ -9677,12 +10078,12 @@ document.addEventListener('DOMContentLoaded', () => {
                                         if (otherTrans && otherTrans.destLinkId === nextLinkId && otherTrans.destLaneIndex === nextLinkTargetLane) {
                                             const myDistToEnd = distanceToEndOfCurrentPath;
                                             const otherDistToEnd = other.currentPathLength - other.distanceOnPath;
-                                            
+
                                             // 誰離停止線比較遠 (或距離一樣但我 ID 較大)，誰就當小弟讓行 (拉鍊式匯流)
                                             if (myDistToEnd > otherDistToEnd || (Math.abs(myDistToEnd - otherDistToEnd) < 0.5 && this.id > other.id)) {
                                                 isTarget = true;
                                                 // 預估對方在路口內的領先距離
-                                                distInNext = -(transitionLen + otherDistToEnd); 
+                                                distInNext = -(transitionLen + otherDistToEnd);
                                             }
                                         }
                                     }
@@ -10488,7 +10889,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                     const pos = Geom.Bezier.getPoint(safeT, p0, p1, p2, p3);
                     const tangent = Geom.Bezier.getTangent(safeT, p0, p1, p2, p3);
-                    
+
                     let trueTangentX = tangent.x;
                     let trueTangentY = tangent.y;
 
@@ -10758,6 +11159,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const speedMeters = [];
             const sectionMeters = [];
             const vehicleProfiles = {};
+            const freeRoadSigns = []; // ★ 新增：用來儲存自由模式的標誌與交通錐
             let navigationMode = 'OD_BASED';
 
             let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -11032,6 +11434,48 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
                 link.roadSigns.sort((a, b) => a.position - b.position);
+
+                // =================================================================
+                // ★★★ [新增] 解析 TrafficCone (交通錐) 並換算為絕對世界座標 ★★★
+                // =================================================================
+                link.trafficCones = [];
+                const roadSignEls = linkEl.querySelectorAll('RoadSigns');
+                roadSignEls.forEach(rsContainer => {
+                    rsContainer.childNodes.forEach(child => {
+                        if (child.nodeType !== 1) return;
+                        const nodeName = child.localName || child.nodeName.split(':').pop();
+
+                        if (nodeName === 'TrafficCone') {
+                            const posStr = getChildValue(child, 'position');
+                            const latStr = getChildValue(child, 'lateralOffset');
+                            if (posStr !== null) {
+                                const position = parseFloat(posStr);
+                                const lateralOffset = latStr ? parseFloat(latStr) : 0;
+
+                                // 利用道路中心線算出它的絕對 (X, Y) 座標
+                                if (centerlinePolyline.length > 1) {
+                                    const posData = getPointAtDistanceAlongPath(centerlinePolyline, position);
+                                    if (posData) {
+                                        const nx = -Math.sin(posData.angle);
+                                        const ny = Math.cos(posData.angle);
+                                        const absX = posData.point.x + nx * lateralOffset;
+                                        const absY = posData.point.y + ny * lateralOffset;
+
+                                        link.trafficCones.push({
+                                            position,
+                                            lateralOffset,
+                                            x: absX,
+                                            y: absY,
+                                            angle: posData.angle
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    });
+                });
+                // =================================================================
+
             });
 
             // --- 3. 解析 Nodes ---
@@ -11784,6 +12228,28 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
             // =========================================================
+            // =========================================================
+            // ★★★ [新增] 解析 FreeRoadSigns (自由定位的交通錐等) ★★★
+            // =========================================================
+            const freeSignsContainer = xmlDoc.getElementsByTagName("FreeRoadSigns")[0] || xmlDoc.getElementsByTagName("tm:FreeRoadSigns")[0];
+            if (freeSignsContainer) {
+                getChildrenByLocalName(freeSignsContainer, "FreeRoadSign").forEach(signEl => {
+                    const id = getChildValue(signEl, "id");
+                    const signType = getChildValue(signEl, "signType");
+                    const x = parseFloat(getChildValue(signEl, "x"));
+                    const y = -parseFloat(getChildValue(signEl, "y")); // 注意 Y 軸反轉
+                    const rotation = parseFloat(getChildValue(signEl, "rotation") || 0);
+
+                    freeRoadSigns.push({
+                        id: id,
+                        signType: signType,
+                        x: x,
+                        y: y,
+                        angle: rotation // 統一屬性名為 angle
+                    });
+                });
+            }
+
             // --- 10. (新增) 解析 GeoAnchors (無痛解析版) ---
             const geoAnchors = [];
             try {
@@ -11873,6 +12339,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     parkingLots,
                     roadMarkings,
                     medians, // [新增]
+                    freeRoadSigns, // ★ 新增：匯出自由模式標誌
                     geoAnchors, // ★★★ 最重要的一行：必須把 geoAnchors 放進這裡，滑鼠事件才讀得到！ ★★★
                     bounds: { minX, minY, maxX, maxY },
                     pathfinder: new Pathfinder(links, nodes),
