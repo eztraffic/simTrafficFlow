@@ -296,61 +296,124 @@ document.addEventListener('DOMContentLoaded', () => {
         return detector;
     }
 
-    function createRoadSign(link, position) {
+    function createRoadSign(link, position, lateralOffset = null, signType = 'start', isFree = false, absolutePos = null) {
         const id = `sign_${++idCounter}`;
+
+        let initX = 0, initY = 0, initRot = 0;
+        if (absolutePos) {
+            initX = absolutePos.x;
+            initY = absolutePos.y;
+            initRot = absolutePos.rotation || 0;
+        }
+
         const sign = {
             id,
             type: 'RoadSign',
-            linkId: link.id,
-            position,
-            signType: 'start',
+            linkId: link ? link.id : null,
+            position: position || 0,
+            lateralOffset: lateralOffset,
+            signType: signType,
             speedLimit: 30,
-            konvaShape: new Konva.Circle({
+            isFree: isFree,
+            x: initX,
+            y: initY,
+            rotation: initRot,
+            konvaShape: new Konva.Shape({
                 id,
-                radius: 6,
-                stroke: 'black',
-                strokeWidth: 2,
-                draggable: true, // The shape is always draggable when its layer is listening
+                draggable: true,
                 listening: true,
+                sceneFunc: (ctx, shape) => {
+                    const type = sign.signType;
+                    if (type === 'start' || type === 'end') {
+                        ctx.beginPath();
+                        ctx.arc(0, 0, 6, 0, Math.PI * 2, false);
+                        ctx.closePath();
+                        ctx.fillStyle = type === 'start' ? '#dc3545' : 'white';
+                        ctx.fill();
+                        ctx.lineWidth = 2;
+                        ctx.strokeStyle = 'black';
+                        ctx.stroke();
+                    } else if (type === 'traffic_cone') {
+                        const size = 0.40;
+                        ctx.beginPath();
+                        ctx.rect(-size / 2, -size / 2, size, size);
+                        ctx.closePath();
+                        ctx.fillStyle = '#ff0000';
+                        ctx.fill();
+                        ctx.lineWidth = 0.05;
+                        ctx.strokeStyle = 'white';
+                        ctx.stroke();
+                    }
+                    ctx.fillStrokeShape(shape);
+                },
+                hitFunc: (ctx, shape) => {
+                    ctx.beginPath();
+                    ctx.arc(0, 0, 12, 0, Math.PI * 2, false);
+                    ctx.closePath();
+                    ctx.fillStrokeShape(shape);
+                }
             }),
         };
+
+        if (sign.lateralOffset === null) {
+            if (link) {
+                const totalWidth = getLinkTotalWidth(link);
+                if (signType === 'traffic_cone') {
+                    sign.lateralOffset = 0;
+                } else {
+                    sign.lateralOffset = (totalWidth / 2) + 8;
+                }
+            } else {
+                sign.lateralOffset = 0;
+            }
+        }
+
         network.roadSigns[id] = sign;
         layer.add(sign.konvaShape);
 
-        sign.konvaShape.on('dragmove', function () {
-            // 1. Get the real-time position of the mouse pointer on the stage.
-            const pointerPos = stage.getPointerPosition();
+        sign.konvaShape.on('dragmove', function (e) {
+            e.cancelBubble = true;
 
-            // 2. Convert pointer position to the layer's coordinate system.
+            // 如果是自由模式，直接更新絕對座標
+            if (sign.isFree) {
+                sign.x = sign.konvaShape.x();
+                sign.y = sign.konvaShape.y();
+                if (selectedObject && selectedObject.id === sign.id) {
+                    updatePropertiesPanel(sign);
+                }
+                return;
+            }
+
+            // 鎖定道路模式：投影計算
+            const targetLink = network.links[sign.linkId];
+            if (!targetLink) return;
+
+            const pointerPos = stage.getPointerPosition();
             const localPos = layer.getAbsoluteTransform().copy().invert().point(pointerPos);
 
-            // 3. Project the mouse position onto the link's polyline to find the new distance.
-            const { dist } = projectPointOnPolyline(localPos, link.waypoints);
-            const clampedDist = Math.max(0, Math.min(dist, getPolylineLength(link.waypoints)));
-
-            // 4. Update the sign's data model with the new calculated distance.
+            const { dist } = projectPointOnPolyline(localPos, targetLink.waypoints);
+            const clampedDist = Math.max(0, Math.min(dist, getPolylineLength(targetLink.waypoints)));
             sign.position = clampedDist;
 
-            // 5. Calculate the new visual position for the sign based on the clamped distance.
-            const newPt = getPointAlongPolyline(link.waypoints, clampedDist);
+            const newPt = getPointAlongPolyline(targetLink.waypoints, clampedDist);
             const normal = getNormal(newPt.vec);
+            const totalWidth = getLinkTotalWidth(targetLink);
 
-            // --- FIX: Use getLinkTotalWidth to calculate the correct road width for offset ---
-            const totalWidth = getLinkTotalWidth(link);
-            const offset = (totalWidth / 2) + 8;
-            // --- END OF FIX ---
+            if (sign.signType === 'traffic_cone') {
+                const v = getVector(newPt.point, localPos);
+                const proj = v.x * normal.x + v.y * normal.y;
+                sign.lateralOffset = Math.max(-totalWidth / 2, Math.min(totalWidth / 2, proj));
+            } else {
+                sign.lateralOffset = (totalWidth / 2) + 8;
+            }
 
-            const newVisualPos = add(newPt.point, scale(normal, offset));
-
-            // 6. Manually set the sign's position. This overrides Konva's default drag behavior.
+            const newVisualPos = add(newPt.point, scale(normal, sign.lateralOffset));
             sign.konvaShape.position(newVisualPos);
 
-            // 7. Update the properties panel in real-time.
             if (selectedObject && selectedObject.id === sign.id) {
                 updatePropertiesPanel(sign);
             }
 
-            // We must manually redraw the layer because we are overriding the default drag mechanism.
             layer.batchDraw();
         });
 
@@ -1005,21 +1068,28 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
     function drawRoadSign(sign) {
+        if (sign.isFree) {
+            sign.konvaShape.position({ x: sign.x, y: sign.y });
+            sign.konvaShape.rotation(sign.rotation);
+            return;
+        }
+
         const link = network.links[sign.linkId];
         if (!link || link.waypoints.length < 2) return;
 
         const { point, vec } = getPointAlongPolyline(link.waypoints, sign.position);
         const normal = getNormal(vec);
-
-        // --- FIX: Use getLinkTotalWidth to calculate the correct road width for offset ---
         const totalWidth = getLinkTotalWidth(link);
-        const offset = (totalWidth / 2) + 8;
-        // --- END OF FIX ---
 
-        const pos = add(point, scale(normal, offset));
+        if (sign.signType === 'traffic_cone') {
+            sign.konvaShape.rotation(Konva.Util.radToDeg(Math.atan2(vec.y, vec.x)));
+        } else {
+            sign.lateralOffset = (totalWidth / 2) + 8;
+            sign.konvaShape.rotation(0);
+        }
 
+        const pos = add(point, scale(normal, sign.lateralOffset));
         sign.konvaShape.position(pos);
-        sign.konvaShape.fill(sign.signType === 'start' ? '#dc3545' : 'white');
     }
     function drawOrigin(origin) {
         const link = network.links[origin.linkId];
@@ -5184,7 +5254,7 @@ document.addEventListener('DOMContentLoaded', () => {
                              <input type="number" id="prop-lanes" class="prop-input" value="${obj.lanes.length}" min="1" max="10">
                          </div>`;
 
-// 確保預設車種存在
+                // 確保預設車種存在
                 if (Object.keys(network.vehicleProfiles).length === 0) {
                     network.vehicleProfiles['car'] = { id: 'car', length: 4.5, width: 1.8, maxSpeed: 16.67, maxAcceleration: 3.0, comfortDeceleration: 2.5, minDistance: 2.5, desiredHeadwayTime: 1.5 };
                     network.vehicleProfiles['motor'] = { id: 'motor', length: 2.0, width: 0.8, maxSpeed: 16.67, maxAcceleration: 3.5, comfortDeceleration: 3.0, minDistance: 1.0, desiredHeadwayTime: 0.8 };
@@ -5202,7 +5272,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                     </div>
                                     <div style="font-size:0.7rem; color:#64748b; margin-bottom:4px;">Allowed Vehicles (Uncheck to restrict)</div>
                                     <div style="display:flex; flex-wrap:wrap; gap:6px;">`;
-                    
+
                     availableProfiles.forEach(profId => {
                         // 若 allowedVehicleProfiles 不存在或為空陣列，代表全部允許 (預設勾選)
                         const isChecked = (!lane.allowedVehicleProfiles || lane.allowedVehicleProfiles.length === 0 || lane.allowedVehicleProfiles.includes(profId)) ? 'checked' : '';
@@ -5609,54 +5679,74 @@ document.addEventListener('DOMContentLoaded', () => {
                 break;
 
             case 'RoadSign':
-                // --- SECTION: GENERAL ---
                 content += `<div class="prop-section-header">General</div>`;
 
-                // ID (唯讀)
                 content += `<div class="prop-row">
                             <span class="prop-label">ID</span>
                             <input type="text" class="prop-input" value="${obj.id}" disabled>
                         </div>`;
-
-                // Link ID (唯讀)
                 content += `<div class="prop-row">
                             <span class="prop-label">Parent Link</span>
-                            <input type="text" class="prop-input" value="${obj.linkId}" disabled>
+                            <input type="text" class="prop-input" value="${obj.linkId || 'None (Free)'}" disabled>
                         </div>`;
 
-                // --- SECTION: CONFIGURATION ---
                 content += `<div class="prop-section-header">Configuration</div>`;
 
-                // Sign Type (下拉選單)
                 content += `<div class="prop-row">
-                            <span class="prop-label">Sign Type</span>
+                            <span class="prop-label">Element Type</span>
                             <select id="prop-sign-type" class="prop-select">
                                 <option value="start" ${obj.signType === 'start' ? 'selected' : ''}>Speed Limit Start</option>
                                 <option value="end" ${obj.signType === 'end' ? 'selected' : ''}>Speed Limit End</option>
+                                <option value="traffic_cone" ${obj.signType === 'traffic_cone' ? 'selected' : ''}>Traffic Cone (0.4m Box)</option>
                             </select>
                         </div>`;
 
-                // Speed Limit (僅在 start 類型顯示)
-                // 注意：.prop-row 預設是 flex，隱藏時設為 none
-                const limitDisplay = (obj.signType === 'start') ? 'flex' : 'none';
-                content += `<div class="prop-row" id="prop-speed-limit-row" style="display: ${limitDisplay};">
-                            <span class="prop-label">Limit (km/h)</span>
-                            <input type="number" id="prop-speed-limit" class="prop-input" value="${obj.speedLimit}" min="0">
-                        </div>`;
+                if (obj.signType === 'traffic_cone') {
+                    content += `<div style="display: flex; align-items: center; gap: 8px; margin-top: 8px; margin-bottom: 8px;">
+                                    <input type="checkbox" id="prop-sign-isfree" ${obj.isFree ? 'checked' : ''} style="cursor: pointer;">
+                                    <label for="prop-sign-isfree" style="font-size: 0.85rem; color: var(--text-main); cursor: pointer;">
+                                        Manual Positioning (Free Move)
+                                    </label>
+                                </div>`;
+                }
 
-                // Position
-                content += `<div class="prop-row">
-                            <span class="prop-label">Position (m)</span>
-                            <input type="number" step="0.1" id="prop-sign-pos" class="prop-input" value="${obj.position.toFixed(2)}">
-                        </div>`;
+                if (obj.isFree) {
+                    content += `<div class="prop-row">
+                                <span class="prop-label">Global X</span>
+                                <input type="text" class="prop-input" value="${obj.x.toFixed(2)}" disabled>
+                            </div>`;
+                    content += `<div class="prop-row">
+                                <span class="prop-label">Global Y</span>
+                                <input type="text" class="prop-input" value="${obj.y.toFixed(2)}" disabled>
+                            </div>`;
+                    content += `<div class="prop-row">
+                                <span class="prop-label">Rotation (deg)</span>
+                                <input type="number" id="prop-sign-rot" class="prop-input" value="${(obj.rotation || 0).toFixed(1)}">
+                            </div>`;
+                } else {
+                    const limitDisplay = (obj.signType === 'start') ? 'flex' : 'none';
+                    content += `<div class="prop-row" id="prop-speed-limit-row" style="display: ${limitDisplay};">
+                                <span class="prop-label">Limit (km/h)</span>
+                                <input type="number" id="prop-speed-limit" class="prop-input" value="${obj.speedLimit}" min="0">
+                            </div>`;
 
-                // --- SECTION: ACTIONS ---
+                    const coneDisplay = (obj.signType === 'traffic_cone') ? 'flex' : 'none';
+                    content += `<div class="prop-row" id="prop-cone-offset-row" style="display: ${coneDisplay};">
+                                <span class="prop-label">Lateral Offset (m)</span>
+                                <input type="number" step="0.1" id="prop-cone-offset" class="prop-input" value="${(obj.lateralOffset || 0).toFixed(2)}">
+                            </div>`;
+
+                    content += `<div class="prop-row" id="prop-sign-pos-row">
+                                <span class="prop-label">Position (m)</span>
+                                <input type="number" step="0.1" id="prop-sign-pos" class="prop-input" value="${obj.position.toFixed(2)}">
+                            </div>`;
+                }
+
                 content += `<div class="prop-section-header">Actions</div>`;
                 content += `<button id="btn-delete-sign" class="btn-danger-outline">
-                            <i class="fa-solid fa-trash-can"></i> Delete Road Sign
+                            <i class="fa-solid fa-trash-can"></i> Delete Element
                         </button>`;
                 break;
-
             case 'Connection':
                 // --- SECTION: GENERAL ---
                 content += `<div class="prop-section-header">General</div>`;
@@ -6913,7 +7003,7 @@ document.addEventListener('DOMContentLoaded', () => {
             document.querySelectorAll('.prop-lane-vehicle-cb').forEach(cb => {
                 cb.addEventListener('change', (e) => {
                     const laneIdx = parseInt(e.target.dataset.lane, 10);
-                    
+
                     // 取得該車道所有的 checkbox 狀態
                     const allCbsForLane = document.querySelectorAll(`.prop-lane-vehicle-cb[data-lane="${laneIdx}"]`);
                     const checkedProfiles = [];
@@ -7167,46 +7257,112 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // --- ROAD SIGN ---
         if (obj.type === 'RoadSign') {
-            // 類型變更
             const typeSelect = document.getElementById('prop-sign-type');
             if (typeSelect) {
                 typeSelect.addEventListener('change', e => {
+                    const oldType = obj.signType;
                     obj.signType = e.target.value;
-                    // 切換速限輸入框的顯示狀態 (注意這裡改用 style.display = 'flex' 以維持排版)
-                    const limitRow = document.getElementById('prop-speed-limit-row');
-                    if (limitRow) {
-                        limitRow.style.display = (obj.signType === 'start') ? 'flex' : 'none';
+
+                    // 切換非交通錐時強制解除自由模式
+                    if (obj.signType !== 'traffic_cone' && obj.isFree) {
+                        obj.isFree = false;
                     }
+
+                    if (obj.linkId) {
+                        const totalWidth = getLinkTotalWidth(network.links[obj.linkId]);
+                        if (oldType !== 'traffic_cone' && obj.signType === 'traffic_cone') {
+                            obj.lateralOffset = 0;
+                        } else if (obj.signType !== 'traffic_cone') {
+                            obj.lateralOffset = (totalWidth / 2) + 8;
+                        }
+                    }
+
                     drawRoadSign(obj);
                     layer.batchDraw();
+                    updatePropertiesPanel(obj);
+                    saveState();
                 });
             }
 
-            // 速限變更
+            const isFreeCb = document.getElementById('prop-sign-isfree');
+            if (isFreeCb) {
+                isFreeCb.addEventListener('change', (e) => {
+                    const isFree = e.target.checked;
+                    obj.isFree = isFree;
+
+                    // 當剛轉為 free 時，將目前的道路投影座標固化為絕對座標
+                    if (isFree && obj.linkId) {
+                        const link = network.links[obj.linkId];
+                        if (link && link.waypoints.length > 1) {
+                            const { point, vec } = getPointAlongPolyline(link.waypoints, obj.position);
+                            const normal = getNormal(vec);
+                            const absPos = add(point, scale(normal, obj.lateralOffset));
+                            obj.x = absPos.x;
+                            obj.y = absPos.y;
+                            obj.rotation = Konva.Util.radToDeg(Math.atan2(vec.y, vec.x));
+
+                            obj.konvaShape.position({ x: obj.x, y: obj.y });
+                            obj.konvaShape.rotation(obj.rotation);
+                        }
+                    }
+
+                    drawRoadSign(obj);
+                    layer.batchDraw();
+                    updatePropertiesPanel(obj);
+                    saveState();
+                });
+            }
+
+            const rotIn = document.getElementById('prop-sign-rot');
+            if (rotIn) {
+                rotIn.addEventListener('change', e => {
+                    obj.rotation = parseFloat(e.target.value);
+                    obj.konvaShape.rotation(obj.rotation);
+                    layer.batchDraw();
+                    saveState();
+                });
+            }
+
             const limitInput = document.getElementById('prop-speed-limit');
             if (limitInput) {
                 limitInput.addEventListener('change', e => {
                     obj.speedLimit = parseFloat(e.target.value);
+                    saveState();
                 });
             }
 
-            // 位置變更
             const posInput = document.getElementById('prop-sign-pos');
             if (posInput) {
                 posInput.addEventListener('change', e => {
                     obj.position = parseFloat(e.target.value);
                     drawRoadSign(obj);
                     layer.batchDraw();
+                    saveState();
                 });
             }
 
-            // 刪除按鈕
+            const offsetInput = document.getElementById('prop-cone-offset');
+            if (offsetInput) {
+                offsetInput.addEventListener('change', e => {
+                    if (!obj.linkId) return;
+                    const totalWidth = getLinkTotalWidth(network.links[obj.linkId]);
+                    let val = parseFloat(e.target.value);
+                    val = Math.max(-totalWidth / 2, Math.min(totalWidth / 2, val));
+                    obj.lateralOffset = val;
+                    e.target.value = val.toFixed(2);
+                    drawRoadSign(obj);
+                    layer.batchDraw();
+                    saveState();
+                });
+            }
+
             const delBtn = document.getElementById('btn-delete-sign');
             if (delBtn) {
                 delBtn.addEventListener('click', () => {
-                    deleteRoadSign(obj.id); // 確保您有定義此函數或使用 deleteSelectedObject()
+                    deleteRoadSign(obj.id);
                     deselectAll();
                     layer.batchDraw();
+                    saveState();
                 });
             }
         }
@@ -9650,7 +9806,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             }
 
-// --- FIX: 修正車道讀取邏輯 (深入 Segments 尋找並加入車種限制解析) ---
+            // --- FIX: 修正車道讀取邏輯 (深入 Segments 尋找並加入車種限制解析) ---
             const importedLanes = [];
             let lanesContainer = null;
 
@@ -9670,9 +9826,9 @@ document.addEventListener('DOMContentLoaded', () => {
             if (lanesContainer) {
                 getChildrenByLocalName(lanesContainer, "Lane").forEach(laneEl => {
                     const w = getChildValue(laneEl, "width");
-                    const laneData = { 
-                        width: w ? parseFloat(w) : LANE_WIDTH, 
-                        allowedVehicleProfiles: [] 
+                    const laneData = {
+                        width: w ? parseFloat(w) : LANE_WIDTH,
+                        allowedVehicleProfiles: []
                     };
 
                     // [新增] 解析 AllowedVehicles
@@ -9738,28 +9894,29 @@ document.addEventListener('DOMContentLoaded', () => {
             // 3. 解析並建立 RoadSigns
             if (signsContainer) {
                 Array.from(signsContainer.children).forEach(signNode => {
-                    // 確保是 Element 節點
                     if (signNode.nodeType !== 1) return;
 
                     const pos = parseFloat(getChildValue(signNode, "position"));
 
-                    // 建立物件
-                    const newSign = createRoadSign(newLink, pos);
-                    // 雖然 XML 沒存 ID，但 createRoadSign 會自動產 ID，這裡確保計數器同步
+                    const lateralOffsetStr = getChildValue(signNode, "lateralOffset");
+                    const lateralOffset = lateralOffsetStr ? parseFloat(lateralOffsetStr) : null;
+
+                    // 【先】判斷 XML 標籤名稱取得類型
+                    const tagName = signNode.localName || signNode.nodeName.split(':').pop();
+                    let parsedSignType = 'start';
+                    if (tagName === 'SpeedLimitSign') parsedSignType = 'start';
+                    else if (tagName === 'NoSpeedLimitSign') parsedSignType = 'end';
+                    else if (tagName === 'TrafficCone') parsedSignType = 'traffic_cone';
+
+                    // 【再】建立物件 (傳入正確的類型與偏移量，避免預設覆蓋)
+                    const newSign = createRoadSign(newLink, pos, lateralOffset, parsedSignType);
                     syncIdCounter(newSign.id);
 
-                    // 處理 Namespace (例如 tm:SpeedLimitSign -> SpeedLimitSign)
-                    const tagName = signNode.localName || signNode.nodeName.split(':').pop();
-
-                    if (tagName === 'SpeedLimitSign') {
-                        const speed = parseFloat(getChildValue(signNode, "speedLimit")); // XML 是 m/s
-                        newSign.signType = 'start';
-                        newSign.speedLimit = speed * 3.6; // 轉回 km/h
-                    } else if (tagName === 'NoSpeedLimitSign') {
-                        newSign.signType = 'end';
+                    if (parsedSignType === 'start') {
+                        const speed = parseFloat(getChildValue(signNode, "speedLimit"));
+                        newSign.speedLimit = speed * 3.6;
                     }
 
-                    // 確保視覺位置正確
                     drawRoadSign(newSign);
                 });
             }
@@ -10591,7 +10748,21 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
         }
+        // --- 14. Free Road Signs (Manual Positioning Cones) ---
+        const freeSignsContainer = xmlDoc.getElementsByTagName("FreeRoadSigns")[0] || xmlDoc.getElementsByTagName("tm:FreeRoadSigns")[0];
+        if (freeSignsContainer) {
+            getChildrenByLocalName(freeSignsContainer, "FreeRoadSign").forEach(signEl => {
+                const signType = getChildValue(signEl, "signType");
+                const x = parseFloat(getChildValue(signEl, "x"));
+                const y = parseFloat(getChildValue(signEl, "y")) * C_SYSTEM_Y_INVERT;
+                const rotation = parseFloat(getChildValue(signEl, "rotation"));
 
+                // 傳入 null 作為 link，並開啟 isFree 模式
+                const newSign = createRoadSign(null, 0, 0, signType, true, { x, y, rotation });
+                syncIdCounter(newSign.id);
+                drawRoadSign(newSign);
+            });
+        }
         layer.batchDraw();
         updateStatusBar();
         setTool('select');
@@ -10737,8 +10908,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const linkLength = getPolylineLength(link.waypoints);
             xml += `        <tm:length>${linkLength.toFixed(4)}</tm:length>\n`;
 
-            const signsOnLink = Object.values(network.roadSigns).filter(s => s.linkId === link.id);
-
+            const signsOnLink = Object.values(network.roadSigns).filter(s => s.linkId === link.id && !s.isFree);
             xml += '        <tm:Segments>\n';
             xml += `          <tm:TrapeziumSegment>\n`;
             xml += `             <tm:id>0</tm:id><tm:length>${linkLength.toFixed(4)}</tm:length><tm:prevSegmentId>-1</tm:prevSegmentId><tm:nextSegmentId>-1</tm:nextSegmentId><tm:startWaypointId>0</tm:startWaypointId><tm:endWaypointId>${link.waypoints.length - 1}</tm:endWaypointId>\n`;
@@ -10752,7 +10922,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 xml += `                <tm:width>${lane.width.toFixed(2)}</tm:width>\n`;
                 xml += `                <tm:prevLaneIndex>-1</tm:prevLaneIndex>\n`;
                 xml += `                <tm:nextLaneIndex>-1</tm:nextLaneIndex>\n`;
-                
+
                 // [新增] 如果有設定車種限制，則匯出 AllowedVehicles
                 if (lane.allowedVehicleProfiles && lane.allowedVehicleProfiles.length > 0) {
                     xml += `                <tm:AllowedVehicles>\n`;
@@ -10774,11 +10944,17 @@ document.addEventListener('DOMContentLoaded', () => {
                         xml += `                <tm:speedLimit>${(sign.speedLimit / 3.6).toFixed(4)}</tm:speedLimit>\n`; // km/h to m/s
                         xml += '                <tm:side>Left</tm:side>\n';
                         xml += '              </tm:SpeedLimitSign>\n';
-                    } else {
+                    } else if (sign.signType === 'end') {
                         xml += '              <tm:NoSpeedLimitSign>\n';
                         xml += `                <tm:position>${sign.position.toFixed(4)}</tm:position>\n`;
                         xml += '                <tm:side>Left</tm:side>\n';
                         xml += '              </tm:NoSpeedLimitSign>\n';
+                    } else if (sign.signType === 'traffic_cone') {
+                        // 新增交通錐的獨立標籤
+                        xml += '              <tm:TrafficCone>\n';
+                        xml += `                <tm:position>${sign.position.toFixed(4)}</tm:position>\n`;
+                        xml += `                <tm:lateralOffset>${(sign.lateralOffset || 0).toFixed(4)}</tm:lateralOffset>\n`;
+                        xml += '              </tm:TrafficCone>\n';
                     }
                 });
                 xml += '            </tm:RoadSigns>\n';
@@ -11001,6 +11177,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
             xml += '    </tm:RoadMarkings>\n';
+        }
+        const freeSigns = Object.values(network.roadSigns).filter(s => s.isFree);
+        if (freeSigns.length > 0) {
+            xml += '    <tm:FreeRoadSigns>\n';
+            freeSigns.forEach(sign => {
+                xml += '      <tm:FreeRoadSign>\n';
+                xml += `        <tm:id>${sign.id}</tm:id>\n`;
+                xml += `        <tm:signType>${sign.signType}</tm:signType>\n`;
+                xml += `        <tm:x>${sign.x.toFixed(4)}</tm:x>\n`;
+                xml += `        <tm:y>${(sign.y * C_SYSTEM_Y_INVERT).toFixed(4)}</tm:y>\n`;
+                xml += `        <tm:rotation>${(sign.rotation || 0).toFixed(4)}</tm:rotation>\n`;
+                xml += '      </tm:FreeRoadSign>\n';
+            });
+            xml += '    </tm:FreeRoadSigns>\n';
         }
         xml += '  </tm:RoadNetwork>\n';
 
