@@ -7456,9 +7456,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 // 距離更新
                 this.distanceOnPath += this.speed * dt;
 
-                // 橫向位置更新 (利用現有的 updateLateralPosition 方法，它會讀取 targetLateralOffset)
-                this.updateLateralPosition(dt);
-
+                // 修改為：
+                this.updateLateralPosition(dt, network);
                 // 路徑轉換 (處理過彎與切換 Link)
                 if (this.distanceOnPath > this.currentPathLength) {
                     const leftoverDistance = this.distanceOnPath - this.currentPathLength;
@@ -7661,28 +7660,49 @@ document.addEventListener('DOMContentLoaded', () => {
                     const mergedIntervals = mergeIntervals(rawIntervals);
 
                     if (mergedIntervals.length > 0) {
-                        // 檢查預定的目標路線是否被牆擋住
                         const blockingInterval = mergedIntervals.find(inv => originalTarget >= inv.min && originalTarget <= inv.max);
 
                         if (blockingInterval) {
-                            // 計算要往左閃還是往右閃 (利用車輛當前偏移 this.lateralOffset 產生慣性，防止抖動)
-                            const distToMax = Math.abs(blockingInterval.max - this.lateralOffset);
-                            const distToMin = Math.abs(blockingInterval.min - this.lateralOffset);
-
                             const overshoot = this.isMotorcycle ? 0.2 : 0.4;
-                            let expectedOffset = (distToMax < distToMin) ? (blockingInterval.max + overshoot) : (blockingInterval.min - overshoot);
-
+                            const leftOffset = blockingInterval.min - overshoot;
+                            const rightOffset = blockingInterval.max + overshoot;
                             const maxAllowedOffset = (laneWidth / 2) - myHalfWidth + 0.4;
+
+                            // ★ 評估左右閃避的代價 (Cost)
+                            const evaluateCost = (offset) => {
+                                let cost = Math.abs(offset - this.lateralOffset); // 基礎代價：移動距離
+                                if (Math.abs(offset) > maxAllowedOffset) cost += 1000; // 越界懲罰
+                                if (mergedIntervals.some(inv => offset > inv.physicalMin && offset < inv.physicalMax)) cost += 5000; // 撞其他錐懲罰
+                                return cost;
+                            };
+
+                            const costLeft = evaluateCost(leftOffset);
+                            const costRight = evaluateCost(rightOffset);
+                            let expectedOffset = (costLeft < costRight) ? leftOffset : rightOffset;
+
                             const clampedOffset = Math.max(originalTarget - maxAllowedOffset, Math.min(originalTarget + maxAllowedOffset, expectedOffset));
 
-                            // 真實物理驗證：夾鉗後的位置是否依然撞牆？
                             const isImpassable = mergedIntervals.some(inv => clampedOffset > inv.physicalMin && clampedOffset < inv.physicalMax);
+                            const currentlyHitting = mergedIntervals.some(inv => this.lateralOffset > inv.physicalMin && this.lateralOffset < inv.physicalMax);
 
-                            if (isImpassable) {
-                                if (!this.isMotorcycle) this.coneForcedLaneChange = true;
-                                if (!this.laneChangeState && blockingInterval.fwdDist > 0) {
-                                    const stopGap = blockingInterval.fwdDist - (this.length / 2) - coneRadius - 1.0;
-                                    this.coneBlockingGap = Math.min(this.coneBlockingGap, Math.max(0.1, stopGap));
+                            // ★ 動態煞車：確保在橫移安全前不會撞上 (解決車速過快壓過圓錐的問題)
+                            if (blockingInterval.fwdDist > 0) {
+                                let needsBrake = false;
+                                if (isImpassable) {
+                                    needsBrake = true;
+                                } else if (currentlyHitting) {
+                                    const distToSlide = Math.abs(clampedOffset - this.lateralOffset);
+                                    const latSpeed = this.isMotorcycle ? 3.0 : 2.0;
+                                    const safeFwdDist = (distToSlide / latSpeed) * this.speed + 1.0;
+                                    if (blockingInterval.fwdDist < safeFwdDist) needsBrake = true;
+                                }
+
+                                if (needsBrake) {
+                                    if (!this.isMotorcycle) this.coneForcedLaneChange = true;
+                                    if (!this.laneChangeState) {
+                                        const stopGap = blockingInterval.fwdDist - (this.length / 2) - coneRadius - 1.0;
+                                        this.coneBlockingGap = Math.min(this.coneBlockingGap, Math.max(0.1, stopGap));
+                                    }
                                 }
                             }
 
@@ -7722,9 +7742,14 @@ document.addEventListener('DOMContentLoaded', () => {
                     const dynamicLookahead = Math.max(15.0, this.speed * lookaheadTime);
 
                     let isDodging = false;
-                    const step = 1.0;
+
+                    // [改善 1] 縮小步距，提高貝茲曲線投影精度，消弭目標跳動
+                    const step = 0.5;
                     const distToEnd = this.currentPathLength - this.distanceOnPath;
                     const searchEnd = Math.min(this.currentPathLength, this.distanceOnPath + dynamicLookahead);
+
+                    // [改善 2] 搜尋起點稍微往後退，避免車輛剛越過交通錐瞬間，投影點被迫往前跳躍
+                    const searchStart = Math.max(0, this.distanceOnPath - 3.0);
 
                     let rawIntervals = [];
 
@@ -7734,10 +7759,10 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (dx * dx + dy * dy > dynamicLookahead * dynamicLookahead) continue;
 
                         let minConeDistSq = Infinity;
-                        let bestS = 0;
+                        let bestS = searchStart;
                         let bestSign = 0;
 
-                        for (let s = Math.max(0, this.distanceOnPath); s <= searchEnd; s += step) {
+                        for (let s = searchStart; s <= searchEnd; s += step) {
                             const t = s / this.currentPathLength;
                             const pt = Geom.Bezier.getPoint(t, this.currentPath[0], this.currentPath[1], this.currentPath[2], this.currentPath[3]);
 
@@ -7759,8 +7784,11 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
 
                         const fwdDist = bestS - this.distanceOnPath;
-                        if (fwdDist > -2.0 && fwdDist < dynamicLookahead) {
-                            const sideDist = Math.sign(bestSign) * Math.sqrt(minConeDistSq);
+                        // [改善 3] 放寬後方判定範圍至 -3.0，確保車尾完全通過前，避障目標不會突變消失
+                        // [改善 3] 放寬後方判定範圍至 -3.0，確保車尾完全通過前，避障目標不會突變消失
+                        if (fwdDist > -3.0 && fwdDist < dynamicLookahead) {
+                            const effectiveSign = bestSign < 0 ? -1 : 1; // 避免 sign(0) 導致歸零
+                            const sideDist = effectiveSign * Math.sqrt(minConeDistSq);
                             rawIntervals.push({
                                 min: sideDist - requiredClearance,
                                 max: sideDist + requiredClearance,
@@ -7779,20 +7807,68 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (blockingInterval) {
                             isDodging = true;
 
-                            const distToMax = Math.abs(blockingInterval.max - this.lateralOffset);
-                            const distToMin = Math.abs(blockingInterval.min - this.lateralOffset);
-
                             const overshoot = this.isMotorcycle ? 0.3 : 0.6;
-                            let expectedOffset = (distToMax < distToMin) ? (blockingInterval.max + overshoot) : (blockingInterval.min - overshoot);
-
+                            const leftOffset = blockingInterval.min - overshoot;
+                            const rightOffset = blockingInterval.max + overshoot;
                             const limit = this.isMotorcycle ? 2.5 : 3.5;
+
+                            // ★ 建立路口動態代價系統：綜合評估待轉區與待轉車輛
+                            const evaluateCost = (offset) => {
+                                let cost = Math.abs(offset - this.lateralOffset);
+                                if (Math.abs(offset) > limit) cost += 1000;
+                                if (mergedIntervals.some(inv => offset > inv.physicalMin && offset < inv.physicalMax)) cost += 5000;
+                                
+                                // 預判車輛偏移後的真實世界座標
+                                const nx = -Math.sin(this.angle);
+                                const ny = Math.cos(this.angle);
+                                const projX = this.x + nx * (offset - this.lateralOffset);
+                                const projY = this.y + ny * (offset - this.lateralOffset);
+
+                                // 懲罰：閃避路線太靠近待轉格子
+                                if (network.twoStageBoxMap) {
+                                    for (const nodeId in network.twoStageBoxMap) {
+                                        for (const box of network.twoStageBoxMap[nodeId]) {
+                                            const distSq = (projX - box.x)**2 + (projY - box.y)**2;
+                                            if (distSq < 25) cost += (25 - Math.sqrt(distSq)) * 20;
+                                        }
+                                    }
+                                }
+                                // 懲罰：閃避路線太靠近正在待轉的機車
+                                for (const other of allVehicles) {
+                                    if (other.id === this.id) continue;
+                                    if (other.twoStageState === 'waiting' || other.twoStageState === 'moving_to_box') {
+                                        const distSq = (projX - other.x)**2 + (projY - other.y)**2;
+                                        if (distSq < 25) cost += (25 - Math.sqrt(distSq)) * 30; // 5米半徑雷達
+                                    }
+                                }
+                                return cost;
+                            };
+
+                            const costLeft = evaluateCost(leftOffset);
+                            const costRight = evaluateCost(rightOffset);
+                            let expectedOffset = (costLeft < costRight) ? leftOffset : rightOffset;
+
                             const clampedOffset = Math.max(-limit, Math.min(limit, expectedOffset));
 
                             const isImpassable = mergedIntervals.some(inv => clampedOffset > inv.physicalMin && clampedOffset < inv.physicalMax);
+                            const currentlyHitting = mergedIntervals.some(inv => this.lateralOffset > inv.physicalMin && this.lateralOffset < inv.physicalMax);
 
-                            if (isImpassable && blockingInterval.fwdDist > 0) {
-                                const stopGap = blockingInterval.fwdDist - (this.length / 2) - coneRadius - 0.5;
-                                this.coneBlockingGap = Math.min(this.coneBlockingGap, Math.max(0.1, stopGap));
+                            // ★ 動態煞車：橫移需要時間，如果來不及橫移完畢就撞上，必須踩煞車減速！
+                            if (blockingInterval.fwdDist > 0) {
+                                let needsBrake = false;
+                                if (isImpassable) {
+                                    needsBrake = true;
+                                } else if (currentlyHitting) {
+                                    const distToSlide = Math.abs(clampedOffset - this.lateralOffset);
+                                    const latSpeed = this.isMotorcycle ? 3.0 : 2.0;
+                                    const safeFwdDist = (distToSlide / latSpeed) * this.speed + 1.0;
+                                    if (blockingInterval.fwdDist < safeFwdDist) needsBrake = true;
+                                }
+
+                                if (needsBrake) {
+                                    const stopGap = blockingInterval.fwdDist - (this.length / 2) - coneRadius - 0.5;
+                                    this.coneBlockingGap = Math.min(this.coneBlockingGap, Math.max(0.1, stopGap));
+                                }
                             }
 
                             this.targetLateralOffset = clampedOffset;
@@ -7812,8 +7888,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
                     }
 
-                    // 強制收斂機制 (確保無縫接軌下一條路)
-                    if (distToEnd < 6.0 && !isDodging) {
+                    // [改善 4] 強制收斂機制優化：不論有沒有在 Dodge，只要快出路口就將 Target 平滑壓回 0
+                    if (distToEnd < 6.0) {
                         const decayFactor = Math.pow(distToEnd / 6.0, 2);
                         this.targetLateralOffset = originalTarget + (this.targetLateralOffset - originalTarget) * decayFactor;
                     }
@@ -7823,10 +7899,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
             // 更新橫向位置
-            this.updateLateralPosition(dt);
+            //this.updateLateralPosition(dt);
 
             // 更新橫向位置
-            this.updateLateralPosition(dt);
+            this.updateLateralPosition(dt, network);
 
             // 機車鑽車決策
             if (this.isMotorcycle && this.state === 'onLink') {
@@ -8437,165 +8513,74 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
 
-        /**
-                 * 機車動態更新 - 靈活閃避版
-                 */
-        updateMotorcycleDynamics(dt, network, allVehicles) {
-            if (this.state !== 'onLink' || this.laneChangeState) return;
+/**
+         * 更新橫向位置 (PD 彈簧阻尼系統 + 車身轉向平滑濾波)
+         * 從物理層面徹底根除抖動，保證車頭轉角連續滑順
+         */
+        updateLateralPosition(dt, network) {
+            if (typeof this.lateralVelocity === 'undefined') this.lateralVelocity = 0;
 
-            if (this.speed < 0.2) {
-                this.targetLateralOffset = this.lateralOffset;
-                return;
-            }
-
-            const link = network.links[this.currentLinkId];
-            if (!link) return;
-            const lane = link.lanes[this.currentLaneIndex];
-            if (!lane) return;
-
-            // =================================================================
-            // ★★★ [修正] 兩段式左轉機車：精準控制在「車道右側 1/3 範圍」 ★★★
-            // =================================================================
-            if (this.isPreparingForTwoStageTurn(network)) {
-                this.decisionTimer -= dt;
-                if (this.decisionTimer > 0) return;
-
-                const laneWidth = lane.width || 3.5;
-                const halfWidth = laneWidth / 2;
-                const myHalfWidth = this.width / 2;
-
-                // ★ 核心修正：在這套引擎中，Lateral Offset 的 正值 (+) 代表靠右，負值 (-) 代表靠左
-
-                // 1. 物理安全右極限 (最靠右，避免壓線或撞路緣)
-                // 從車道中心 (0) 往右 (+halfWidth)，再扣除機車半寬與安全距離
-                const maxRightOffset = halfWidth - myHalfWidth - 0.15;
-
-                // 2. 右側三分之一的左邊界 (確保不會騎到車道中間)
-                // 從車道最右側往左推算 1/3 個車道寬
-                const rightThirdLeftBoundary = halfWidth - (laneWidth / 3);
-
-                // 3. 取右側 1/3 的中心點作為動態擺動基準
-                // 從車道最右側往左推算 1/6 個車道寬 (剛好是右側 1/3 的正中間)
-                const centerOfRightThird = halfWidth - (laneWidth / 6);
-
-                // 4. 加上微小的隨機擺動 (Jitter)，模擬真實騎乘的微調
-                const jitter = (Math.random() - 0.5) * (laneWidth / 6);
-                let desiredOffset = centerOfRightThird + jitter;
-
-                // 5. 嚴格限制在安全範圍內
-                // 因為是正值，Math.max 確保不小於左邊界 (不跨入中間)，Math.min 確保不大於右極限 (不撞邊緣)
-                this.targetLateralOffset = Math.min(maxRightOffset, Math.max(rightThirdLeftBoundary, desiredOffset));
-
-                this.decisionTimer = 1.0 + Math.random();
-                return;
-            }
-
-            this.decisionTimer -= dt;
-            if (this.decisionTimer > 0) return;
-
-            const laneWidth = lane.width || 3.5;
-            const halfWidth = laneWidth / 2 - 0.2;
-
-            // 擴大雷達視野至 25 公尺，提早發現停等車輛
-            const { leader, gap } = this.findNearbyLeader(allVehicles, 25.0);
-
-            if (!leader) {
-                if (this.swarmTimer > 0) {
-                    this.decisionTimer = 1.0;
-                } else {
-                    const biasPull = 0.05;
-                    this.targetLateralOffset = this.targetLateralOffset * (1 - biasPull) + this.preferredBias * biasPull;
-                    this.decisionTimer = 2.0 + Math.random();
-                }
-            } else {
-                const leaderOffset = leader.lateralOffset || 0;
-
-                // 判斷前車是否為汽車且速度很慢 (例如：停等右轉、等紅燈)
-                const isLeaderSlowCar = leader.width > 1.2 && leader.speed < 3.0;
-                // 判斷是否快速接近前車
-                const isApproachingFast = (this.speed - leader.speed) > 2.0 && gap < 15.0;
-
-                if ((isLeaderSlowCar && gap < 20.0) || isApproachingFast) {
-                    // ★ 進入積極閃避模式 ★
-                    const newTarget = this.findFilteringGap(leader, halfWidth);
-
-                    // 檢查當前偏移量是否已經能安全閃過
-                    const isCurrentlySafe = Math.abs(this.lateralOffset - leaderOffset) > ((this.width + leader.width) / 2 + 0.2);
-
-                    if (!isCurrentlySafe) {
-                        // 如果有碰撞風險，放棄平滑過渡，直接設定強力目標位置以觸發緊急轉向
-                        this.targetLateralOffset = newTarget;
-                        this.decisionTimer = 0.1; // 極度頻繁檢查，保持閃避姿態
-                    } else {
-                        // 已經在安全路線上，維持並平滑
-                        this.targetLateralOffset = this.targetLateralOffset * 0.8 + newTarget * 0.2;
-                        this.decisionTimer = 0.5;
-                    }
-                } else if (gap > 10.0 || leader.speed > this.speed * 0.8) {
-                    this.decisionTimer = 1.5 + Math.random();
-                } else if (leader.isMotorcycle) {
-                    const offsetStep = (leader.width + this.width) / 2 + 0.3;
-                    if (Math.abs(leaderOffset - this.lateralOffset) < offsetStep * 0.8) {
-                        const direction = leaderOffset > 0 ? -1 : 1;
-                        const adjustment = direction * 0.6; // 加大機車間的錯開幅度
-                        this.targetLateralOffset = Math.max(-halfWidth, Math.min(halfWidth, this.lateralOffset + adjustment));
-                    }
-                    this.decisionTimer = 0.5 + Math.random() * 0.4;
-                } else {
-                    this.decisionTimer = 1.0 + Math.random();
-                }
-            }
-
-            this.targetLateralOffset = Math.max(-halfWidth, Math.min(halfWidth, this.targetLateralOffset));
-        }
-
-        /**
-                 * 更新橫向位置 (加入汽車與機車的緊急閃避爆發力)
-                 */
-        updateLateralPosition(dt) {
             const diff = this.targetLateralOffset - this.lateralOffset;
-            if (Math.abs(diff) < 0.005) {
-                this.lateralOffset = this.targetLateralOffset;
-                return;
-            }
+            const isReturning = Math.abs(diff) < 0.1;
 
+            // 1. 設定 PD 控制器的參數 (彈簧剛度 Kp 與 阻尼 Kd)
+            let kp, kd;
             if (this.isMotorcycle) {
-                // 一般情況：高速時橫向移動較慢以維持穩定
-                let speedFactor = Math.max(0.3, 1.0 - this.speed / 20.0);
-                let tau = 0.5; // 平滑指數
-                let maxLateralSpeed = 1.5 * speedFactor;
-
-                // ★ 緊急閃避觸發：如果目標位置與現在差距過大，解開速度與平滑限制
-                if (Math.abs(diff) > 0.4) {
-                    speedFactor = 1.0;
-                    tau = 0.15; // 極低的 tau 讓機車瞬間甩頭
-                    maxLateralSpeed = 3.5; // 允許橫向高速移動
-                }
-
-                const alpha = 1 - Math.exp(-dt / tau);
-                let move = diff * alpha;
-
-                const limit = maxLateralSpeed * dt;
-                move = Math.max(-limit, Math.min(limit, move));
-
-                this.lateralOffset += move;
+                kp = isReturning ? 4.0 : 15.0; // 機車避障敏捷，回正平滑
             } else {
-                // 【關鍵修正 3】：汽車的橫向移動敏捷度提升
-                const dir = Math.sign(diff);
-
-                // 如果目標差距很大 (代表正在閃避錐筒或緊急切換)，動態提升汽車的橫向移動速度
-                let currentLatSpeed = this.lateralSpeed; // 預設為 1.5
-                if (Math.abs(diff) > 0.5) {
-                    currentLatSpeed = 2.8; // 給予汽車較高的閃避敏捷度，使其能即時避開交通錐
-                }
-
-                const move = currentLatSpeed * dt;
-                if (Math.abs(diff) < move) {
-                    this.lateralOffset = this.targetLateralOffset;
-                } else {
-                    this.lateralOffset += dir * move;
-                }
+                kp = isReturning ? 2.0 : 10.0; // 汽車避障沉穩，回正極緩
             }
+            
+            // 臨界阻尼 Kd = 2 * sqrt(Kp)，保證滑順貼合目標且絕對不震盪 (Overshoot)
+            kd = 2.0 * Math.sqrt(kp);
+
+            // 計算橫向加速度 (虎克定律 + 阻尼器: F = k*x - c*v)
+            let lateralAccel = (kp * diff) - (kd * this.lateralVelocity);
+
+            // 限制最大橫向加速度 (防物理不合理的瞬間側滑)
+            const maxAccel = this.isMotorcycle ? 6.0 : 4.0;
+            lateralAccel = Math.max(-maxAccel, Math.min(maxAccel, lateralAccel));
+
+            // 積分求速度
+            this.lateralVelocity += lateralAccel * dt;
+            
+            // 限制最大橫向速度
+            const maxLatVel = this.isMotorcycle ? 3.0 : 2.0;
+            this.lateralVelocity = Math.max(-maxLatVel, Math.min(maxLatVel, this.lateralVelocity));
+
+            // 積分求位置
+            this.lateralOffset += this.lateralVelocity * dt;
+
+            // 邊界保護 (防止撞牆積分無效累積)
+            let maxLimit = 1.5; 
+            if (network && this.state === 'onLink') {
+                const link = network.links[this.currentLinkId];
+                if (link && link.lanes[this.currentLaneIndex]) {
+                    maxLimit = Math.max(0, (link.lanes[this.currentLaneIndex].width / 2) - (this.width / 2) - 0.1);
+                }
+            } else if (this.state === 'inIntersection') {
+                maxLimit = 4.0; // 路口內容許較大避障偏移
+            }
+            
+            if (this.lateralOffset > maxLimit) {
+                this.lateralOffset = maxLimit;
+                if (this.lateralVelocity > 0) this.lateralVelocity = 0; 
+            } else if (this.lateralOffset < -maxLimit) {
+                this.lateralOffset = -maxLimit;
+                if (this.lateralVelocity < 0) this.lateralVelocity = 0; 
+            }
+
+            // 2. 計算車身偏轉角 (Yaw Bias) 搭配平滑濾波
+            // 取基底速度避免靜止或低速時原地打轉產生銳角
+            const baseForwardSpeed = Math.max(this.speed, 4.0); 
+            const targetYawBias = Math.atan2(this.lateralVelocity, baseForwardSpeed);
+
+            if (typeof this.currentYawBias === 'undefined') this.currentYawBias = 0;
+
+            // 指數衰減平滑車身轉向，模擬方向盤打盤極限與車身慣性
+            const tauYaw = this.isMotorcycle ? 0.15 : 0.30;
+            const alphaYaw = 1 - Math.exp(-dt / tauYaw);
+            this.currentYawBias += (targetYawBias - this.currentYawBias) * alphaYaw;
         }
 
         decideLaneFiltering(allVehicles, network) {
@@ -10782,6 +10767,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (this.lateralOffset < -limit) this.lateralOffset = -limit;
 
                 if (this.laneChangeState) {
+                    // 換車道邏輯維持不變 (它內部已經有獨立的 parabolic yawBias)
                     const fromLane = link.lanes[this.laneChangeState.fromLaneIndex];
                     const toLane = link.lanes[this.laneChangeState.toLaneIndex];
 
@@ -10850,17 +10836,15 @@ document.addEventListener('DOMContentLoaded', () => {
                         const ny = Math.cos(angle);
                         this.x = posData.x + nx * this.lateralOffset;
                         this.y = posData.y + ny * this.lateralOffset;
-                        this.angle = angle;
+
+                        // === [修改] 將計算出的動態偏轉角疊加到原本的路線角度上 ===
+                        this.angle = angle + (this.currentYawBias || 0);
                     }
                 }
             } else if (this.state === 'inIntersection' || this.state === 'parking_maneuver') {
-                // ★★★★★ [關鍵修正] 支援 直線(2點) 與 貝茲曲線(4點) 兩種模式 ★★★★★
-
-                // 防呆：如果 path 遺失，直接返回
                 if (!this.currentPath || this.currentPath.length < 2) return;
 
                 if (this.currentPath.length === 2) {
-                    // --- 直線模式 (兩段式左轉/停車) ---
                     const p0 = this.currentPath[0];
                     const p1 = this.currentPath[1];
 
@@ -10870,18 +10854,15 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                     t = Math.max(0, Math.min(1.0, t));
 
-                    // 線性插值
                     this.x = p0.x + (p1.x - p0.x) * t;
                     this.y = p0.y + (p1.y - p0.y) * t;
 
-                    // 角度：沿著直線方向
-                    // (如果是待轉區 Waiting 狀態，angle 會在 update 裡被強制覆蓋為朝向目標路口，所以這裡算出的值可能會被蓋過，沒關係)
                     if (this.twoStageState !== 'waiting') {
-                        this.angle = Math.atan2(p1.y - p0.y, p1.x - p0.x);
+                        // === [修改] 直線進入待轉區/停車區時，也要加上偏轉角 ===
+                        this.angle = Math.atan2(p1.y - p0.y, p1.x - p0.x) + (this.currentYawBias || 0);
                     }
 
                 } else if (this.currentPath.length >= 4) {
-                    // --- 貝茲曲線模式 (一般轉彎) ---
                     const t = this.distanceOnPath / this.currentPathLength;
                     const [p0, p1, p2, p3] = this.currentPath;
 
@@ -10893,38 +10874,23 @@ document.addEventListener('DOMContentLoaded', () => {
                     let trueTangentX = tangent.x;
                     let trueTangentY = tangent.y;
 
-                    // =================================================================
-                    // ★★★ [終極平滑修復 & 真實轉向] 雙端點動態軌跡補償 ★★★
-                    // 使用 Smoothstep 緩動函數，確保車頭在路口中段呈現自然的斜向切車角度，
-                    // 且在起點與終點完美平行於車道，無任何角度頓挫！
-                    // =================================================================
                     if (this.startCorrection && this.endCorrection) {
                         const t2 = safeT * safeT;
                         const t3 = t2 * safeT;
 
-                        // 1. 位置補償權重 (Smoothstep)
-                        // weightStart 從 1 平滑降到 0
                         const weightStart = 1.0 - 3.0 * t2 + 2.0 * t3;
-                        // weightEnd 從 0 平滑升到 1
                         const weightEnd = 3.0 * t2 - 2.0 * t3;
 
-                        // 將誤差補償加回坐標中
                         pos.x += this.startCorrection.dx * weightStart + this.endCorrection.dx * weightEnd;
                         pos.y += this.startCorrection.dy * weightStart + this.endCorrection.dy * weightEnd;
 
-                        // 2. 角度補償 (位置權重的微積分導數 Derivative)
-                        // d/dt (weightStart) = -6t + 6t^2
-                        // d/dt (weightEnd)   =  6t - 6t^2
                         const derivStart = -6.0 * safeT + 6.0 * t2;
                         const derivEnd = 6.0 * safeT - 6.0 * t2;
 
-                        // 將誤差變化率加入原始切線中，造就真實的車頭斜向擺動
                         trueTangentX += this.startCorrection.dx * derivStart + this.endCorrection.dx * derivEnd;
                         trueTangentY += this.startCorrection.dy * derivStart + this.endCorrection.dy * derivEnd;
                     }
-                    // =================================================================
 
-                    // 計算最終真實車頭角度
                     const angle = Math.atan2(trueTangentY, trueTangentX);
 
                     const nx = -Math.sin(angle);
@@ -10932,7 +10898,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
                     this.x = pos.x + nx * this.lateralOffset;
                     this.y = pos.y + ny * this.lateralOffset;
-                    this.angle = angle;
+
+                    // === [修改] 貝茲曲線(彎道避障)也要加上偏轉角 ===
+                    this.angle = angle + (this.currentYawBias || 0);
                 }
             }
         }
