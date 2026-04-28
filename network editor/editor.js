@@ -11,6 +11,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let stage, layer, gridLayer; // <-- MODIFIED: Removed measureGroup
     let activeTool = 'select';
     let connectMode = 'manual'; // 'manual' (拖曳) 或 'box' (框選)
+    let markingMode = 'standard'; // <--- 新增此行：'standard' 或 'channelization'
     let intersectionMode = 'zone'; // 'zone' (挖空) 或 'point' (中心聚合)
     let tempShape = null;
     let tempMeasureText = null;
@@ -296,28 +297,17 @@ document.addEventListener('DOMContentLoaded', () => {
         return detector;
     }
 
-    function createRoadSign(link, position, lateralOffset = null, signType = 'start', isFree = false, absolutePos = null) {
+    function createRoadSign(link, position, lateralOffset = null, signType = 'start') {
         const id = `sign_${++idCounter}`;
-
-        let initX = 0, initY = 0, initRot = 0;
-        if (absolutePos) {
-            initX = absolutePos.x;
-            initY = absolutePos.y;
-            initRot = absolutePos.rotation || 0;
-        }
 
         const sign = {
             id,
             type: 'RoadSign',
-            linkId: link ? link.id : null,
-            position: position || 0,
+            linkId: link.id,
+            position,
             lateralOffset: lateralOffset,
-            signType: signType,
+            signType: signType, // 建立時直接套用傳入的類型
             speedLimit: 30,
-            isFree: isFree,
-            x: initX,
-            y: initY,
-            rotation: initRot,
             konvaShape: new Konva.Shape({
                 id,
                 draggable: true,
@@ -355,16 +345,13 @@ document.addEventListener('DOMContentLoaded', () => {
             }),
         };
 
+        // 只有在剛被工具點擊建立(尚未有偏移值)時，才賦予預設值
         if (sign.lateralOffset === null) {
-            if (link) {
-                const totalWidth = getLinkTotalWidth(link);
-                if (signType === 'traffic_cone') {
-                    sign.lateralOffset = 0;
-                } else {
-                    sign.lateralOffset = (totalWidth / 2) + 8;
-                }
+            const totalWidth = getLinkTotalWidth(link);
+            if (signType === 'traffic_cone') {
+                sign.lateralOffset = 0; // 交通錐預設放中央
             } else {
-                sign.lateralOffset = 0;
+                sign.lateralOffset = (totalWidth / 2) + 8; // 一般標誌放路緣
             }
         }
 
@@ -373,31 +360,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
         sign.konvaShape.on('dragmove', function (e) {
             e.cancelBubble = true;
-
-            // 如果是自由模式，直接更新絕對座標
-            if (sign.isFree) {
-                sign.x = sign.konvaShape.x();
-                sign.y = sign.konvaShape.y();
-                if (selectedObject && selectedObject.id === sign.id) {
-                    updatePropertiesPanel(sign);
-                }
-                return;
-            }
-
-            // 鎖定道路模式：投影計算
-            const targetLink = network.links[sign.linkId];
-            if (!targetLink) return;
-
             const pointerPos = stage.getPointerPosition();
             const localPos = layer.getAbsoluteTransform().copy().invert().point(pointerPos);
 
-            const { dist } = projectPointOnPolyline(localPos, targetLink.waypoints);
-            const clampedDist = Math.max(0, Math.min(dist, getPolylineLength(targetLink.waypoints)));
+            const { dist } = projectPointOnPolyline(localPos, link.waypoints);
+            const clampedDist = Math.max(0, Math.min(dist, getPolylineLength(link.waypoints)));
             sign.position = clampedDist;
 
-            const newPt = getPointAlongPolyline(targetLink.waypoints, clampedDist);
+            const newPt = getPointAlongPolyline(link.waypoints, clampedDist);
             const normal = getNormal(newPt.vec);
-            const totalWidth = getLinkTotalWidth(targetLink);
+            const totalWidth = getLinkTotalWidth(link);
 
             if (sign.signType === 'traffic_cone') {
                 const v = getVector(newPt.point, localPos);
@@ -522,36 +494,55 @@ document.addEventListener('DOMContentLoaded', () => {
         } else if (obj.type === 'RoadMarking') {
             konvaObj = obj.konvaGroup;
 
-            // --- [修正重點開始] ---
-            // 判斷是否為可自由操作模式 (Node 模式 或 Link 上的 Free 模式)
-            const isFreeMode = obj.nodeId || (obj.markingType === 'two_stage_box' && obj.isFree);
+            // --- 槽化線模式 ---
+            if (obj.markingType === 'channelization') {
+                const tr = new Konva.Transformer({
+                    nodes: [konvaObj],
+                    keepRatio: false,
+                    borderStroke: 'blue',
+                    anchorStroke: 'blue',
+                    anchorFill: 'white',
+                    rotationSnaps: [0, 90, 180, 270],
+                    shouldOverdrawWholeArea: true,
+                    anchorSize: 8
+                });
+                layer.add(tr);
+                tr.moveToTop();
+                obj.konvaTransformer = tr;
 
-            // 無論是否鎖定，都建立 Transformer 以顯示選取框
-            const tr = new Konva.Transformer({
-                nodes: [konvaObj],
-                centeredScaling: true,
-                resizeEnabled: false, // 標線大小由屬性面板數值控制，不透過變形框
-                rotateEnabled: isFreeMode, // 只有自由模式允許旋轉
-                borderStroke: 'blue',
-                anchorStroke: 'blue',
-                // 如果是鎖定模式(依附車道)，隱藏所有控制點，只顯示藍色邊框
-                enabledAnchors: isFreeMode ? ['top-left', 'top-right', 'bottom-left', 'bottom-right'] : []
-            });
+                drawChannelizationHandles(obj);
+                konvaObj.on('dragmove transform', () => updateChannelizationHandlePositions(obj));
 
-            layer.add(tr);
-            tr.moveToTop();
-            obj.konvaTransformer = tr;
-
-            // 只有在允許自由移動時，才監聽變形結束事件
-            if (isFreeMode) {
-                konvaObj.on('transformend', () => {
-                    obj.rotation = konvaObj.rotation();
+                konvaObj.on('transformend dragend', () => {
                     obj.x = konvaObj.x();
                     obj.y = konvaObj.y();
+                    obj.rotation = konvaObj.rotation();
+
+                    const polygon = konvaObj.findOne('.marking-shape');
+                    if (polygon) {
+                        const pts = polygon.points();
+                        for (let i = 0; i < pts.length; i += 2) {
+                            // 【修正】使用 getTransform().point 來確保座標計算不受畫布縮放影響
+                            const layerPos = konvaObj.getTransform().point({ x: pts[i], y: pts[i + 1] });
+                            obj.points[i] = layerPos.x;
+                            obj.points[i + 1] = layerPos.y;
+                        }
+                    }
                     updatePropertiesPanel(obj);
+                    drawChannelizationHandles(obj);
                 });
             }
-            // --- [修正重點結束] ---
+            // --- 一般標線模式 ---
+            else {
+                const isFreeMode = obj.nodeId || (obj.markingType === 'two_stage_box' && obj.isFree);
+                const tr = new Konva.Transformer({
+                    nodes: [konvaObj], centeredScaling: true, resizeEnabled: false, rotateEnabled: isFreeMode, borderStroke: 'blue', anchorStroke: 'blue', enabledAnchors: isFreeMode ? ['top-left', 'top-right', 'bottom-left', 'bottom-right'] : []
+                });
+                layer.add(tr); tr.moveToTop(); obj.konvaTransformer = tr;
+                if (isFreeMode) konvaObj.on('transformend', () => {
+                    obj.rotation = konvaObj.rotation(); obj.x = konvaObj.x(); obj.y = konvaObj.y(); updatePropertiesPanel(obj);
+                });
+            }
         }
 
         // 套用視覺陰影效果到選取的 Konva 物件
@@ -622,9 +613,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 destroyParkingLotHandles(obj); // 清除控制點
                 konvaObj = obj.konvaGroup;
             } else if (obj.type === 'RoadMarking') {
-                if (obj.konvaTransformer) {
-                    obj.konvaTransformer.destroy();
-                    obj.konvaTransformer = null;
+                if (obj.konvaTransformer) { obj.konvaTransformer.destroy(); obj.konvaTransformer = null; }
+                if (obj.markingType === 'channelization') {
+                    obj.konvaGroup.off('dragmove transform'); obj.konvaGroup.off('transformend dragend');
+                    destroyChannelizationHandles(obj);
                 }
                 konvaObj = obj.konvaGroup;
             }
@@ -1068,12 +1060,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
     function drawRoadSign(sign) {
-        if (sign.isFree) {
-            sign.konvaShape.position({ x: sign.x, y: sign.y });
-            sign.konvaShape.rotation(sign.rotation);
-            return;
-        }
-
         const link = network.links[sign.linkId];
         if (!link || link.waypoints.length < 2) return;
 
@@ -1084,6 +1070,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (sign.signType === 'traffic_cone') {
             sign.konvaShape.rotation(Konva.Util.radToDeg(Math.atan2(vec.y, vec.x)));
         } else {
+            // 一般標誌強制確保釘在路緣 (避免舊資料出錯)
             sign.lateralOffset = (totalWidth / 2) + 8;
             sign.konvaShape.rotation(0);
         }
@@ -1537,7 +1524,8 @@ document.addEventListener('DOMContentLoaded', () => {
             case 'add-marking':
                 Object.values(network.links).forEach(l => l.konvaGroup.listening(true));
                 Object.values(network.nodes).forEach(n => n.konvaShape.listening(true));
-                stage.container().style.cursor = 'pointer';
+                // 修改這行：根據當前模式決定游標為十字或指標
+                stage.container().style.cursor = markingMode === 'channelization' ? 'crosshair' : 'pointer';
                 break;
 
             case 'subnetwork':
@@ -1915,6 +1903,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     activeTool !== 'add-parking-lot' &&
                     activeTool !== 'add-parking-gate' &&
                     activeTool !== 'add-intersection' &&
+                    !(activeTool === 'add-marking' && markingMode === 'channelization') && // <--- 新增此行
                     activeTool !== 'subnetwork') {
 
                     isPanning = true;
@@ -2055,7 +2044,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             // --- Add Link / Measure / Intersection 等工具的動態線條 ---
-            if ((activeTool === 'add-link' || activeTool === 'measure' || activeTool === 'add-parking-lot' || activeTool === 'add-intersection') && tempShape) {
+            if ((activeTool === 'add-link' || activeTool === 'measure' || activeTool === 'add-parking-lot' || activeTool === 'add-intersection' || (activeTool === 'add-marking' && markingMode === 'channelization')) && tempShape) {
                 const points = tempShape.points();
                 // 更新最後一個點為當前滑鼠位置
                 points[points.length - 2] = worldPos.x;
@@ -2169,7 +2158,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 tempShape.height(pos.y - startPos.y);
                 layer.batchDraw();
             }
-            if ((activeTool === 'add-link' || activeTool === 'measure' || activeTool === 'add-parking-lot' || activeTool === 'add-intersection') && tempShape) {
+            if ((activeTool === 'add-link' || activeTool === 'measure' || activeTool === 'add-parking-lot' || activeTool === 'add-intersection' || (activeTool === 'add-marking' && markingMode === 'channelization')) && tempShape) {
                 const pos = stage.getPointerPosition();
                 const points = tempShape.points();
                 const localPos = { x: (pos.x - stage.x()) / stage.scaleX(), y: (pos.y - stage.y()) / stage.scaleY(), };
@@ -2342,7 +2331,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
 
-            if (['lane-port', 'control-point', 'waypoint-handle', 'length-handle'].includes(e.target.name())) {
+            if (['lane-port', 'control-point', 'waypoint-handle', 'length-handle', 'parking-vertex-handle', 'channelization-vertex-handle'].includes(e.target.name())) {
                 return;
             }
 
@@ -3356,34 +3345,42 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             layer.batchDraw(); // <--- Fix: Ensure changes are rendered
         } else if (activeTool === 'add-marking') {
-            // 檢查點擊到的是 Link 還是 Node
-            let targetLink = null;
-            let targetNode = null;
-
-            // 檢查是否點擊到 Group (Link/Node)
-            const clickedGroup = e.target.findAncestor('Group');
-            if (clickedGroup) {
-                if (network.links[clickedGroup.id()]) targetLink = network.links[clickedGroup.id()];
-                else if (network.nodes[clickedGroup.id()]) targetNode = network.nodes[clickedGroup.id()];
+            if (markingMode === 'channelization') {
+                // 槽化線模式：連續畫多邊形
+                if (!tempShape) {
+                    tempShape = new Konva.Line({
+                        points: [pos.x, pos.y, pos.x, pos.y],
+                        stroke: 'white', strokeWidth: 0.5, closed: true,
+                        fill: 'rgba(255, 255, 255, 0.2)', listening: false
+                    });
+                    layer.add(tempShape);
+                } else {
+                    const currentPoints = tempShape.points();
+                    currentPoints[currentPoints.length - 2] = pos.x;
+                    currentPoints[currentPoints.length - 1] = pos.y;
+                    currentPoints.push(pos.x, pos.y);
+                    tempShape.points(currentPoints);
+                }
+                layer.batchDraw();
             } else {
-                // 直接點擊 Shape
-                if (network.nodes[e.target.id()]) targetNode = network.nodes[e.target.id()];
-            }
-
-            if (targetLink) {
-                // 在 Link 上新增，預設為停止線
-                const { dist } = projectPointOnPolyline(pos, targetLink.waypoints);
-                const mk = createRoadMarking('stop_line', targetLink, dist);
-                selectObject(mk);
-                saveState();
-                setTool('select');
-            } else if (targetNode) {
-                // 在 Node 上新增，預設為兩段式左轉
-                // 使用 Node 中心或點擊位置
-                const mk = createRoadMarking('two_stage_box', targetNode, pos);
-                selectObject(mk);
-                saveState();
-                setTool('select');
+                // 原有標準模式
+                const clickedShape = e.target;
+                let targetLink = null, targetNode = null;
+                const clickedGroup = clickedShape.findAncestor('Group');
+                if (clickedGroup) {
+                    if (network.links[clickedGroup.id()]) targetLink = network.links[clickedGroup.id()];
+                    else if (network.nodes[clickedGroup.id()]) targetNode = network.nodes[clickedGroup.id()];
+                } else {
+                    if (network.nodes[clickedShape.id()]) targetNode = network.nodes[clickedShape.id()];
+                }
+                if (targetLink) {
+                    const { dist } = projectPointOnPolyline(pos, targetLink.waypoints);
+                    const mk = createRoadMarking('stop_line', targetLink, dist);
+                    selectObject(mk); saveState(); setTool('select');
+                } else if (targetNode) {
+                    const mk = createRoadMarking('two_stage_box', targetNode, pos);
+                    selectObject(mk); saveState(); setTool('select');
+                }
             }
         }
     }
@@ -3412,6 +3409,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
             tempShape.destroy();
             tempShape = null;
+            setTool('select');
+        } else if (activeTool === 'add-marking' && markingMode === 'channelization' && tempShape) {
+            // --- 新增：槽化線完成繪製 ---
+            const rawPoints = tempShape.points();
+            if (rawPoints.length >= 4) {
+                rawPoints.pop(); rawPoints.pop(); // 移除最後一組游標跟隨點
+            }
+            if (rawPoints.length < 6) { // 最少需三個頂點
+                alert(I18N.t("Channelization must have at least 3 points."));
+                tempShape.destroy(); tempShape = null; return;
+            }
+            const mk = createRoadMarking('channelization', null, rawPoints);
+            selectObject(mk);
+            saveState();
+
+            tempShape.destroy(); tempShape = null;
             setTool('select');
         }
     });
@@ -3504,7 +3517,79 @@ document.addEventListener('DOMContentLoaded', () => {
         delete network.parkingLots[id];
     }
 
+    function drawChannelizationHandles(marking) {
+        destroyChannelizationHandles(marking);
+        const group = marking.konvaGroup;
 
+        // 抓取初始的多邊形來建立控制點
+        const initialPolygon = group.findOne('.marking-shape');
+        if (!initialPolygon) return;
+
+        const polyPoints = initialPolygon.points();
+        marking.konvaHandles = [];
+        const scale = 1 / stage.scaleX();
+
+        for (let i = 0; i < polyPoints.length; i += 2) {
+            const layerPos = group.getTransform().point({ x: polyPoints[i], y: polyPoints[i + 1] });
+
+            const handle = new Konva.Circle({
+                x: layerPos.x, y: layerPos.y, radius: 6, fill: '#00d2ff', stroke: 'white',
+                strokeWidth: 2 * scale, draggable: true, name: 'channelization-vertex-handle',
+                scaleX: scale, scaleY: scale
+            });
+
+            handle.setAttr('vertexIndex', i);
+            handle.on('dragmove', (e) => {
+                // 【修正重點】每次拖曳時都即時去群組裡尋找最新的多邊形，避免操作到被刪除的舊圖形
+                const currentPolygon = group.findOne('.marking-shape');
+                if (!currentPolygon) return;
+
+                const newLocal = group.getTransform().copy().invert().point({ x: e.target.x(), y: e.target.y() });
+
+                const currentPoints = currentPolygon.points();
+                const idx = e.target.getAttr('vertexIndex');
+                currentPoints[idx] = newLocal.x;
+                currentPoints[idx + 1] = newLocal.y;
+                currentPolygon.points(currentPoints); // 更新畫面
+
+                if (marking.konvaTransformer) marking.konvaTransformer.forceUpdate();
+
+                // 更新背後的資料模型
+                const newGlobalPos = group.getTransform().point(newLocal);
+                marking.points[idx] = newGlobalPos.x;
+                marking.points[idx + 1] = newGlobalPos.y;
+            });
+            handle.on('dragend', () => saveState());
+
+            layer.add(handle);
+            marking.konvaHandles.push(handle);
+        }
+        marking.konvaHandles.forEach(h => h.moveToTop());
+        layer.batchDraw();
+    }
+    function updateChannelizationHandlePositions(marking) {
+        if (!marking.konvaHandles) return;
+        const group = marking.konvaGroup;
+        const polygon = group.findOne('.marking-shape');
+        if (!polygon) return;
+
+        const points = polygon.points();
+        marking.konvaHandles.forEach(handle => {
+            const idx = handle.getAttr('vertexIndex');
+            // 【修正】取得相對 Layer 的即時座標
+            const layerPos = group.getTransform().point({ x: points[idx], y: points[idx + 1] });
+            handle.position(layerPos);
+            marking.points[idx] = layerPos.x;
+            marking.points[idx + 1] = layerPos.y;
+        });
+    }
+
+    function destroyChannelizationHandles(marking) {
+        if (marking && marking.konvaHandles) {
+            marking.konvaHandles.forEach(handle => handle.destroy());
+            marking.konvaHandles = [];
+        }
+    }
 
     // --- 修改：繪製停車場頂點控制點 (改為放在 Layer 上，確保可點擊) ---
     function drawParkingLotHandles(parkingLot) {
@@ -4667,88 +4752,85 @@ document.addEventListener('DOMContentLoaded', () => {
         return closestLinkId;
     }
 
-    // --- 修改 createRoadMarking ---
     function createRoadMarking(type, parentObj, positionOrPos) {
         const id = `mark_${++idCounter}`;
-
         let initX = 0, initY = 0, initPos = 0;
+        let points = null;
 
-        if (typeof positionOrPos === 'object' && positionOrPos !== null) {
-            initX = positionOrPos.x;
-            initY = positionOrPos.y;
+        // 支援傳入多邊形陣列
+        if (type === 'channelization') {
+            points = positionOrPos;
+            const xs = points.filter((_, i) => i % 2 === 0);
+            const ys = points.filter((_, i) => i % 2 === 1);
+            initX = Math.min(...xs);
+            initY = Math.min(...ys);
+        } else if (typeof positionOrPos === 'object' && positionOrPos !== null) {
+            initX = positionOrPos.x; initY = positionOrPos.y;
         } else if (typeof positionOrPos === 'number') {
             initPos = positionOrPos;
         }
 
         const marking = {
-            id,
-            type: 'RoadMarking',
-            markingType: type,
-
-            linkId: parentObj.type === 'Link' ? parentObj.id : null,
-            nodeId: parentObj.type === 'Node' ? parentObj.id : null,
-
-            position: initPos,
-            laneIndices: [],
-
-            length: type === 'crosswalk' ? 3 : 5,
-            width: 2.5,
-
-            x: initX,
-            y: initY,
-            rotation: 0,
-
-            isFree: false,
-            spanToLinkId: null,
-            signalGroupId: null, // <--- [新增] 用於綁定行人號誌群組 ID
-
+            id, type: 'RoadMarking', markingType: type,
+            linkId: parentObj && parentObj.type === 'Link' ? parentObj.id : null,
+            nodeId: parentObj && parentObj.type === 'Node' ? parentObj.id : null,
+            position: initPos, laneIndices: [],
+            length: type === 'crosswalk' ? 3 : 5, width: 2.5,
+            x: initX, y: initY, rotation: 0,
+            isFree: type === 'channelization' ? true : false,
+            spanToLinkId: null, signalGroupId: null,
+            color: 'white', // 槽化線預設顏色
+            points: points, // 槽化線多邊形頂點
+            konvaHandles: [], // 槽化線控制點
             konvaGroup: new Konva.Group({ id, draggable: false, name: 'road-marking-group' })
         };
 
-
         if (marking.linkId) {
             const link = network.links[marking.linkId];
-            if (link) {
-                marking.laneIndices = link.lanes.map((_, i) => i);
-            }
+            if (link) marking.laneIndices = link.lanes.map((_, i) => i);
         }
 
-        // 初始拖曳設定
         marking.konvaGroup.draggable(true);
-
         network.roadMarkings[id] = marking;
         layer.add(marking.konvaGroup);
 
-        // 拖曳事件
         marking.konvaGroup.on('dragmove', function (e) {
-            // [修改重點] 判斷邏輯：如果是 Node 模式 OR (Link 模式但開啟了自由移動)
-            if (marking.nodeId || (marking.linkId && marking.isFree)) {
-                // 自由移動模式：更新 x, y
-                marking.x = this.x();
-                marking.y = this.y();
+            if (marking.nodeId || (marking.linkId && marking.isFree) || marking.markingType === 'channelization') {
+                marking.x = this.x(); marking.y = this.y();
                 updatePropertiesPanel(marking);
             }
             else if (marking.linkId) {
-                // 鎖定車道模式：計算投影距離
                 const link = network.links[marking.linkId];
                 const pointerPos = stage.getPointerPosition();
                 const localPos = layer.getAbsoluteTransform().copy().invert().point(pointerPos);
                 const { dist } = projectPointOnPolyline(localPos, link.waypoints);
-                const clampedDist = Math.max(0, Math.min(dist, getPolylineLength(link.waypoints)));
-
-                marking.position = clampedDist;
+                marking.position = Math.max(0, Math.min(dist, getPolylineLength(link.waypoints)));
                 drawRoadMarking(marking);
                 updatePropertiesPanel(marking);
             }
         });
-
         drawRoadMarking(marking);
         return marking;
     }
 
     function drawRoadMarking(marking) {
         marking.konvaGroup.destroyChildren();
+        if (marking.markingType === 'channelization') {
+            const localPoints = marking.points.map((val, i) => (i % 2 === 0) ? val - marking.x : val - marking.y);
+            marking.konvaGroup.position({ x: marking.x, y: marking.y });
 
+            const color = marking.color || 'white';
+            const strokeColor = color === 'yellow' ? '#facc15' : 'white';
+            const fillColor = color === 'yellow' ? 'rgba(250, 204, 21, 0.2)' : 'rgba(255, 255, 255, 0.2)';
+
+            const polygon = new Konva.Line({
+                points: localPoints, stroke: strokeColor, strokeWidth: 0.5,
+                closed: true, fill: fillColor, listening: true, name: 'marking-shape'
+            });
+            marking.konvaGroup.add(polygon);
+            marking.konvaGroup.rotation(marking.rotation);
+            return; // 畫完直接返回
+        }
         const LINE_COLOR = 'white';
         const STROKE_WIDTH = 0.5;
         const HIT_WIDTH = 5; // <--- [修正] 將命中範圍加大到 30px
@@ -4926,6 +5008,33 @@ document.addEventListener('DOMContentLoaded', () => {
     // 完整替換 updatePropertiesPanel 函數
     function updatePropertiesPanel(obj) {
         propertiesContent.innerHTML = '';
+
+        if (activeTool === 'add-marking' && !obj) {
+            propertiesContent.innerHTML = `
+            <div class="prop-section-header">Marking Tool Settings</div>
+            <div class="prop-group">
+                <label class="prop-label">Mode</label>
+                <div style="display:flex; flex-direction:column; gap:8px; margin-top:5px;">
+                    <label style="cursor:pointer; display:flex; align-items:center; gap:5px;">
+                        <input type="radio" name="markingMode" value="standard" ${markingMode === 'standard' ? 'checked' : ''}>
+                        Standard Marking (Click to place)
+                    </label>
+                    <label style="cursor:pointer; display:flex; align-items:center; gap:5px;">
+                        <input type="radio" name="markingMode" value="channelization" ${markingMode === 'channelization' ? 'checked' : ''}>
+                        Channelization Polygon (槽化線)
+                    </label>
+                </div>
+            </div>
+            <div class="prop-hint" style="margin-top:10px;"><i class="fa-solid fa-pen-nib"></i> Channelization Mode: Click points to draw, Double-Click to finish.</div>`;
+            document.querySelectorAll('input[name="markingMode"]').forEach(radio => {
+                radio.addEventListener('change', (e) => {
+                    markingMode = e.target.value;
+                    stage.container().style.cursor = markingMode === 'channelization' ? 'crosshair' : 'pointer';
+                    if (tempShape) { tempShape.destroy(); tempShape = null; layer.batchDraw(); }
+                });
+            });
+            return;
+        }
 
         // ============================================================
         // [修復開始] 恢復 Connect 工具的面板顯示 (來自 editor_old.js)
@@ -5679,6 +5788,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 break;
 
             case 'RoadSign':
+                // --- SECTION: GENERAL ---
                 content += `<div class="prop-section-header">General</div>`;
 
                 content += `<div class="prop-row">
@@ -5687,9 +5797,10 @@ document.addEventListener('DOMContentLoaded', () => {
                         </div>`;
                 content += `<div class="prop-row">
                             <span class="prop-label">Parent Link</span>
-                            <input type="text" class="prop-input" value="${obj.linkId || 'None (Free)'}" disabled>
+                            <input type="text" class="prop-input" value="${obj.linkId}" disabled>
                         </div>`;
 
+                // --- SECTION: CONFIGURATION ---
                 content += `<div class="prop-section-header">Configuration</div>`;
 
                 content += `<div class="prop-row">
@@ -5701,47 +5812,24 @@ document.addEventListener('DOMContentLoaded', () => {
                             </select>
                         </div>`;
 
-                if (obj.signType === 'traffic_cone') {
-                    content += `<div style="display: flex; align-items: center; gap: 8px; margin-top: 8px; margin-bottom: 8px;">
-                                    <input type="checkbox" id="prop-sign-isfree" ${obj.isFree ? 'checked' : ''} style="cursor: pointer;">
-                                    <label for="prop-sign-isfree" style="font-size: 0.85rem; color: var(--text-main); cursor: pointer;">
-                                        Manual Positioning (Free Move)
-                                    </label>
-                                </div>`;
-                }
+                const limitDisplay = (obj.signType === 'start') ? 'flex' : 'none';
+                content += `<div class="prop-row" id="prop-speed-limit-row" style="display: ${limitDisplay};">
+                            <span class="prop-label">Limit (km/h)</span>
+                            <input type="number" id="prop-speed-limit" class="prop-input" value="${obj.speedLimit}" min="0">
+                        </div>`;
 
-                if (obj.isFree) {
-                    content += `<div class="prop-row">
-                                <span class="prop-label">Global X</span>
-                                <input type="text" class="prop-input" value="${obj.x.toFixed(2)}" disabled>
-                            </div>`;
-                    content += `<div class="prop-row">
-                                <span class="prop-label">Global Y</span>
-                                <input type="text" class="prop-input" value="${obj.y.toFixed(2)}" disabled>
-                            </div>`;
-                    content += `<div class="prop-row">
-                                <span class="prop-label">Rotation (deg)</span>
-                                <input type="number" id="prop-sign-rot" class="prop-input" value="${(obj.rotation || 0).toFixed(1)}">
-                            </div>`;
-                } else {
-                    const limitDisplay = (obj.signType === 'start') ? 'flex' : 'none';
-                    content += `<div class="prop-row" id="prop-speed-limit-row" style="display: ${limitDisplay};">
-                                <span class="prop-label">Limit (km/h)</span>
-                                <input type="number" id="prop-speed-limit" class="prop-input" value="${obj.speedLimit}" min="0">
-                            </div>`;
+                const coneDisplay = (obj.signType === 'traffic_cone') ? 'flex' : 'none';
+                content += `<div class="prop-row" id="prop-cone-offset-row" style="display: ${coneDisplay};">
+                            <span class="prop-label">Lateral Offset (m)</span>
+                            <input type="number" step="0.1" id="prop-cone-offset" class="prop-input" value="${(obj.lateralOffset || 0).toFixed(2)}">
+                        </div>`;
 
-                    const coneDisplay = (obj.signType === 'traffic_cone') ? 'flex' : 'none';
-                    content += `<div class="prop-row" id="prop-cone-offset-row" style="display: ${coneDisplay};">
-                                <span class="prop-label">Lateral Offset (m)</span>
-                                <input type="number" step="0.1" id="prop-cone-offset" class="prop-input" value="${(obj.lateralOffset || 0).toFixed(2)}">
-                            </div>`;
+                content += `<div class="prop-row">
+                            <span class="prop-label">Position (m)</span>
+                            <input type="number" step="0.1" id="prop-sign-pos" class="prop-input" value="${obj.position.toFixed(2)}">
+                        </div>`;
 
-                    content += `<div class="prop-row" id="prop-sign-pos-row">
-                                <span class="prop-label">Position (m)</span>
-                                <input type="number" step="0.1" id="prop-sign-pos" class="prop-input" value="${obj.position.toFixed(2)}">
-                            </div>`;
-                }
-
+                // --- SECTION: ACTIONS ---
                 content += `<div class="prop-section-header">Actions</div>`;
                 content += `<button id="btn-delete-sign" class="btn-danger-outline">
                             <i class="fa-solid fa-trash-can"></i> Delete Element
@@ -6124,13 +6212,23 @@ document.addEventListener('DOMContentLoaded', () => {
                 // Type Select
                 content += `<div class="prop-row">
                             <span class="prop-label">Type</span>
-                            <select id="prop-mark-type" class="prop-select">
+                            <select id="prop-mark-type" class="prop-select" ${obj.markingType === 'channelization' ? 'disabled' : ''}>
                                 <option value="stop_line" ${obj.markingType === 'stop_line' ? 'selected' : ''}>Stop Line</option>
                                 <option value="waiting_area" ${obj.markingType === 'waiting_area' ? 'selected' : ''}>Waiting Area</option>
                                 <option value="two_stage_box" ${obj.markingType === 'two_stage_box' ? 'selected' : ''}>Two-Stage Box</option>
                                 <option value="crosswalk" ${obj.markingType === 'crosswalk' ? 'selected' : ''}>Pedestrian Crosswalk</option>
+                                <option value="channelization" ${obj.markingType === 'channelization' ? 'selected' : ''}>Channelization</option>
                             </select>
                         </div>`;
+                // 在選單下加入顏色屬性
+                if (obj.markingType === 'channelization') {
+                    content += `<div class="prop-section-header">Appearance</div>
+                                <div class="prop-row"><span class="prop-label">Color</span>
+                                <select id="prop-mark-color" class="prop-select">
+                                    <option value="white" ${obj.color === 'white' ? 'selected' : ''}>White</option>
+                                    <option value="yellow" ${obj.color === 'yellow' ? 'selected' : ''}>Yellow</option>
+                                </select></div>`;
+                }
 
                 // --- SECTION: PLACEMENT ---
                 content += `<div class="prop-section-header">Placement</div>`;
@@ -7262,62 +7360,25 @@ document.addEventListener('DOMContentLoaded', () => {
                 typeSelect.addEventListener('change', e => {
                     const oldType = obj.signType;
                     obj.signType = e.target.value;
+                    const totalWidth = getLinkTotalWidth(network.links[obj.linkId]);
 
-                    // 切換非交通錐時強制解除自由模式
-                    if (obj.signType !== 'traffic_cone' && obj.isFree) {
-                        obj.isFree = false;
+                    // 只有在使用者手動切換標誌類型時，才重新計算預設的擺放位置
+                    if (oldType !== 'traffic_cone' && obj.signType === 'traffic_cone') {
+                        obj.lateralOffset = 0; // 從路牌切換為交通錐，放回中央
+                    } else if (obj.signType !== 'traffic_cone') {
+                        obj.lateralOffset = (totalWidth / 2) + 8; // 切換回一般路牌，放到外側
                     }
 
-                    if (obj.linkId) {
-                        const totalWidth = getLinkTotalWidth(network.links[obj.linkId]);
-                        if (oldType !== 'traffic_cone' && obj.signType === 'traffic_cone') {
-                            obj.lateralOffset = 0;
-                        } else if (obj.signType !== 'traffic_cone') {
-                            obj.lateralOffset = (totalWidth / 2) + 8;
-                        }
-                    }
+                    const limitRow = document.getElementById('prop-speed-limit-row');
+                    const offsetRow = document.getElementById('prop-cone-offset-row');
+                    if (limitRow) limitRow.style.display = (obj.signType === 'start') ? 'flex' : 'none';
+                    if (offsetRow) offsetRow.style.display = (obj.signType === 'traffic_cone') ? 'flex' : 'none';
+
+                    // 更新輸入框顯示的數值
+                    const offsetInput = document.getElementById('prop-cone-offset');
+                    if (offsetInput) offsetInput.value = obj.lateralOffset.toFixed(2);
 
                     drawRoadSign(obj);
-                    layer.batchDraw();
-                    updatePropertiesPanel(obj);
-                    saveState();
-                });
-            }
-
-            const isFreeCb = document.getElementById('prop-sign-isfree');
-            if (isFreeCb) {
-                isFreeCb.addEventListener('change', (e) => {
-                    const isFree = e.target.checked;
-                    obj.isFree = isFree;
-
-                    // 當剛轉為 free 時，將目前的道路投影座標固化為絕對座標
-                    if (isFree && obj.linkId) {
-                        const link = network.links[obj.linkId];
-                        if (link && link.waypoints.length > 1) {
-                            const { point, vec } = getPointAlongPolyline(link.waypoints, obj.position);
-                            const normal = getNormal(vec);
-                            const absPos = add(point, scale(normal, obj.lateralOffset));
-                            obj.x = absPos.x;
-                            obj.y = absPos.y;
-                            obj.rotation = Konva.Util.radToDeg(Math.atan2(vec.y, vec.x));
-
-                            obj.konvaShape.position({ x: obj.x, y: obj.y });
-                            obj.konvaShape.rotation(obj.rotation);
-                        }
-                    }
-
-                    drawRoadSign(obj);
-                    layer.batchDraw();
-                    updatePropertiesPanel(obj);
-                    saveState();
-                });
-            }
-
-            const rotIn = document.getElementById('prop-sign-rot');
-            if (rotIn) {
-                rotIn.addEventListener('change', e => {
-                    obj.rotation = parseFloat(e.target.value);
-                    obj.konvaShape.rotation(obj.rotation);
                     layer.batchDraw();
                     saveState();
                 });
@@ -7344,7 +7405,6 @@ document.addEventListener('DOMContentLoaded', () => {
             const offsetInput = document.getElementById('prop-cone-offset');
             if (offsetInput) {
                 offsetInput.addEventListener('change', e => {
-                    if (!obj.linkId) return;
                     const totalWidth = getLinkTotalWidth(network.links[obj.linkId]);
                     let val = parseFloat(e.target.value);
                     val = Math.max(-totalWidth / 2, Math.min(totalWidth / 2, val));
@@ -7534,7 +7594,25 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             }
         }
+        if (obj.markingType === 'channelization') {
+            const colorSel = document.getElementById('prop-mark-color');
+            if (colorSel) colorSel.addEventListener('change', (e) => {
+                obj.color = e.target.value;
 
+                // 【修正重點】不要呼叫 drawRoadMarking 導致圖形被銷毀
+                // 只要單純地改變現有多邊形的顏色屬性即可
+                const polygon = obj.konvaGroup.findOne('.marking-shape');
+                if (polygon) {
+                    polygon.stroke(obj.color === 'yellow' ? '#facc15' : 'white');
+                    polygon.fill(obj.color === 'yellow' ? 'rgba(250, 204, 21, 0.2)' : 'rgba(255, 255, 255, 0.2)');
+                } else {
+                    drawRoadMarking(obj);
+                }
+
+                layer.batchDraw();
+                saveState();
+            });
+        }
         if (obj.type === 'RoadMarking') {
             const typeSel = document.getElementById('prop-mark-type');
             if (typeSel) {
@@ -10653,7 +10731,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
 
-        // --- 13. Road Markings (Modified for IsFree & Two-Stage) ---
+        // --- 13. Road Markings (Modified for IsFree & Two-Stage & Channelization) ---
         const markingsContainer = xmlDoc.getElementsByTagName("RoadMarkings")[0] || xmlDoc.getElementsByTagName("tm:RoadMarkings")[0];
         if (markingsContainer) {
             getChildrenByLocalName(markingsContainer, "RoadMarking").forEach(mkEl => {
@@ -10664,19 +10742,26 @@ document.addEventListener('DOMContentLoaded', () => {
                 let parentObj = null;
                 let posOrPosObj = 0;
 
-                // 1. 決定 Parent 與初始參數
-                if (linkXmlId) {
+                // 1. 決定 Parent 與初始參數 (加入槽化線處理)
+                if (type === 'channelization') {
+                    const points = [];
+                    const boundEl = getChildrenByLocalName(mkEl, "Boundary")[0];
+                    if (boundEl) {
+                        getChildrenByLocalName(boundEl, "Point").forEach(pEl => {
+                            points.push(parseFloat(getChildValue(pEl, "x")));
+                            points.push(parseFloat(getChildValue(pEl, "y")) * C_SYSTEM_Y_INVERT);
+                        });
+                    }
+                    posOrPosObj = points; // 將解析好的多邊形座標陣列傳入
+                } else if (linkXmlId) {
                     const internalLinkId = xmlLinkIdMap.get(linkXmlId);
                     parentObj = network.links[internalLinkId];
-                    // Link 模式先讀取路徑距離 (作為 Auto 模式的基準)
                     posOrPosObj = parseFloat(getChildValue(mkEl, "position"));
                 } else if (nodeXmlId) {
-                    // Node 模式：簡單反查或忽略 ID 匹配 (視系統實作)，這裡主要依賴座標
-                    // 為了相容性，這裡嘗試用座標尋找最近的 Node (Fallback)
+                    // Node 模式：嘗試用座標尋找最近的 Node
                     const targetX = parseFloat(getChildValue(mkEl, "x"));
                     const targetY = parseFloat(getChildValue(mkEl, "y")) * C_SYSTEM_Y_INVERT;
 
-                    // 嘗試找最近的 Node
                     let minDist = Infinity;
                     Object.values(network.nodes).forEach(n => {
                         const d = Math.sqrt(Math.pow(n.x - targetX, 2) + Math.pow(n.y - targetY, 2));
@@ -10686,9 +10771,15 @@ document.addEventListener('DOMContentLoaded', () => {
                     posOrPosObj = { x: targetX, y: targetY };
                 }
 
-                if (parentObj) {
-                    // 2. 建立物件
+                // 2. 建立物件
+                if (parentObj || type === 'channelization') {
                     const newMark = createRoadMarking(type, parentObj, posOrPosObj);
+
+                    // 槽化線獨有屬性：顏色
+                    if (type === 'channelization') {
+                        const colorVal = getChildValue(mkEl, "color");
+                        if (colorVal) newMark.color = colorVal;
+                    }
 
                     const spanVal = getChildValue(mkEl, "spanToLinkId");
                     if (spanVal) {
@@ -10696,7 +10787,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (internalSpanId) newMark.spanToLinkId = internalSpanId;
                     }
 
-                    // <--- [新增] 解析行人號誌綁定 (舊版檔案會安全地解析為 null) --->
+                    // 解析行人號誌綁定
                     const sigGrpVal = getChildValue(mkEl, "signalGroupId");
                     if (sigGrpVal) {
                         newMark.signalGroupId = sigGrpVal;
@@ -10713,30 +10804,29 @@ document.addEventListener('DOMContentLoaded', () => {
                     const widVal = getChildValue(mkEl, "width");
                     if (widVal) newMark.width = parseFloat(widVal);
 
-                    // 4. 處理 IsFree 與絕對座標定位
+                    // 4. 處理 IsFree 與絕對座標定位 (槽化線不需要處理傳統 x, y, rotation)
                     const isFreeVal = getChildValue(mkEl, "isFree");
                     const xVal = getChildValue(mkEl, "x");
                     const yVal = getChildValue(mkEl, "y");
                     const rotVal = getChildValue(mkEl, "rotation");
 
-                    // 如果 XML 標記為 Free，或是 Link 上的兩段式左轉 (隱含可能移動過)
                     if (isFreeVal === 'true' || (type === 'two_stage_box' && linkXmlId)) {
                         if (isFreeVal === 'true') {
                             newMark.isFree = true;
                         }
 
-                        // 強制套用絕對座標
-                        if (xVal && yVal) {
+                        // 強制套用絕對座標 (避開槽化線)
+                        if (xVal && yVal && type !== 'channelization') {
                             newMark.x = parseFloat(xVal);
                             newMark.y = parseFloat(yVal) * C_SYSTEM_Y_INVERT;
                             newMark.konvaGroup.position({ x: newMark.x, y: newMark.y });
                         }
 
-                        if (rotVal) {
+                        if (rotVal && type !== 'channelization') {
                             newMark.rotation = parseFloat(rotVal);
                             newMark.konvaGroup.rotation(newMark.rotation);
                         }
-                    } else if (nodeXmlId && rotVal) {
+                    } else if (nodeXmlId && rotVal && type !== 'channelization') {
                         // Node 模式的旋轉
                         newMark.rotation = parseFloat(rotVal);
                         newMark.konvaGroup.rotation(newMark.rotation);
@@ -10748,21 +10838,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
         }
-        // --- 14. Free Road Signs (Manual Positioning Cones) ---
-        const freeSignsContainer = xmlDoc.getElementsByTagName("FreeRoadSigns")[0] || xmlDoc.getElementsByTagName("tm:FreeRoadSigns")[0];
-        if (freeSignsContainer) {
-            getChildrenByLocalName(freeSignsContainer, "FreeRoadSign").forEach(signEl => {
-                const signType = getChildValue(signEl, "signType");
-                const x = parseFloat(getChildValue(signEl, "x"));
-                const y = parseFloat(getChildValue(signEl, "y")) * C_SYSTEM_Y_INVERT;
-                const rotation = parseFloat(getChildValue(signEl, "rotation"));
 
-                // 傳入 null 作為 link，並開啟 isFree 模式
-                const newSign = createRoadSign(null, 0, 0, signType, true, { x, y, rotation });
-                syncIdCounter(newSign.id);
-                drawRoadSign(newSign);
-            });
-        }
         layer.batchDraw();
         updateStatusBar();
         setTool('select');
@@ -10908,7 +10984,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const linkLength = getPolylineLength(link.waypoints);
             xml += `        <tm:length>${linkLength.toFixed(4)}</tm:length>\n`;
 
-            const signsOnLink = Object.values(network.roadSigns).filter(s => s.linkId === link.id && !s.isFree);
+            const signsOnLink = Object.values(network.roadSigns).filter(s => s.linkId === link.id);
+
             xml += '        <tm:Segments>\n';
             xml += `          <tm:TrapeziumSegment>\n`;
             xml += `             <tm:id>0</tm:id><tm:length>${linkLength.toFixed(4)}</tm:length><tm:prevSegmentId>-1</tm:prevSegmentId><tm:nextSegmentId>-1</tm:nextSegmentId><tm:startWaypointId>0</tm:startWaypointId><tm:endWaypointId>${link.waypoints.length - 1}</tm:endWaypointId>\n`;
@@ -11134,7 +11211,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 const numericLinkId = mark.linkId ? linkIdMap.get(mark.linkId) : undefined;
                 const numericNodeId = mark.nodeId ? regularNodeIdMap.get(mark.nodeId) : undefined;
 
-                if (numericLinkId !== undefined || numericNodeId !== undefined) {
+                // [修改] 允許 channelization (槽化線) 即使沒有綁定 link/node 也能匯出
+                if (numericLinkId !== undefined || numericNodeId !== undefined || mark.markingType === 'channelization') {
                     xml += '      <tm:RoadMarking>\n';
                     xml += `        <tm:id>${mark.id}</tm:id>\n`;
                     xml += `        <tm:type>${mark.markingType}</tm:type>\n`;
@@ -11148,7 +11226,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
                     }
 
-                    // <--- [新增] 匯出行人號誌綁定 --->
+                    // 匯出行人號誌綁定
                     if (mark.signalGroupId) {
                         xml += `        <tm:signalGroupId>${mark.signalGroupId}</tm:signalGroupId>\n`;
                     }
@@ -11158,7 +11236,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         xml += `        <tm:position>${mark.position.toFixed(4)}</tm:position>\n`;
                         xml += `        <tm:laneIndices>${mark.laneIndices.join(',')}</tm:laneIndices>\n`;
 
-                        // [修改重點] 如果是自由模式 OR 兩段式左轉，必須匯出絕對座標與旋轉
+                        // 如果是自由模式 OR 兩段式左轉，必須匯出絕對座標與旋轉
                         if (mark.isFree || mark.markingType === 'two_stage_box') {
                             xml += `        <tm:x>${mark.x.toFixed(4)}</tm:x>\n`;
                             xml += `        <tm:y>${(mark.y * C_SYSTEM_Y_INVERT).toFixed(4)}</tm:y>\n`;
@@ -11171,26 +11249,24 @@ document.addEventListener('DOMContentLoaded', () => {
                         xml += `        <tm:rotation>${(mark.rotation || 0).toFixed(4)}</tm:rotation>\n`;
                     }
 
-                    xml += `        <tm:length>${(mark.length || 0).toFixed(4)}</tm:length>\n`;
-                    xml += `        <tm:width>${(mark.width || 0).toFixed(4)}</tm:width>\n`;
+                    // [新增] 匯出槽化線專屬的邊界座標與顏色
+                    if (mark.markingType === 'channelization') {
+                        xml += `        <tm:color>${mark.color || 'white'}</tm:color>\n`;
+                        xml += `        <tm:Boundary>\n`;
+                        for (let i = 0; i < mark.points.length; i += 2) {
+                            xml += `          <tm:Point><tm:x>${mark.points[i].toFixed(4)}</tm:x><tm:y>${(mark.points[i + 1] * C_SYSTEM_Y_INVERT).toFixed(4)}</tm:y></tm:Point>\n`;
+                        }
+                        xml += `        </tm:Boundary>\n`;
+                    } else {
+                        // 原本其它標線的長寬
+                        xml += `        <tm:length>${(mark.length || 0).toFixed(4)}</tm:length>\n`;
+                        xml += `        <tm:width>${(mark.width || 0).toFixed(4)}</tm:width>\n`;
+                    }
+
                     xml += '      </tm:RoadMarking>\n';
                 }
             });
             xml += '    </tm:RoadMarkings>\n';
-        }
-        const freeSigns = Object.values(network.roadSigns).filter(s => s.isFree);
-        if (freeSigns.length > 0) {
-            xml += '    <tm:FreeRoadSigns>\n';
-            freeSigns.forEach(sign => {
-                xml += '      <tm:FreeRoadSign>\n';
-                xml += `        <tm:id>${sign.id}</tm:id>\n`;
-                xml += `        <tm:signType>${sign.signType}</tm:signType>\n`;
-                xml += `        <tm:x>${sign.x.toFixed(4)}</tm:x>\n`;
-                xml += `        <tm:y>${(sign.y * C_SYSTEM_Y_INVERT).toFixed(4)}</tm:y>\n`;
-                xml += `        <tm:rotation>${(sign.rotation || 0).toFixed(4)}</tm:rotation>\n`;
-                xml += '      </tm:FreeRoadSign>\n';
-            });
-            xml += '    </tm:FreeRoadSigns>\n';
         }
         xml += '  </tm:RoadNetwork>\n';
 
