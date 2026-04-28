@@ -2599,7 +2599,48 @@ document.addEventListener('DOMContentLoaded', () => {
         // --- 新增：繪製 Road Markings ---
         if (netData.roadMarkings) {
             netData.roadMarkings.forEach(mark => {
-                // ★★★[新增] 2D 繪製對角線行人穿越道 ★★★
+                // ★★★ [新增] 2D 槽化線繪製 (外框 + 斜紋填充) ★★★
+                if (mark.type === 'channelization' && mark.points && mark.points.length > 2) {
+                    ctx2D.save();
+                    ctx2D.beginPath();
+                    ctx2D.moveTo(mark.points[0].x, mark.points[0].y);
+                    for (let i = 1; i < mark.points.length; i++) {
+                        ctx2D.lineTo(mark.points[i].x, mark.points[i].y);
+                    }
+                    ctx2D.closePath();
+
+                    // 外框
+                    ctx2D.lineWidth = 0.5 / scale;
+                    ctx2D.strokeStyle = mark.color === 'yellow' ? '#facc15' : '#ffffff';
+                    ctx2D.stroke();
+
+                    // 動態產生斜紋材質緩存
+                    const key = 'hatch_' + mark.color;
+                    if (!window[key]) {
+                        const cvs = document.createElement('canvas');
+                        cvs.width = 32; cvs.height = 32;
+                        const ctx = cvs.getContext('2d');
+                        ctx.strokeStyle = mark.color === 'yellow' ? 'rgba(250,204,21,0.5)' : 'rgba(255,255,255,0.5)';
+                        ctx.lineWidth = 2;
+                        ctx.beginPath();
+                        // 畫 45度角斜線
+                        ctx.moveTo(0, 32); ctx.lineTo(32, 0);
+                        ctx.moveTo(-16, 16); ctx.lineTo(16, -16);
+                        ctx.moveTo(16, 48); ctx.lineTo(48, 16);
+                        ctx.stroke();
+                        window[key] = ctx2D.createPattern(cvs, 'repeat');
+                    }
+
+                    // 填充 (適配縮放)
+                    ctx2D.fillStyle = window[key];
+                    const matrix = new DOMMatrix().scale(1 / scale, 1 / scale);
+                    ctx2D.fillStyle.setTransform(matrix);
+                    ctx2D.fill();
+
+                    ctx2D.restore();
+                    return; // 畫完直接跳過下方其他標線邏輯
+                }
+
                 // ★★★[新增] 2D 繪製對角線行人穿越道 ★★★
                 if (mark.type === 'diagonal_crosswalk') {
                     const [c0, c1, c2, c3] = mark.corners;
@@ -4441,8 +4482,72 @@ document.addEventListener('DOMContentLoaded', () => {
             });
 
             netData.roadMarkings.forEach(mk => {
+                // ★★★ [新增] 3D 槽化線實體繪製 ★★★
+                if (mk.type === 'channelization' && mk.points && mk.points.length > 2) {
+                    const shape = new THREE.Shape();
+                    shape.moveTo(mk.points[0].x, -mk.points[0].y); // Y 轉 Z 必須加負號
+                    for (let i = 1; i < mk.points.length; i++) {
+                        shape.lineTo(mk.points[i].x, -mk.points[i].y);
+                    }
+                    const geom = new THREE.ShapeGeometry(shape);
+                    geom.rotateX(-Math.PI / 2); // 躺平至路面
 
-                // ★★★ [新增] 3D 繪製對角線行人穿越道 ★★★
+                    // 動態生成 45 度斜紋紋理 (Texture)
+                    const cvs = document.createElement('canvas');
+                    cvs.width = 256; cvs.height = 256;
+                    const ctx = cvs.getContext('2d');
+                    ctx.fillStyle = 'rgba(0,0,0,0)'; // 透明底
+                    ctx.fillRect(0, 0, 256, 256);
+                    ctx.strokeStyle = mk.color === 'yellow' ? 'rgba(250,204,21,0.6)' : 'rgba(255,255,255,0.6)';
+                    ctx.lineWidth = 12;
+                    ctx.beginPath();
+                    // 畫大範圍斜線保證填滿
+                    for (let i = -256; i < 512; i += 48) {
+                        ctx.moveTo(i, 0);
+                        ctx.lineTo(i + 256, 256);
+                    }
+                    ctx.stroke();
+
+                    const tex = new THREE.CanvasTexture(cvs);
+                    tex.wrapS = THREE.RepeatWrapping;
+                    tex.wrapT = THREE.RepeatWrapping;
+
+                    // 世界座標對齊 UV (確保斜紋連續不破圖)
+                    const posAttr = geom.attributes.position;
+                    const uvAttr = geom.attributes.uv;
+                    for (let i = 0; i < posAttr.count; i++) {
+                        uvAttr.setXY(i, posAttr.getX(i) / 10, -posAttr.getZ(i) / 10);
+                    }
+                    uvAttr.needsUpdate = true;
+
+                    // 內部填充 Mesh
+                    const mat = new THREE.MeshBasicMaterial({
+                        map: tex,
+                        transparent: true,
+                        side: THREE.DoubleSide,
+                        polygonOffset: true,
+                        polygonOffsetFactor: -3, // 確保浮在路面上
+                        polygonOffsetUnits: 1
+                    });
+                    const mesh = new THREE.Mesh(geom, mat);
+                    mesh.position.y = 0.12; // 比路面 (0.10) 高一點
+                    networkGroup.add(mesh);
+
+                    // 外框線 Mesh (EdgesGeometry)
+                    const edges = new THREE.EdgesGeometry(geom);
+                    const lineMat = new THREE.LineBasicMaterial({
+                        color: mk.color === 'yellow' ? 0xfacc15 : 0xffffff,
+                        linewidth: 2,
+                        polygonOffset: true,
+                        polygonOffsetFactor: -4
+                    });
+                    const lineMesh = new THREE.LineSegments(edges, lineMat);
+                    lineMesh.position.y = 0.12;
+                    networkGroup.add(lineMesh);
+
+                    return; // 畫完結束本回合
+                }
+
                 // ★★★[新增] 3D 繪製對角線行人穿越道 ★★★
                 if (mk.type === 'diagonal_crosswalk') {
                     const [c0, c1, c2, c3] = mk.corners;
@@ -7060,7 +7165,20 @@ document.addEventListener('DOMContentLoaded', () => {
             if (typeof window.PedestrianManagerSim !== 'undefined') {
                 this.pedManager = new window.PedestrianManagerSim(this, network);
             }
-        }
+
+            // =================================================================
+            // ★★★ [終極修正] 保存槽化線真實多邊形，用於未來軌跡碰撞檢測 ★★★
+            // =================================================================
+            this.network.channelizationPolygons = [];
+            if (network.roadMarkings) {
+                network.roadMarkings.forEach(mk => {
+                    if (mk.type === 'channelization' && mk.points && mk.points.length > 2) {
+                        this.network.channelizationPolygons.push(mk.points);
+                    }
+                });
+            }
+            // =================================================================
+        } // 這是 constructor 的結束大括號
 
         getStopLinePosition(linkId, laneIndex) {
             if (this.stopLineMap[linkId] && this.stopLineMap[linkId][laneIndex] !== undefined) {
@@ -7591,11 +7709,92 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!this.isMotorcycle && !this.laneChangeState) {
                 this.targetLateralOffset = 0; // 汽車預設維持置中
             }
-            let originalTarget = this.targetLateralOffset;
+
+            // ★★★ [修正 1] 如果正在換道，應以當前「真實偏移量」作為避障雷達的偵測基準
+            let originalTarget = this.laneChangeState ? this.lateralOffset : this.targetLateralOffset;
 
             this.coneForcedLaneChange = false;
             this.coneBlockingGap = Infinity;
+            // =================================================================
+            // ★★★[終極修正] 槽化線嚴格避障與防穿模 (基於未來軌跡多邊形碰撞) ★★★
+            // =================================================================
+            if (network.channelizationPolygons && network.channelizationPolygons.length > 0) {
+                const dynamicLookahead = Math.max(20.0, this.speed * 3.0);
+                const step = 1.5; // 每 1.5m 檢查一次未來軌跡
 
+                for (const poly of network.channelizationPolygons) {
+                    const dSq = (this.x - poly[0].x) ** 2 + (this.y - poly[0].y) ** 2;
+                    if (dSq > (dynamicLookahead + 60) ** 2) continue;
+
+                    for (let s = 0; s <= dynamicLookahead; s += step) {
+                        const checkDist = this.distanceOnPath + s;
+                        let ptX, ptY, ptAngle;
+
+                        if (checkDist <= this.currentPathLength) {
+                            if (this.state === 'inIntersection' && this.currentPath && this.currentPath.length >= 4) {
+                                const t = checkDist / this.currentPathLength;
+                                const pt = Geom.Bezier.getPoint(t, this.currentPath[0], this.currentPath[1], this.currentPath[2], this.currentPath[3]);
+                                ptX = pt.x; ptY = pt.y;
+                                const tg = Geom.Bezier.getTangent(t, this.currentPath[0], this.currentPath[1], this.currentPath[2], this.currentPath[3]);
+                                ptAngle = Math.atan2(tg.y, tg.x);
+                            } else if (this.currentPath && this.currentPath.length >= 2) {
+                                const posData = this.getPositionOnPath(this.currentPath, checkDist);
+                                if (posData) { ptX = posData.x; ptY = posData.y; ptAngle = posData.angle; }
+                            }
+                        } else if (this.currentPath && this.currentPath.length >= 2) {
+                            const posData = this.getPositionOnPath(this.currentPath, this.currentPathLength);
+                            if (posData) {
+                                const extra = checkDist - this.currentPathLength;
+                                ptX = posData.x + Math.cos(posData.angle) * extra;
+                                ptY = posData.y + Math.sin(posData.angle) * extra;
+                                ptAngle = posData.angle;
+                            }
+                        }
+
+                        if (ptX !== undefined) {
+                            // ★ 關鍵：使用「真實當前偏移量」進行軌跡預判
+                            const fX = ptX - Math.sin(ptAngle) * this.lateralOffset;
+                            const fY = ptY + Math.cos(ptAngle) * this.lateralOffset;
+
+                            if (Geom.Utils.isPointInPolygon({ x: fX, y: fY }, poly)) {
+                                const gapToPoly = s - (this.length / 2) - 0.5;
+
+                                // ★★★ 核心修正 1：通知導航系統，此車道被擋，必須盡快換道！
+                                this.coneForcedLaneChange = true;
+
+                                // ★★★ 核心修正 2：計算向外閃避的目標點
+                                let cx = 0, cy = 0;
+                                poly.forEach(p => { cx += p.x; cy += p.y; });
+                                cx /= poly.length; cy /= poly.length;
+                                const dot = (-Math.sin(ptAngle)) * (cx - fX) + Math.cos(ptAngle) * (cy - fY);
+                                const dodgeAmount = dot > 0 ? -1.8 : 1.8;
+
+                                this.targetLateralOffset = originalTarget + dodgeAmount;
+                                const limit = this.isMotorcycle ? 2.5 : 3.5;
+                                this.targetLateralOffset = Math.max(-limit, Math.min(limit, this.targetLateralOffset));
+
+                                // ★★★ 核心修正 3：預判「極限閃避」是否依舊會撞上 (代表多邊形佔滿整個車道)
+                                const dodgeX = ptX - Math.sin(ptAngle) * this.targetLateralOffset;
+                                const dodgeY = ptY + Math.cos(ptAngle) * this.targetLateralOffset;
+                                const willStillHit = Geom.Utils.isPointInPolygon({ x: dodgeX, y: dodgeY }, poly);
+
+                                // 只有在「無法閃避」且「距離過近」時，才啟動強制煞停
+                                const criticalBrakeDist = Math.max(5.0, this.speed * 2.0);
+                                if (willStillHit && gapToPoly < criticalBrakeDist) {
+                                    this.coneBlockingGap = Math.min(this.coneBlockingGap, Math.max(0.1, gapToPoly));
+                                    if (this.laneChangeState) {
+                                        this.laneChangeState = null;
+                                        this.laneChangeCooldown = 2.0;
+                                        this.targetLateralOffset = 0;
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            // =================================================================
             // 輔助函式：合併重疊的障礙物區間 (Merge Intervals)
             const mergeIntervals = (intervals) => {
                 if (intervals.length === 0) return [];
@@ -7699,9 +7898,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
                                 if (needsBrake) {
                                     if (!this.isMotorcycle) this.coneForcedLaneChange = true;
-                                    if (!this.laneChangeState) {
-                                        const stopGap = blockingInterval.fwdDist - (this.length / 2) - coneRadius - 1.0;
-                                        this.coneBlockingGap = Math.min(this.coneBlockingGap, Math.max(0.1, stopGap));
+
+                                    // ★★★ [修正 2] 移除 !this.laneChangeState 限制，換道中若被擋住也要強制煞車！
+                                    const stopGap = blockingInterval.fwdDist - (this.length / 2) - coneRadius - 1.0;
+                                    this.coneBlockingGap = Math.min(this.coneBlockingGap, Math.max(0.1, stopGap));
+
+                                    // ★★★ [修正 3] 若正在換道卻發現撞上實體障礙(槽化線)，強制取消換道並退回
+                                    if (this.laneChangeState && stopGap < 5.0) {
+                                        this.laneChangeState = null;
+                                        this.laneChangeCooldown = 2.0;
+                                        this.targetLateralOffset = 0; // 回正
                                     }
                                 }
                             }
@@ -7817,7 +8023,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 let cost = Math.abs(offset - this.lateralOffset);
                                 if (Math.abs(offset) > limit) cost += 1000;
                                 if (mergedIntervals.some(inv => offset > inv.physicalMin && offset < inv.physicalMax)) cost += 5000;
-                                
+
                                 // 預判車輛偏移後的真實世界座標
                                 const nx = -Math.sin(this.angle);
                                 const ny = Math.cos(this.angle);
@@ -7828,7 +8034,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 if (network.twoStageBoxMap) {
                                     for (const nodeId in network.twoStageBoxMap) {
                                         for (const box of network.twoStageBoxMap[nodeId]) {
-                                            const distSq = (projX - box.x)**2 + (projY - box.y)**2;
+                                            const distSq = (projX - box.x) ** 2 + (projY - box.y) ** 2;
                                             if (distSq < 25) cost += (25 - Math.sqrt(distSq)) * 20;
                                         }
                                     }
@@ -7837,7 +8043,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 for (const other of allVehicles) {
                                     if (other.id === this.id) continue;
                                     if (other.twoStageState === 'waiting' || other.twoStageState === 'moving_to_box') {
-                                        const distSq = (projX - other.x)**2 + (projY - other.y)**2;
+                                        const distSq = (projX - other.x) ** 2 + (projY - other.y) ** 2;
                                         if (distSq < 25) cost += (25 - Math.sqrt(distSq)) * 30; // 5米半徑雷達
                                     }
                                 }
@@ -7866,8 +8072,15 @@ document.addEventListener('DOMContentLoaded', () => {
                                 }
 
                                 if (needsBrake) {
+                                    // ★★★[修正 4] 取消換道限制，路口內觸碰槽化線嚴格煞車
                                     const stopGap = blockingInterval.fwdDist - (this.length / 2) - coneRadius - 0.5;
                                     this.coneBlockingGap = Math.min(this.coneBlockingGap, Math.max(0.1, stopGap));
+
+                                    // 路口內若有未完成的換道意圖被阻擋，也予以取消
+                                    if (this.laneChangeState && stopGap < 5.0) {
+                                        this.laneChangeState = null;
+                                        this.laneChangeCooldown = 2.0;
+                                    }
                                 }
                             }
 
@@ -8513,10 +8726,10 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
 
-/**
-         * 更新橫向位置 (PD 彈簧阻尼系統 + 車身轉向平滑濾波)
-         * 從物理層面徹底根除抖動，保證車頭轉角連續滑順
-         */
+        /**
+                 * 更新橫向位置 (PD 彈簧阻尼系統 + 車身轉向平滑濾波)
+                 * 從物理層面徹底根除抖動，保證車頭轉角連續滑順
+                 */
         updateLateralPosition(dt, network) {
             if (typeof this.lateralVelocity === 'undefined') this.lateralVelocity = 0;
 
@@ -8530,7 +8743,7 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 kp = isReturning ? 2.0 : 10.0; // 汽車避障沉穩，回正極緩
             }
-            
+
             // 臨界阻尼 Kd = 2 * sqrt(Kp)，保證滑順貼合目標且絕對不震盪 (Overshoot)
             kd = 2.0 * Math.sqrt(kp);
 
@@ -8543,7 +8756,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // 積分求速度
             this.lateralVelocity += lateralAccel * dt;
-            
+
             // 限制最大橫向速度
             const maxLatVel = this.isMotorcycle ? 3.0 : 2.0;
             this.lateralVelocity = Math.max(-maxLatVel, Math.min(maxLatVel, this.lateralVelocity));
@@ -8552,7 +8765,7 @@ document.addEventListener('DOMContentLoaded', () => {
             this.lateralOffset += this.lateralVelocity * dt;
 
             // 邊界保護 (防止撞牆積分無效累積)
-            let maxLimit = 1.5; 
+            let maxLimit = 1.5;
             if (network && this.state === 'onLink') {
                 const link = network.links[this.currentLinkId];
                 if (link && link.lanes[this.currentLaneIndex]) {
@@ -8561,18 +8774,18 @@ document.addEventListener('DOMContentLoaded', () => {
             } else if (this.state === 'inIntersection') {
                 maxLimit = 4.0; // 路口內容許較大避障偏移
             }
-            
+
             if (this.lateralOffset > maxLimit) {
                 this.lateralOffset = maxLimit;
-                if (this.lateralVelocity > 0) this.lateralVelocity = 0; 
+                if (this.lateralVelocity > 0) this.lateralVelocity = 0;
             } else if (this.lateralOffset < -maxLimit) {
                 this.lateralOffset = -maxLimit;
-                if (this.lateralVelocity < 0) this.lateralVelocity = 0; 
+                if (this.lateralVelocity < 0) this.lateralVelocity = 0;
             }
 
             // 2. 計算車身偏轉角 (Yaw Bias) 搭配平滑濾波
             // 取基底速度避免靜止或低速時原地打轉產生銳角
-            const baseForwardSpeed = Math.max(this.speed, 4.0); 
+            const baseForwardSpeed = Math.max(this.speed, 4.0);
             const targetYawBias = Math.atan2(this.lateralVelocity, baseForwardSpeed);
 
             if (typeof this.currentYawBias === 'undefined') this.currentYawBias = 0;
@@ -9447,8 +9660,23 @@ document.addEventListener('DOMContentLoaded', () => {
                 let maxGap = -1; // 尋找最空曠的安全車道
 
                 for (const targetLane of adjacentLanes) {
-                    // 檢查車道是否存在且允許駛入
                     if (link.lanes[targetLane] && this.isLaneAllowed(network, this.currentLinkId, targetLane)) {
+
+                        // ★★★ [新增防呆] 確保隔壁避難車道前方沒有槽化線，否則換過去還是死路一條 ★★★
+                        let hitsPolygon = false;
+                        if (network.channelizationPolygons) {
+                            for (let s = 2.0; s <= 25.0; s += 3.0) {
+                                const checkDist = this.distanceOnPath + s;
+                                if (checkDist <= link.lanes[targetLane].length) {
+                                    const posData = this.getPositionOnPath(link.lanes[targetLane].path, checkDist);
+                                    if (posData && network.channelizationPolygons.some(poly => Geom.Utils.isPointInPolygon({ x: posData.x, y: posData.y }, poly))) {
+                                        hitsPolygon = true; break;
+                                    }
+                                }
+                            }
+                        }
+                        if (hitsPolygon) continue; // 這條車道也有槽化線，放棄！
+
                         // 檢查換過去是否安全 (不會撞到旁邊的車)
                         if (this.isSafeToChange(targetLane, allVehicles)) {
                             const { leader } = this.getLaneLeader(targetLane, allVehicles);
@@ -9465,9 +9693,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (bestLane !== null) {
                     this.laneChangeGoal = bestLane;
                 }
-                return; // 若受交通錐壓迫，優先處理此換道，跳過後方常規導航邏輯
+                return; // 若受壓迫，優先處理此換道
             }
-            // =================================================================
+            // =================================================================/ =================================================================
 
             const distanceToEnd = lane.length - this.distanceOnPath;
             if (distanceToEnd < 2.0) return;
@@ -9487,7 +9715,20 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 // [新增] 檢查這條車道是否允許本車駛入
                 if (!this.isLaneAllowed(network, this.currentLinkId, targetLane)) continue;
-
+                // ★★★ [終極修正] 檢查目標車道前方是否有槽化線，若有則直接放棄該車道 ★★★
+                let hitsPolygon = false;
+                if (network.channelizationPolygons) {
+                    for (let s = 5.0; s <= 20.0; s += 5.0) {
+                        const checkDist = this.distanceOnPath + s;
+                        if (checkDist <= link.lanes[targetLane].length) {
+                            const posData = this.getPositionOnPath(link.lanes[targetLane].path, checkDist);
+                            if (posData && network.channelizationPolygons.some(poly => Geom.Utils.isPointInPolygon({ x: posData.x, y: posData.y }, poly))) {
+                                hitsPolygon = true; break;
+                            }
+                        }
+                    }
+                }
+                if (hitsPolygon) continue;
                 // [修正] 同時檢查銜接的目標車道是否也允許
                 const canPassOnNewLane = destNode.transitions.some(t =>
                     t.sourceLinkId === this.currentLinkId &&
@@ -9524,14 +9765,31 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (this.isMotorcycle && this.currentLaneIndex < maxLaneIndex) {
                 const targetLane = this.currentLaneIndex + 1;
-                // [新增] 檢查目標車道限制
                 if (link.lanes[targetLane] && this.isLaneAllowed(network, this.currentLinkId, targetLane)) {
+
+                    // ★★★ [終極修正] 機車超車避開槽化線 ★★★
+                    let hitsPolygon = false;
+                    if (network.channelizationPolygons) {
+                        for (let s = 5.0; s <= 20.0; s += 5.0) {
+                            const checkDist = this.distanceOnPath + s;
+                            if (checkDist <= link.lanes[targetLane].length) {
+                                const posData = this.getPositionOnPath(link.lanes[targetLane].path, checkDist);
+                                if (posData && network.channelizationPolygons.some(poly => Geom.Utils.isPointInPolygon({ x: posData.x, y: posData.y }, poly))) {
+                                    hitsPolygon = true; break;
+                                }
+                            }
+                        }
+                    }
+                    if (hitsPolygon) return; // 發現槽化線，取消超車
+
+                    // ★ 補回遺失的 canPass 定義 ★
                     const canPass = destNode.transitions.some(t =>
                         t.sourceLinkId === this.currentLinkId &&
                         t.sourceLaneIndex === targetLane &&
                         t.destLinkId === nextLinkId &&
                         this.isLaneAllowed(network, t.destLinkId, t.destLaneIndex)
                     );
+
                     if (canPass) {
                         if (this.isSafeToChange(targetLane, allVehicles)) {
                             if (Math.random() < 0.95) {
@@ -9547,9 +9805,22 @@ document.addEventListener('DOMContentLoaded', () => {
             const { leader: currentLeader } = this.getLaneLeader(this.currentLaneIndex, allVehicles);
             for (const targetLane of adjacentLanes) {
                 if (!link.lanes[targetLane]) continue;
-                // [新增] 檢查目標車道限制
                 if (!this.isLaneAllowed(network, this.currentLinkId, targetLane)) continue;
 
+                // ★★★ [終極修正] 一般換道避開槽化線 ★★★
+                let hitsPolygon = false;
+                if (network.channelizationPolygons) {
+                    for (let s = 5.0; s <= 20.0; s += 5.0) {
+                        const checkDist = this.distanceOnPath + s;
+                        if (checkDist <= link.lanes[targetLane].length) {
+                            const posData = this.getPositionOnPath(link.lanes[targetLane].path, checkDist);
+                            if (posData && network.channelizationPolygons.some(poly => Geom.Utils.isPointInPolygon({ x: posData.x, y: posData.y }, poly))) {
+                                hitsPolygon = true; break;
+                            }
+                        }
+                    }
+                }
+                if (hitsPolygon) continue; // 發現槽化線，放棄這條車道
                 if (this.isMotorcycle && targetLane < this.currentLaneIndex) {
                     if (currentLeader && currentLeader.speed > 0.5) continue;
                 }
@@ -11815,7 +12086,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     const nodeId = mkEl.querySelector('nodeId')?.textContent;
 
                     const spanToLinkIdStr = mkEl.querySelector('spanToLinkId')?.textContent;
-                    // ★ [新增] 讀取行人號誌綁定 ID
                     const signalGroupIdStr = mkEl.querySelector('signalGroupId')?.textContent;
 
                     const mk = {
@@ -11829,9 +12099,23 @@ document.addEventListener('DOMContentLoaded', () => {
                         laneIndices: [],
                         isFree: mkEl.querySelector('isFree')?.textContent === 'true',
                         spanToLinkId: spanToLinkIdStr || null,
-                        // ★ [新增] 寫入物件
                         signalGroupId: signalGroupIdStr || null
                     };
+
+                    // ★★★ [新增] 槽化線解析邏輯 ★★★
+                    if (type === 'channelization') {
+                        mk.color = mkEl.querySelector('color, tm\\:color')?.textContent || 'white';
+                        const boundaryEl = mkEl.querySelector('Boundary') || mkEl.querySelector('tm\\:Boundary');
+                        if (boundaryEl) {
+                            mk.points = [];
+                            boundaryEl.querySelectorAll('Point, tm\\:Point').forEach(p => {
+                                mk.points.push({
+                                    x: parseFloat(p.querySelector('x, tm\\:x').textContent),
+                                    y: -parseFloat(p.querySelector('y, tm\\:y').textContent)
+                                });
+                            });
+                        }
+                    }
 
                     const laneIndicesStr = mkEl.querySelector('laneIndices')?.textContent;
                     if (laneIndicesStr) {
