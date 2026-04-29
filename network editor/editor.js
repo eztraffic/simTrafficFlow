@@ -493,47 +493,30 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         } else if (obj.type === 'RoadMarking') {
             konvaObj = obj.konvaGroup;
-
-            // --- 槽化線模式 ---
             if (obj.markingType === 'channelization') {
                 const tr = new Konva.Transformer({
-                    nodes: [konvaObj],
-                    keepRatio: false,
-                    borderStroke: 'blue',
-                    anchorStroke: 'blue',
-                    anchorFill: 'white',
-                    rotationSnaps: [0, 90, 180, 270],
-                    shouldOverdrawWholeArea: true,
-                    anchorSize: 8
+                    nodes: [konvaObj], keepRatio: false, borderStroke: 'blue', anchorStroke: 'blue', anchorFill: 'white', rotationSnaps: [0, 90, 180, 270], shouldOverdrawWholeArea: true, anchorSize: 8
                 });
-                layer.add(tr);
-                tr.moveToTop();
-                obj.konvaTransformer = tr;
-
+                layer.add(tr); tr.moveToTop(); obj.konvaTransformer = tr;
                 drawChannelizationHandles(obj);
-                konvaObj.on('dragmove transform', () => updateChannelizationHandlePositions(obj));
-
-                konvaObj.on('transformend dragend', () => {
-                    obj.x = konvaObj.x();
-                    obj.y = konvaObj.y();
-                    obj.rotation = konvaObj.rotation();
-
+                
+                // 【修正重點】加入 .ch_select 命名空間
+                konvaObj.on('dragmove.ch_select transform.ch_select', () => updateChannelizationHandlePositions(obj));
+                konvaObj.on('transformend.ch_select', () => {
+                    obj.x = konvaObj.x(); obj.y = konvaObj.y(); obj.rotation = konvaObj.rotation();
                     const polygon = konvaObj.findOne('.marking-shape');
                     if (polygon) {
                         const pts = polygon.points();
                         for (let i = 0; i < pts.length; i += 2) {
-                            // 【修正】使用 getTransform().point 來確保座標計算不受畫布縮放影響
-                            const layerPos = konvaObj.getTransform().point({ x: pts[i], y: pts[i + 1] });
-                            obj.points[i] = layerPos.x;
-                            obj.points[i + 1] = layerPos.y;
+                            const abs = konvaObj.getTransform().point({x: pts[i], y: pts[i+1]});
+                            obj.points[i] = abs.x; obj.points[i+1] = abs.y;
                         }
                     }
-                    updatePropertiesPanel(obj);
-                    drawChannelizationHandles(obj);
+                    updatePropertiesPanel(obj); drawChannelizationHandles(obj);
+                    // 【修正重點】變形結束後觸發存檔
+                    saveState();
                 });
-            }
-            // --- 一般標線模式 ---
-            else {
+            } else {
                 const isFreeMode = obj.nodeId || (obj.markingType === 'two_stage_box' && obj.isFree);
                 const tr = new Konva.Transformer({
                     nodes: [konvaObj], centeredScaling: true, resizeEnabled: false, rotateEnabled: isFreeMode, borderStroke: 'blue', anchorStroke: 'blue', enabledAnchors: isFreeMode ? ['top-left', 'top-right', 'bottom-left', 'bottom-right'] : []
@@ -613,9 +596,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 destroyParkingLotHandles(obj); // 清除控制點
                 konvaObj = obj.konvaGroup;
             } else if (obj.type === 'RoadMarking') {
-                if (obj.konvaTransformer) { obj.konvaTransformer.destroy(); obj.konvaTransformer = null; }
+                if (obj.konvaTransformer) { 
+                    obj.konvaTransformer.destroy(); 
+                    obj.konvaTransformer = null; 
+                }
                 if (obj.markingType === 'channelization') {
-                    obj.konvaGroup.off('dragmove transform'); obj.konvaGroup.off('transformend dragend');
+                    // 【修正重點】只移除附帶命名空間的事件，保留基礎的 dragmove/dragend
+                    obj.konvaGroup.off('.ch_select'); 
                     destroyChannelizationHandles(obj);
                 }
                 konvaObj = obj.konvaGroup;
@@ -4808,6 +4795,32 @@ document.addEventListener('DOMContentLoaded', () => {
                 drawRoadMarking(marking);
                 updatePropertiesPanel(marking);
             }
+        });
+
+        // 👇【新增這段 dragend 事件】確保拖曳結束時更新絕對座標並儲存
+        marking.konvaGroup.on('dragend', function (e) {
+            if (marking.markingType === 'channelization') {
+                marking.x = this.x(); 
+                marking.y = this.y();
+                marking.rotation = this.rotation();
+                
+                const polygon = this.findOne('.marking-shape');
+                if (polygon) {
+                    const pts = polygon.points();
+                    for (let i = 0; i < pts.length; i += 2) {
+                        // 更新內部記憶體的絕對座標
+                        const layerPos = this.getTransform().point({x: pts[i], y: pts[i+1]});
+                        marking.points[i] = layerPos.x; 
+                        marking.points[i+1] = layerPos.y;
+                    }
+                }
+                // 如果拖曳時是選取狀態，重繪控制小藍點對齊
+                if (selectedObject && selectedObject.id === marking.id) {
+                    drawChannelizationHandles(marking);
+                }
+            }
+            // 標線拖曳結束後，一律觸發系統存檔
+            saveState();
         });
         drawRoadMarking(marking);
         return marking;
