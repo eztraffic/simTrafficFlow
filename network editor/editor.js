@@ -50,6 +50,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let lastSelectedNodeForProperties = null; // <--- 新增此行
     let trafficLightIcons = []; // <--- 【請新增此行】用於儲存號誌圖示
     let nodeSettingsIcons = []; // <--- 【請新增此行】用於儲存路口設定圖示
+    let bgSettingsIcon = null; // <--- 【新增此行】用於儲存背景圖設定圖示
 
     // --- [新增] Undo/Redo 狀態變數 ---
     const MAX_HISTORY = 15;
@@ -411,6 +412,7 @@ document.addEventListener('DOMContentLoaded', () => {
             konvaObj.draggable(true); // 明確啟用拖曳
         } else if (obj.type === 'Node') {
             konvaObj = obj.konvaShape;
+            drawNodeHandles(obj); // <--- 新增這行：選取 Node 時畫出控制點
         } else if (obj.type === 'Connection') {
             konvaObj = obj.konvaBezier;
         } else if (obj.type === 'ConnectionGroup') {
@@ -499,7 +501,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
                 layer.add(tr); tr.moveToTop(); obj.konvaTransformer = tr;
                 drawChannelizationHandles(obj);
-                
+
                 // 【修正重點】加入 .ch_select 命名空間
                 konvaObj.on('dragmove.ch_select transform.ch_select', () => updateChannelizationHandlePositions(obj));
                 konvaObj.on('transformend.ch_select', () => {
@@ -508,8 +510,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (polygon) {
                         const pts = polygon.points();
                         for (let i = 0; i < pts.length; i += 2) {
-                            const abs = konvaObj.getTransform().point({x: pts[i], y: pts[i+1]});
-                            obj.points[i] = abs.x; obj.points[i+1] = abs.y;
+                            const abs = konvaObj.getTransform().point({ x: pts[i], y: pts[i + 1] });
+                            obj.points[i] = abs.x; obj.points[i + 1] = abs.y;
                         }
                     }
                     updatePropertiesPanel(obj); drawChannelizationHandles(obj);
@@ -558,6 +560,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             else if (obj.type === 'Node') {
                 konvaObj = obj.konvaShape;
+                destroyNodeHandles(obj); // <--- 新增這行：取消選取時清除控制點
             }
             else if (obj.type === 'Connection') {
                 konvaObj = obj.konvaBezier;
@@ -596,13 +599,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 destroyParkingLotHandles(obj); // 清除控制點
                 konvaObj = obj.konvaGroup;
             } else if (obj.type === 'RoadMarking') {
-                if (obj.konvaTransformer) { 
-                    obj.konvaTransformer.destroy(); 
-                    obj.konvaTransformer = null; 
+                if (obj.konvaTransformer) {
+                    obj.konvaTransformer.destroy();
+                    obj.konvaTransformer = null;
                 }
                 if (obj.markingType === 'channelization') {
                     // 【修正重點】只移除附帶命名空間的事件，保留基礎的 dragmove/dragend
-                    obj.konvaGroup.off('.ch_select'); 
+                    obj.konvaGroup.off('.ch_select');
                     destroyChannelizationHandles(obj);
                 }
                 konvaObj = obj.konvaGroup;
@@ -1159,6 +1162,12 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function getNodePolygonPoints(node) {
+        // --- 新增：如果該節點有被手動編輯過(自訂多邊形)，則優先回傳自訂頂點 ---
+        if (node.customPolygonPoints && node.customPolygonPoints.length >= 6) {
+            return node.customPolygonPoints;
+        }
+        // ----------------------------------------------------------------
+
         const allLinkIds = [...new Set([...node.incomingLinkIds, ...node.outgoingLinkIds])];
         const allLinks = allLinkIds.map(id => network.links[id]).filter(Boolean);
 
@@ -1435,9 +1444,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (tempShape) { tempShape.destroy(); tempShape = null; }
         if (tempMeasureText) { tempMeasureText.destroy(); tempMeasureText = null; }
 
-        // 清除所有輔助圖示 (號誌編輯圖示 & 選取模式圖示)
+        // 清除所有輔助圖示 (號誌編輯圖示 & 選取模式圖示 & 背景圖示)
         clearTrafficLightIcons();
         clearNodeSettingsIcons();
+        clearBackgroundSettingsIcon(); // <--- 新增此行
 
         // 3. 根據工具啟用互動
         switch (toolName) {
@@ -1481,11 +1491,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 layer.find('.lane-port').forEach(port => port.moveToTop());
                 break;
 
-            case 'add-link':
-            case 'measure':
             case 'add-background':
+                // <--- 針對 add-background 獨立處理，若已有背景則顯示 icon
+                if (network.background) {
+                    stage.container().style.cursor = 'default';
+                    showBackgroundSettingsIcon();
+                } else {
+                    stage.container().style.cursor = 'crosshair';
+                }
+                break;
+
             case 'add-parking-lot':
             case 'add-intersection':
+            case 'add-link':
+            case 'measure':
                 stage.container().style.cursor = 'crosshair';
                 break;
 
@@ -1690,6 +1709,99 @@ document.addEventListener('DOMContentLoaded', () => {
         nodeSettingsIcons = [];
         layer.batchDraw();
     }
+
+    // --- 新增：顯示背景設定圖示 ---
+    function showBackgroundSettingsIcon() {
+        clearBackgroundSettingsIcon();
+        if (!network.background) return;
+
+        const bg = network.background;
+        const scale = 1 / stage.scaleX();
+        const group = bg.konvaGroup;
+
+        // 計算右上角在 layer 上的座標
+        const localPos = {
+            x: group.x() + group.width() * group.scaleX(),
+            y: group.y()
+        };
+
+        bgSettingsIcon = new Konva.Group({
+            x: localPos.x,
+            y: localPos.y,
+            name: 'bg-setting-icon-wrapper',
+            listening: true,
+            scaleX: scale,
+            scaleY: scale
+        });
+
+        // 1. 圓形背景 (使用淺藍色)
+        const circle = new Konva.Circle({
+            radius: 14,
+            fill: '#e3f2fd',
+            stroke: '#1565c0',
+            strokeWidth: 2,
+            shadowColor: 'black',
+            shadowBlur: 3,
+            shadowOpacity: 0.3
+        });
+
+        // 2. 齒輪設定圖示
+        const icon = new Konva.Text({
+            text: '⚙️',
+            fontSize: 16,
+            align: 'center',
+            verticalAlign: 'middle',
+            listening: false
+        });
+        icon.offsetX(icon.width() / 2);
+        icon.offsetY(icon.height() / 2 - 1);
+
+        bgSettingsIcon.add(circle, icon);
+
+        // --- 事件處理 ---
+        bgSettingsIcon.on('mouseenter', () => {
+            stage.container().style.cursor = 'pointer';
+            circle.fill('#bbdefb');
+            circle.strokeWidth(3);
+            layer.batchDraw();
+        });
+
+        bgSettingsIcon.on('mouseleave', () => {
+            stage.container().style.cursor = 'default';
+            circle.fill('#e3f2fd');
+            circle.strokeWidth(2);
+            layer.batchDraw();
+        });
+
+        // ==========================================
+        // [修正重點]：點擊開啟背景設定
+        // ==========================================
+        bgSettingsIcon.on('click tap', (e) => {
+            e.cancelBubble = true; // 阻止事件冒泡，避免點到畫布
+            setTool('select');     // 切換為選取工具
+
+            selectObject(network.background); // 將背景設為選取物件
+
+            // 如果背景目前是鎖定狀態，selectObject 會提早 return 導致面板沒出來。
+            // 因此這裡強制呼叫 updatePropertiesPanel 顯示屬性欄：
+            if (network.background.locked) {
+                updatePropertiesPanel(network.background);
+            }
+        });
+
+        layer.add(bgSettingsIcon);
+        bgSettingsIcon.moveToTop();
+        layer.batchDraw();
+    }
+
+    // --- 新增：清除背景設定圖示 ---
+    function clearBackgroundSettingsIcon() {
+        if (bgSettingsIcon) {
+            bgSettingsIcon.destroy();
+            bgSettingsIcon = null;
+            layer.batchDraw();
+        }
+    }
     function showLanePorts() {
         // 清除所有舊的連接埠
         layer.find('.lane-port, .group-connect-port').forEach(port => port.destroy());
@@ -1852,8 +1964,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const newPortScale = 1 / newScale;
 
-            // 【修改】加入 .node-setting-icon-wrapper
-            layer.find('.lane-port, .group-connect-port, .control-point, .waypoint-handle, .measurement-handle, .tfl-icon-wrapper, .node-setting-icon-wrapper').forEach(p => {
+            // 【修改】加入 .bg-setting-icon-wrapper 讓背景圖示也具有無比例尺特性
+            layer.find('.lane-port, .group-connect-port, .control-point, .waypoint-handle, .measurement-handle, .tfl-icon-wrapper, .node-setting-icon-wrapper, .node-vertex-handle, .bg-setting-icon-wrapper').forEach(p => {
                 p.scale({ x: newPortScale, y: newPortScale });
             });
             layer.find('.lane-port').forEach(p => p.strokeWidth(2 / newScale));
@@ -2639,7 +2751,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
 
-            if (['lane-port', 'control-point', 'waypoint-handle', 'length-handle'].includes(e.target.name())) {
+            if (['lane-port', 'control-point', 'waypoint-handle', 'length-handle', 'parking-vertex-handle', 'channelization-vertex-handle', 'node-vertex-handle'].includes(e.target.name())) {
                 return;
             }
 
@@ -3184,8 +3296,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } else if (activeTool === 'add-background') {
             if (e.target !== stage) return;
             if (network.background) {
-                alert(I18N.t("背景已存在，無法新增。請先刪除現有背景。"));
-                setTool('select');
+                // 使用者已看到右上角圖示，若點空白處則不作任何事，靜默防呆
                 return;
             }
             const newBg = createBackground(pos);
@@ -4433,6 +4544,130 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // --- 新增：清除 Node 頂點控制點 ---
+    function destroyNodeHandles(node) {
+        if (node && node.konvaHandles) {
+            node.konvaHandles.forEach(handle => handle.destroy());
+            node.konvaHandles = [];
+        }
+    }
+
+    // --- 新增：繪製 Node 頂點控制點 (包含中點，以利無限新增頂點) ---
+    function drawNodeHandles(node) {
+        destroyNodeHandles(node);
+
+        const polygonPoints = getNodePolygonPoints(node);
+        if (!polygonPoints || polygonPoints.length < 6) return;
+
+        node.konvaHandles = [];
+        const scale = 1 / stage.scaleX();
+
+        // 1. 繪製主要的頂點控制點 (紅色實心)
+        for (let i = 0; i < polygonPoints.length; i += 2) {
+            const handle = new Konva.Circle({
+                x: polygonPoints[i],
+                y: polygonPoints[i + 1],
+                radius: 5,
+                fill: '#ef4444',
+                stroke: 'white',
+                strokeWidth: 1.5,
+                hitStrokeWidth: 10, // 增加點擊範圍
+                draggable: true,
+                name: 'node-vertex-handle',
+                scaleX: scale,
+                scaleY: scale,
+            });
+
+            handle.setAttr('vertexIndex', i);
+
+            handle.on('dragstart', () => {
+                // 如果是第一次拖動，將當前的形狀「定型 (Bake)」為自訂形狀
+                if (!node.customPolygonPoints) {
+                    node.customPolygonPoints = [...getNodePolygonPoints(node)];
+                }
+            });
+
+            handle.on('dragmove', (e) => {
+                const idx = e.target.getAttr('vertexIndex');
+                node.customPolygonPoints[idx] = e.target.x();
+                node.customPolygonPoints[idx + 1] = e.target.y();
+                layer.batchDraw();
+            });
+
+            handle.on('dragend', () => {
+                updatePropertiesPanel(node);
+                drawNodeHandles(node); // 重新繪製以更新相鄰的中點位置
+                saveState();
+            });
+
+            // 雙擊刪除頂點
+            handle.on('dblclick', (e) => {
+                if (!node.customPolygonPoints) {
+                    node.customPolygonPoints = [...getNodePolygonPoints(node)];
+                }
+                if (node.customPolygonPoints.length <= 6) {
+                    alert(I18N.t("路口多邊形至少需要 3 個頂點。"));
+                    return;
+                }
+                const idx = e.target.getAttr('vertexIndex');
+                node.customPolygonPoints.splice(idx, 2); // 移除該點的 x, y
+                drawNodeHandles(node); // 重新繪製
+                layer.batchDraw();
+                updatePropertiesPanel(node);
+                saveState();
+            });
+
+            layer.add(handle);
+            node.konvaHandles.push(handle);
+        }
+
+        // 2. 繪製邊的中點控制點 (半透明粉色，拖曳即可新增頂點)
+        for (let i = 0; i < polygonPoints.length; i += 2) {
+            const nx = (i + 2 < polygonPoints.length) ? polygonPoints[i + 2] : polygonPoints[0];
+            const ny = (i + 2 < polygonPoints.length) ? polygonPoints[i + 3] : polygonPoints[1];
+
+            const mx = (polygonPoints[i] + nx) / 2;
+            const my = (polygonPoints[i + 1] + ny) / 2;
+
+            const midHandle = new Konva.Circle({
+                x: mx, y: my, radius: 4, fill: '#fca5a5', stroke: 'white', strokeWidth: 1,
+                hitStrokeWidth: 10,
+                draggable: true, name: 'node-vertex-handle', scaleX: scale, scaleY: scale,
+                opacity: 0.8
+            });
+
+            midHandle.on('dragstart', (e) => {
+                if (!node.customPolygonPoints) {
+                    node.customPolygonPoints = [...getNodePolygonPoints(node)];
+                }
+                // 在陣列中插入新的頂點座標
+                const insertIdx = i + 2;
+                node.customPolygonPoints.splice(insertIdx, 0, e.target.x(), e.target.y());
+                e.target.setAttr('newVertexIndex', insertIdx);
+            });
+
+            midHandle.on('dragmove', (e) => {
+                const idx = e.target.getAttr('newVertexIndex');
+                node.customPolygonPoints[idx] = e.target.x();
+                node.customPolygonPoints[idx + 1] = e.target.y();
+                layer.batchDraw();
+            });
+
+            midHandle.on('dragend', () => {
+                drawNodeHandles(node); // 將自己變成正式頂點，並重新產生新的中點
+                updatePropertiesPanel(node);
+                saveState();
+            });
+
+            layer.add(midHandle);
+            node.konvaHandles.push(midHandle);
+        }
+
+        // 把所有點移到最上層
+        node.konvaHandles.forEach(h => h.moveToTop());
+        layer.batchDraw();
+    }
+
     // 完整替換此函數
     function drawWaypointHandles(link) {
         destroyWaypointHandles(link);
@@ -4800,18 +5035,18 @@ document.addEventListener('DOMContentLoaded', () => {
         // 👇【新增這段 dragend 事件】確保拖曳結束時更新絕對座標並儲存
         marking.konvaGroup.on('dragend', function (e) {
             if (marking.markingType === 'channelization') {
-                marking.x = this.x(); 
+                marking.x = this.x();
                 marking.y = this.y();
                 marking.rotation = this.rotation();
-                
+
                 const polygon = this.findOne('.marking-shape');
                 if (polygon) {
                     const pts = polygon.points();
                     for (let i = 0; i < pts.length; i += 2) {
                         // 更新內部記憶體的絕對座標
-                        const layerPos = this.getTransform().point({x: pts[i], y: pts[i+1]});
-                        marking.points[i] = layerPos.x; 
-                        marking.points[i+1] = layerPos.y;
+                        const layerPos = this.getTransform().point({ x: pts[i], y: pts[i + 1] });
+                        marking.points[i] = layerPos.x;
+                        marking.points[i + 1] = layerPos.y;
                     }
                 }
                 // 如果拖曳時是選取狀態，重繪控制小藍點對齊
@@ -5625,9 +5860,26 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
 
                 content += `<div class="prop-section-header" style="margin-top:16px;">Tools</div>`;
-                content += `<button id="redraw-node-connections-btn" class="btn-action" style="width:100%;">
+                content += `<button id="redraw-node-connections-btn" class="btn-action" style="width:100%; margin-bottom: 8px;">
                             <i class="fa-solid fa-rotate"></i> Redraw Connections
                         </button>`;
+
+                // --- 新增：如果有自訂形狀，顯示重設按鈕與操作提示 ---
+                if (obj.customPolygonPoints) {
+                    content += `<button id="reset-node-shape-btn" class="btn-action" style="width:100%; background:#f59e0b; margin-bottom:8px;">
+                                <i class="fa-solid fa-eraser"></i> Reset Custom Shape
+                            </button>`;
+                    content += `<div class="prop-hint">
+                                <i class="fa-solid fa-lightbulb"></i> 
+                                <b>形狀編輯：</b> 拖曳粉紅點新增頂點。雙擊紅點可刪除頂點。
+                            </div>`;
+                } else {
+                    content += `<div class="prop-hint">
+                                <i class="fa-solid fa-lightbulb"></i> 
+                                <b>形狀編輯：</b> 拖曳任何紅點或粉紅點即可解開自動形狀，創建自訂圓潤路口。
+                            </div>`;
+                }
+                // ------------------------------------------------
                 content += `</div>`; // End Tab 2
 
 
@@ -6878,6 +7130,18 @@ document.addEventListener('DOMContentLoaded', () => {
             if (redrawBtn) {
                 redrawBtn.addEventListener('click', () => {
                     redrawNodeConnections(obj.id);
+                });
+            }
+
+            // --- 新增：重設手動多邊形按鈕 ---
+            const resetShapeBtn = document.getElementById('reset-node-shape-btn');
+            if (resetShapeBtn) {
+                resetShapeBtn.addEventListener('click', () => {
+                    obj.customPolygonPoints = null; // 清除自訂點
+                    drawNodeHandles(obj);           // 重新讀取自動計算的點並產生控制點
+                    layer.batchDraw();              // 更新畫面
+                    updatePropertiesPanel(obj);     // 更新面板(隱藏重設按鈕)
+                    saveState();
                 });
             }
         }
@@ -10110,12 +10374,25 @@ document.addEventListener('DOMContentLoaded', () => {
                     const crossOnceStr = getChildValue(nodeEl, "crossOnceProb");
                     const crossTwiceStr = getChildValue(nodeEl, "crossTwiceProb");
 
+                    // ===== 新增這段：讀取自訂多邊形 =====
+                    const polyGeoEl = getChildrenByLocalName(nodeEl, "PolygonGeometry")[0];
+                    let customPolygonPoints = null;
+                    if (polyGeoEl) {
+                        customPolygonPoints = [];
+                        getChildrenByLocalName(polyGeoEl, "Point").forEach(pEl => {
+                            customPolygonPoints.push(parseFloat(getChildValue(pEl, "x")));
+                            customPolygonPoints.push(parseFloat(getChildValue(pEl, "y")) * C_SYSTEM_Y_INVERT);
+                        });
+                    }
+                    // ===================================
+
                     xmlNodeDataMap.set(xmlId, {
                         groups: groupMap,
                         turningRatios: turningRatios,
                         pedestrianVolume: pedVolStr ? parseFloat(pedVolStr) : 0,
                         crossOnceProb: crossOnceStr ? parseFloat(crossOnceStr) : 100,
-                        crossTwiceProb: crossTwiceStr ? parseFloat(crossTwiceStr) : 0
+                        crossTwiceProb: crossTwiceStr ? parseFloat(crossTwiceStr) : 0,
+                        customPolygonPoints: customPolygonPoints // <--- 新增這行存入 Map
                     });
                 }
             });
@@ -10159,6 +10436,12 @@ document.addEventListener('DOMContentLoaded', () => {
                                             if (nodeData.pedestrianVolume !== undefined) createdNode.pedestrianVolume = nodeData.pedestrianVolume;
                                             if (nodeData.crossOnceProb !== undefined) createdNode.crossOnceProb = nodeData.crossOnceProb;
                                             if (nodeData.crossTwiceProb !== undefined) createdNode.crossTwiceProb = nodeData.crossTwiceProb;
+
+                                            // ===== 新增這段：把多邊形指派給實體 Node =====
+                                            if (nodeData.customPolygonPoints && nodeData.customPolygonPoints.length >= 6) {
+                                                createdNode.customPolygonPoints = nodeData.customPolygonPoints;
+                                            }
+                                            // =============================================
                                         }
                                     }
                                 } else {
