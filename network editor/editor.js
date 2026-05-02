@@ -2609,7 +2609,49 @@ document.addEventListener('DOMContentLoaded', () => {
                 const destMeta = dropTarget.getAttr('meta');
 
                 if (sourceName === 'lane-port' && sourceMeta.portType === 'end') {
-                    handleConnection(sourceMeta, destMeta);
+                    // 1. 取得新建的 Connection 物件
+                    const newConn = handleConnection(sourceMeta, destMeta);
+                    
+                    if (newConn) {
+                        // 2. 確保單獨的細小連接線保持顯示 (預設為 true，這裡顯式宣告)
+                        newConn.konvaBezier.visible(true);
+
+                        // 3. 獲取來源與目標的 Link 物件
+                        const sourceLink = network.links[sourceMeta.linkId];
+                        const destLink = network.links[destMeta.linkId];
+
+                        // 4. 呼叫自動歸群函數 (確保邏輯上已被加入 Connection Group)
+                        if (sourceLink && destLink) {
+                            drawConnectionGroupVisual(sourceLink, destLink, [newConn.id], newConn.nodeId);
+                        }
+
+                        // 5. 尋找歸群線並將其隱藏
+                        const groupShape = layer.find('.group-connection-visual').find(shape => {
+                            const meta = shape.getAttr('meta');
+                            return meta && meta.sourceLinkId === sourceLink.id && meta.destLinkId === destLink.id;
+                        });
+                        
+                        if (groupShape) {
+                            // 隱藏粗綠色群組線
+                            groupShape.visible(false);
+                            
+                            // 確保該群組內的所有單條細線都是顯示狀態
+                            // (這能防止使用者先用工具列的 Connect 批量連接，又手動補拉一條線時，發生部分細線被隱藏的衝突)
+                            const groupMeta = groupShape.getAttr('meta');
+                            if (groupMeta && groupMeta.connectionIds) {
+                                groupMeta.connectionIds.forEach(id => {
+                                    const conn = network.connections[id];
+                                    if (conn && conn.konvaBezier) {
+                                        conn.konvaBezier.visible(true);
+                                    }
+                                });
+                            }
+                        }
+
+                        // 6. 選取剛剛建立的單一連接線，並打開屬性面板
+                        selectObject(newConn);
+                        saveState(); // 觸發 Undo/Redo 存檔
+                    }
                 } else if (sourceName === 'group-connect-port') {
                     const sourceLink = network.links[sourceMeta.linkId];
                     const destLink = network.links[destMeta.linkId];
