@@ -30,6 +30,7 @@ document.addEventListener('DOMContentLoaded', () => {
         vehicleProfiles: {},
         trafficLights: {},
         measurements: {}, // <-- ADD THIS LINE
+        backgrounds: {}, // <--- 替換為 backgrounds: {}
         background: null, // <-- ADD THIS LINE
         overpasses: {}, // <--- 新增此行
         pushpins: {}, // <--- 新增此行
@@ -58,6 +59,12 @@ document.addEventListener('DOMContentLoaded', () => {
     let redoStack = [];
     let isRestoringState = false; // 防止復原過程中觸發儲存
 
+    window.importPrefix = ""; // 儲存匯入時的時間戳前綴
+
+    // 全域 ID 產生器
+    window.generateId = function(type) {
+        return `${window.importPrefix || ""}${type}_${++idCounter}`;
+    };
     // --- [新增] 狀態管理核心函數 ---
 
     /**
@@ -194,7 +201,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- DATA MODELS ---
     // 我們將 numLanes 參數改為 lanesOrNumLanes
     function createLink(points, lanesOrNumLanes = 2) {
-        const id = `link_${++idCounter}`;
+        const id = window.generateId('link');
         let lanes;
 
         // 判斷傳入的是數字還是陣列
@@ -223,7 +230,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function createNode(x, y) {
-        const id = `node_${++idCounter}`;
+        const id = window.generateId('node');
         const node = {
             id,
             type: 'Node',
@@ -251,7 +258,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function createConnection(sourceLink, sourceLaneIndex, destLink, destLaneIndex, node, points, color = 'rgba(0, 255, 0, 0.7)') {
-        const id = `conn_${++idCounter}`;
+        const id = window.generateId('conn');
         const conn = {
             id,
             type: 'Connection',
@@ -280,7 +287,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return conn;
     }
     function createDetector(type, link, position, endPosition = null) {
-        const id = `det_${++idCounter}`;
+        const id = window.generateId('det');
         const detector = {
             id,
             type,
@@ -299,7 +306,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function createRoadSign(link, position, lateralOffset = null, signType = 'start') {
-        const id = `sign_${++idCounter}`;
+        const id = window.generateId('sign');
 
         const sign = {
             id,
@@ -432,33 +439,34 @@ document.addEventListener('DOMContentLoaded', () => {
             konvaObj = obj.konvaGroup;
             drawMeasurementHandles(obj);
         } else if (obj.type === 'Background') {
-            if (obj.locked) {
-                return;
-            }
             konvaObj = obj.konvaGroup;
-            const tr = new Konva.Transformer({
-                nodes: [konvaObj],
-                keepRatio: true,
-                borderStroke: 'blue',
-                anchorStroke: 'blue',
-                anchorFill: 'white',
-                anchorSize: 10,
-                rotationSnaps: [0, 90, 180, 270],
-                enabledAnchors: ['top-left', 'top-right', 'bottom-left', 'bottom-right'],
-            });
-            layer.add(tr);
-            tr.moveToTop();
-            obj.konvaTransformer = tr;
-            konvaObj.on('transformend', () => {
-                if (obj.locked) return;
-                obj.x = konvaObj.x();
-                obj.y = konvaObj.y();
-                obj.scale = konvaObj.scaleX();
-                obj.width = konvaObj.width() * konvaObj.scaleX();
-                obj.height = konvaObj.height() * konvaObj.scaleY();
-                updatePropertiesPanel(obj);
-                layer.batchDraw();
-            });
+            // 如果背景沒有鎖定，才加上 Konva.Transformer 變形框
+            if (!obj.locked) {
+                const tr = new Konva.Transformer({
+                    nodes: [konvaObj],
+                    keepRatio: true,
+                    borderStroke: 'blue',
+                    anchorStroke: 'blue',
+                    anchorFill: 'white',
+                    anchorSize: 10,
+                    rotationSnaps: [0, 90, 180, 270],
+                    enabledAnchors: ['top-left', 'top-right', 'bottom-left', 'bottom-right'],
+                });
+                layer.add(tr);
+                tr.moveToTop();
+                obj.konvaTransformer = tr;
+                konvaObj.on('transformend', () => {
+                    if (obj.locked) return;
+                    obj.x = konvaObj.x();
+                    obj.y = konvaObj.y();
+                    obj.scale = konvaObj.scaleX();
+                    obj.width = konvaObj.width() * konvaObj.scaleX();
+                    obj.height = konvaObj.height() * konvaObj.scaleY();
+                    updatePropertiesPanel(obj);
+                    saveState();
+                    layer.batchDraw();
+                });
+            }
         } else if (obj.type === 'Overpass') {
             konvaObj = obj.konvaRect;
             // 我們使用邊框顏色來表示選取，而不是陰影
@@ -619,7 +627,7 @@ document.addEventListener('DOMContentLoaded', () => {
         updatePropertiesPanel(null);
     }
     function createOrigin(link, position) {
-        const id = `origin_${++idCounter}`;
+        const id = window.generateId('origin');
         // --- FIX: Use getLinkTotalWidth instead of link.numLanes ---
         const totalWidth = getLinkTotalWidth(link);
         const origin = {
@@ -652,7 +660,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return origin;
     }
     function createDestination(link, position) {
-        const id = `dest_${++idCounter}`;
+        const id = window.generateId('dest');
         // --- FIX: Use getLinkTotalWidth instead of link.numLanes ---
         const totalWidth = getLinkTotalWidth(link);
         const destination = {
@@ -1271,7 +1279,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- START: NEW MEASUREMENT FUNCTIONS ---
 
     function createMeasurement(points) {
-        const id = `measure_${++idCounter}`;
+        const id = window.generateId('measure');
         const measurement = {
             id,
             type: 'Measurement',
@@ -1447,7 +1455,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // 清除所有輔助圖示 (號誌編輯圖示 & 選取模式圖示 & 背景圖示)
         clearTrafficLightIcons();
         clearNodeSettingsIcons();
-        clearBackgroundSettingsIcon(); // <--- 新增此行
+        //clearBackgroundSettingsIcon(); // <--- 新增此行
 
         // 3. 根據工具啟用互動
         switch (toolName) {
@@ -1492,13 +1500,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 break;
 
             case 'add-background':
-                // <--- 針對 add-background 獨立處理，若已有背景則顯示 icon
-                if (network.background) {
-                    stage.container().style.cursor = 'default';
-                    showBackgroundSettingsIcon();
-                } else {
-                    stage.container().style.cursor = 'crosshair';
-                }
+                stage.container().style.cursor = 'crosshair';
                 break;
 
             case 'add-parking-lot':
@@ -1710,98 +1712,7 @@ document.addEventListener('DOMContentLoaded', () => {
         layer.batchDraw();
     }
 
-    // --- 新增：顯示背景設定圖示 ---
-    function showBackgroundSettingsIcon() {
-        clearBackgroundSettingsIcon();
-        if (!network.background) return;
 
-        const bg = network.background;
-        const scale = 1 / stage.scaleX();
-        const group = bg.konvaGroup;
-
-        // 計算右上角在 layer 上的座標
-        const localPos = {
-            x: group.x() + group.width() * group.scaleX(),
-            y: group.y()
-        };
-
-        bgSettingsIcon = new Konva.Group({
-            x: localPos.x,
-            y: localPos.y,
-            name: 'bg-setting-icon-wrapper',
-            listening: true,
-            scaleX: scale,
-            scaleY: scale
-        });
-
-        // 1. 圓形背景 (使用淺藍色)
-        const circle = new Konva.Circle({
-            radius: 14,
-            fill: '#e3f2fd',
-            stroke: '#1565c0',
-            strokeWidth: 2,
-            shadowColor: 'black',
-            shadowBlur: 3,
-            shadowOpacity: 0.3
-        });
-
-        // 2. 齒輪設定圖示
-        const icon = new Konva.Text({
-            text: '⚙️',
-            fontSize: 16,
-            align: 'center',
-            verticalAlign: 'middle',
-            listening: false
-        });
-        icon.offsetX(icon.width() / 2);
-        icon.offsetY(icon.height() / 2 - 1);
-
-        bgSettingsIcon.add(circle, icon);
-
-        // --- 事件處理 ---
-        bgSettingsIcon.on('mouseenter', () => {
-            stage.container().style.cursor = 'pointer';
-            circle.fill('#bbdefb');
-            circle.strokeWidth(3);
-            layer.batchDraw();
-        });
-
-        bgSettingsIcon.on('mouseleave', () => {
-            stage.container().style.cursor = 'default';
-            circle.fill('#e3f2fd');
-            circle.strokeWidth(2);
-            layer.batchDraw();
-        });
-
-        // ==========================================
-        // [修正重點]：點擊開啟背景設定
-        // ==========================================
-        bgSettingsIcon.on('click tap', (e) => {
-            e.cancelBubble = true; // 阻止事件冒泡，避免點到畫布
-            setTool('select');     // 切換為選取工具
-
-            selectObject(network.background); // 將背景設為選取物件
-
-            // 如果背景目前是鎖定狀態，selectObject 會提早 return 導致面板沒出來。
-            // 因此這裡強制呼叫 updatePropertiesPanel 顯示屬性欄：
-            if (network.background.locked) {
-                updatePropertiesPanel(network.background);
-            }
-        });
-
-        layer.add(bgSettingsIcon);
-        bgSettingsIcon.moveToTop();
-        layer.batchDraw();
-    }
-
-    // --- 新增：清除背景設定圖示 ---
-    function clearBackgroundSettingsIcon() {
-        if (bgSettingsIcon) {
-            bgSettingsIcon.destroy();
-            bgSettingsIcon = null;
-            layer.batchDraw();
-        }
-    }
     function showLanePorts() {
         // 清除所有舊的連接埠
         layer.find('.lane-port, .group-connect-port').forEach(port => port.destroy());
@@ -2455,14 +2366,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
 
-            if (network.background) {
-                const bgGroup = network.background.konvaGroup;
+            // 檢查是否點擊到任何一個背景
+            for (const bgId in network.backgrounds) {
+                const bg = network.backgrounds[bgId];
+                const bgGroup = bg.konvaGroup;
                 if (bgGroup && (clickedShape === bgGroup || bgGroup.isAncestorOf(clickedShape))) {
-                    if (network.background.locked) {
-                        deselectAll();
-                        return;
-                    }
-                    selectObject(network.background);
+                    selectObject(bg);
                     return;
                 }
             }
@@ -2771,14 +2680,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
 
-            if (network.background) {
-                const bgGroup = network.background.konvaGroup;
+            // 檢查是否點擊到任何一個背景
+            for (const bgId in network.backgrounds) {
+                const bg = network.backgrounds[bgId];
+                const bgGroup = bg.konvaGroup;
                 if (bgGroup && (clickedShape === bgGroup || bgGroup.isAncestorOf(clickedShape))) {
-                    if (network.background.locked) {
-                        deselectAll();
-                        return;
-                    }
-                    selectObject(network.background);
+                    selectObject(bg);
                     return;
                 }
             }
@@ -2919,22 +2826,20 @@ document.addEventListener('DOMContentLoaded', () => {
         const btnGen = document.getElementById('btn-osm-generate');
         if (btnGen) {
             btnGen.addEventListener('click', () => {
-                if (!network.background || !network.background.geoBounds) {
+                // 從多個背景中尋找帶有地理坐標的 OSM 背景
+                const validBg = Object.values(network.backgrounds).find(bg => bg.geoBounds);
+                if (!validBg) {
                     alert("No geo-referenced background found. Please Import Map Background first.");
                     return;
                 }
 
-                const confirmed = confirm(
-                    "Generate Roads from OSM?\n\n"
-                );
-
+                const confirmed = confirm("Generate Roads from OSM?\n\n");
                 if (confirmed) {
                     document.body.style.cursor = 'wait';
-
-                    OSMNetworkBuilder.generate(network.background, {
+                    OSMNetworkBuilder.generate(validBg, { // <--- 傳入抓取到的 validBg
                         autoConnect: true,
                         autoSignal: true,
-                        forceIntersect: true // [新增] 啟用強制交叉檢測
+                        forceIntersect: true
                     }, (result) => {
                         // ... (後續處理邏輯保持不變) ...
                         const { newLinks, newNodes, newConnections, newTFLs } = result;
@@ -3018,7 +2923,8 @@ document.addEventListener('DOMContentLoaded', () => {
             case 'Measurement':
                 deleteMeasurement(obj.id);
                 break;
-            case 'Background': deleteBackground();
+            case 'Background':
+                deleteBackground(obj.id); // 傳入物件 ID
                 break; // <-- ADD THIS CASE				
             case 'ConnectionGroup':
                 deleteConnectionGroup(obj);
@@ -3295,10 +3201,6 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         } else if (activeTool === 'add-background') {
             if (e.target !== stage) return;
-            if (network.background) {
-                // 使用者已看到右上角圖示，若點空白處則不作任何事，靜默防呆
-                return;
-            }
             const newBg = createBackground(pos);
             if (newBg) {
                 selectObject(newBg);
@@ -3528,7 +3430,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     function createParkingLot(points, autoSelect = true) {
-        const id = `parking_${++idCounter}`;
+        const id = window.generateId('parking');
         const parkingLot = {
             id,
             type: 'ParkingLot',
@@ -4841,7 +4743,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- 新增 Parking Gate 相關函數 ---
 
     function createParkingGate(rect, type = 'entry', existingId = null) {
-        const id = existingId || `gate_${++idCounter}`;
+        const id = existingId || window.generateId('gate');
 
         const gate = {
             id,
@@ -4975,7 +4877,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function createRoadMarking(type, parentObj, positionOrPos) {
-        const id = `mark_${++idCounter}`;
+        const id = window.generateId('mark');
         let initX = 0, initY = 0, initPos = 0;
         let points = null;
 
@@ -6220,14 +6122,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 break;
 
             case 'Background':
-                // --- SECTION: SOURCE ---
                 content += `<div class="prop-section-header">Image Source</div>`;
-
                 content += `<button id="prop-bg-file-btn" class="btn-action" style="width:100%; justify-content:center; gap:6px;">
                             <i class="fa-regular fa-folder-open"></i> Replace Image...
                         </button>`;
                 content += `<input type="file" id="prop-bg-file-input" style="display: none;" accept="image/*">`;
-
                 if (obj.imageType) {
                     content += `<div class="prop-row" style="margin-top:8px;">
                                 <span class="prop-label">Format</span>
@@ -6235,40 +6134,29 @@ document.addEventListener('DOMContentLoaded', () => {
                             </div>`;
                 }
 
-                // --- SECTION: APPEARANCE ---
-                content += `<div class="prop-section-header">Appearance</div>`;
+                content += `<div class="prop-section-header">State & Appearance</div>`;
+
+                // 新增獨立鎖定設定
+                content += `<div class="prop-row">
+                            <span class="prop-label"><i class="fa-solid fa-lock"></i> Locked</span>
+                            <input type="checkbox" id="prop-bg-locked" ${obj.locked ? 'checked' : ''} style="cursor:pointer;">
+                        </div>`;
 
                 content += `<div class="prop-row">
                             <span class="prop-label">Opacity (%)</span>
                             <input type="number" id="prop-bg-opacity" class="prop-input" value="${obj.opacity}" min="0" max="100" step="10">
                         </div>`;
-
                 content += `<div class="prop-row">
                             <span class="prop-label">Scale</span>
                             <input type="number" id="prop-bg-scale" class="prop-input" value="${obj.scale.toFixed(2)}" min="0.01" step="0.01">
                         </div>`;
 
-                // --- SECTION: DIMENSIONS ---
                 content += `<div class="prop-section-header">Dimensions (px)</div>`;
+                content += `<div class="prop-row"><span class="prop-label">Width</span><input type="text" class="prop-input" value="${(obj.width).toFixed(0)}" disabled></div>`;
+                content += `<div class="prop-row"><span class="prop-label">Height</span><input type="text" class="prop-input" value="${(obj.height).toFixed(0)}" disabled></div>`;
 
-                content += `<div class="prop-row">
-                            <span class="prop-label">Width</span>
-                            <input type="text" class="prop-input" value="${(obj.width).toFixed(0)}" disabled>
-                        </div>`;
-                content += `<div class="prop-row">
-                            <span class="prop-label">Height</span>
-                            <input type="text" class="prop-input" value="${(obj.height).toFixed(0)}" disabled>
-                        </div>`;
-
-                content += `<div class="prop-hint">
-                            <i class="fa-solid fa-lock"></i> 
-                            Use the toggle button at the bottom right of the canvas to Lock/Unlock positioning.
-                        </div>`;
-
-                // --- SECTION: ACTIONS ---
                 content += `<div class="prop-section-header">Actions</div>`;
-                // 注意：這裡假設 deleteSelectedObject() 會處理 Background，或是你可以呼叫 deleteBackground()
-                content += `<button onclick="deleteSelectedObject()" class="btn-danger-outline">
+                content += `<button id="btn-delete-bg" class="btn-danger-outline">
                             <i class="fa-solid fa-trash-can"></i> Delete Background
                         </button>`;
                 break;
@@ -7710,13 +7598,14 @@ document.addEventListener('DOMContentLoaded', () => {
             const fileInput = document.getElementById('prop-bg-file-input');
             const opacityInput = document.getElementById('prop-bg-opacity');
             const scaleInput = document.getElementById('prop-bg-scale');
+            const lockInput = document.getElementById('prop-bg-locked');
+            const delBtn = document.getElementById('btn-delete-bg');
 
-            fileBtn.addEventListener('click', () => fileInput.click());
+            if (fileBtn) fileBtn.addEventListener('click', () => fileInput.click());
 
-            fileInput.addEventListener('change', (e) => {
+            if (fileInput) fileInput.addEventListener('change', (e) => {
                 const file = e.target.files[0];
                 if (!file) return;
-
                 const reader = new FileReader();
                 reader.onload = (event) => {
                     const dataUrl = event.target.result;
@@ -7727,37 +7616,49 @@ document.addEventListener('DOMContentLoaded', () => {
                         obj.imageType = file.type.split('/')[1].toUpperCase();
                         obj.konvaImage.image(image);
                         const currentScale = obj.scale;
-                        const newWidth = image.width;
-                        const newHeight = image.height;
-                        obj.konvaGroup.width(newWidth);
-                        obj.konvaGroup.height(newHeight);
-                        obj.konvaImage.width(newWidth);
-                        obj.konvaImage.height(newHeight);
-                        obj.konvaBorder.width(newWidth);
-                        obj.konvaBorder.height(newHeight);
-                        obj.konvaGroup.scale({ x: currentScale, y: currentScale });
-                        obj.width = newWidth * currentScale;
-                        obj.height = newHeight * currentScale;
+                        obj.width = image.width * currentScale;
+                        obj.height = image.height * currentScale;
+                        obj.konvaGroup.width(image.width);
+                        obj.konvaGroup.height(image.height);
+                        obj.konvaImage.width(image.width);
+                        obj.konvaImage.height(image.height);
+                        obj.konvaBorder.width(image.width);
+                        obj.konvaBorder.height(image.height);
+                        updatePropertiesPanel(obj);
+                        saveState();
                         layer.batchDraw();
                     };
                 };
                 reader.readAsDataURL(file);
             });
 
-            opacityInput.addEventListener('input', (e) => {
-                const newOpacity = parseInt(e.target.value, 10);
-                if (isNaN(newOpacity)) return;
-                obj.opacity = Math.max(0, Math.min(100, newOpacity));
+            if (opacityInput) opacityInput.addEventListener('input', (e) => {
+                obj.opacity = Math.max(0, Math.min(100, parseInt(e.target.value, 10) || 0));
                 obj.konvaGroup.opacity(obj.opacity / 100);
                 layer.batchDraw();
             });
+            if (opacityInput) opacityInput.addEventListener('change', saveState);
 
-            scaleInput.addEventListener('change', (e) => {
+            if (scaleInput) scaleInput.addEventListener('change', (e) => {
                 const newScale = parseFloat(e.target.value);
                 if (isNaN(newScale) || newScale <= 0) return;
                 obj.scale = newScale;
                 obj.konvaGroup.scale({ x: newScale, y: newScale });
+                saveState();
                 layer.batchDraw();
+            });
+
+            // 獨立鎖定開關邏輯
+            if (lockInput) lockInput.addEventListener('change', (e) => {
+                obj.locked = e.target.checked;
+                obj.konvaGroup.draggable(!obj.locked);
+                // 重新選取以拔除或加入變形框 (Transformer)
+                selectObject(obj);
+                saveState();
+            });
+
+            if (delBtn) delBtn.addEventListener('click', () => {
+                deleteSelectedObject();
             });
         }
 
@@ -10042,13 +9943,9 @@ document.addEventListener('DOMContentLoaded', () => {
             navigationMode: 'HYBRID',
             links: {}, nodes: {}, connections: {}, detectors: {},
             vehicleProfiles: {},
-            trafficLights: {}, measurements: {}, background: null,
-            overpasses: {},
-            pushpins: {},
-            parkingLots: {},
-            parkingGates: {},
-            roadSigns: {}, origins: {}, destinations: {},
-            roadMarkings: {}
+            trafficLights: {}, measurements: {}, backgrounds: {}, // <--- 替換
+            overpasses: {}, pushpins: {}, parkingLots: {}, parkingGates: {},
+            roadSigns: {}, origins: {}, destinations: {}, roadMarkings: {}
         };
 
         // 【關鍵修正】: 必須更新 window.network，讓外部工具 (SubNetworkTool) 能讀取到新的路網資料
@@ -10063,10 +9960,12 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     // 完整替換此函數
     // 完整替換 createAndLoadNetworkFromXML 函數
-    function createAndLoadNetworkFromXML(xmlString) {
-        stage.position({ x: 0, y: 0 });
-        stage.scale({ x: 1, y: 1 });
-        resetWorkspace();
+    function createAndLoadNetworkFromXML(xmlString, isMerge = false) {
+        if (!isMerge) {
+            stage.position({ x: 0, y: 0 });
+            stage.scale({ x: 1, y: 1 });
+            resetWorkspace();
+        }
 
         const parser = new DOMParser();
         const xmlDoc = parser.parseFromString(xmlString, "application/xml");
@@ -10213,10 +10112,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
 
-            // [新增] 如果 XML 有名稱則套用，否則使用 ID
-            if (xmlName) {
-                newLink.name = xmlName;
-            }
+            // [修改] 將匯入的名稱套用前綴以利識別
+            newLink.name = (window.importPrefix || "") + (xmlName || newLink.id);
 
             const pairXmlId = getChildValue(linkEl, "pairLinkId");
             const medianWidthStr = getChildValue(linkEl, "medianWidth");
@@ -10798,7 +10695,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 if (points.length >= 6) {
                     const newPl = createParkingLot(points, false);
-                    newPl.name = name;
+                    newPl.name = (window.importPrefix || "") + name;
                     newPl.carCapacity = carCap;
                     newPl.motoCapacity = motoCap;
                     newPl.attractionProb = attrProb;
@@ -10895,7 +10792,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 // [建立物件並賦值]
                 if (tagName === 'LinkAverageTravelSpeedMeter') {
                     const det = createDetector('PointDetector', link, pos);
-                    det.name = name;
+                    det.name = (window.importPrefix || "") + name;
                     det.observedFlow = !isNaN(flowVal) ? flowVal : 0;
                     det.isSource = isSrcVal;
                     det.spawnProfiles = spawnProfiles; // <--- 將解析出的列表存入物件
@@ -10903,7 +10800,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 } else if (tagName === 'SectionAverageTravelSpeedMeter') {
                     const len = parseFloat(getChildValue(meterEl, "sectionLength"));
                     const det = createDetector('SectionDetector', link, pos + len);
-                    det.name = name;
+                    det.name = (window.importPrefix || "") + name;
                     det.length = len;
                     det.observedFlow = !isNaN(flowVal) ? flowVal : 0;
                     det.isSource = isSrcVal;
@@ -10915,51 +10812,63 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // --- 9. Background ---
-        const bgEl = xmlDoc.querySelector("Background > Tile");
-        if (bgEl) {
-            try {
-                const rectEl = getChildrenByLocalName(bgEl, "Rectangle")[0];
-                const startEl = getChildrenByLocalName(rectEl, "Start")[0];
-                const endEl = getChildrenByLocalName(rectEl, "End")[0];
-                const startX = parseFloat(getChildValue(startEl, "x"));
-                const startY = parseFloat(getChildValue(startEl, "y")) * C_SYSTEM_Y_INVERT;
-                const endX = parseFloat(getChildValue(endEl, "x"));
-                const endY = parseFloat(getChildValue(endEl, "y")) * C_SYSTEM_Y_INVERT;
-                const saturation = parseInt(getChildValue(bgEl, "saturation"), 10);
+        const bgContainer = xmlDoc.querySelector("Background") || xmlDoc.getElementsByTagName("tm:Background")[0];
+        if (bgContainer) {
+            // 抓出所有的 Tile，包含多張背景
+            getChildrenByLocalName(bgContainer, "Tile").forEach(bgEl => {
+                try {
+                    const rectEl = getChildrenByLocalName(bgEl, "Rectangle")[0];
+                    const startEl = getChildrenByLocalName(rectEl, "Start")[0];
+                    const endEl = getChildrenByLocalName(rectEl, "End")[0];
+                    const startX = parseFloat(getChildValue(startEl, "x"));
+                    const startY = parseFloat(getChildValue(startEl, "y")) * C_SYSTEM_Y_INVERT;
+                    const endX = parseFloat(getChildValue(endEl, "x"));
+                    const endY = parseFloat(getChildValue(endEl, "y")) * C_SYSTEM_Y_INVERT;
+                    const saturation = parseInt(getChildValue(bgEl, "saturation"), 10);
 
-                const imgEl = getChildrenByLocalName(bgEl, "Image")[0];
-                const imageType = getChildValue(imgEl, "type");
-                const binaryData = getChildValue(imgEl, "binaryData");
-                const dataUrl = `data:image/${imageType.toLowerCase()};base64,${binaryData}`;
+                    const lockedStr = getChildValue(bgEl, "locked");
+                    const isLocked = lockedStr === 'true'; // 向後相容，沒有該標籤視為 false
 
-                const newBg = createBackground({ x: startX, y: startY });
-                if (newBg) {
-                    newBg.locked = true;
-                    newBg.width = Math.abs(endX - startX);
-                    newBg.height = Math.abs(endY - startY);
-                    newBg.opacity = saturation;
-                    newBg.imageDataUrl = dataUrl;
-                    newBg.imageType = imageType;
-                    const image = new window.Image();
-                    image.src = dataUrl;
-                    image.onload = () => {
-                        newBg.konvaImage.image(image);
-                        const scale = (image.width > 0) ? newBg.width / image.width : 1;
-                        newBg.scale = scale;
-                        newBg.konvaGroup.width(image.width);
-                        newBg.konvaGroup.height(image.height);
-                        newBg.konvaGroup.scale({ x: scale, y: scale });
-                        newBg.konvaGroup.opacity(newBg.opacity / 100);
-                        newBg.konvaImage.width(image.width);
-                        newBg.konvaImage.height(image.height);
-                        newBg.konvaBorder.width(image.width);
-                        newBg.konvaBorder.height(image.height);
-                        layer.batchDraw();
-                    };
+                    const imgEl = getChildrenByLocalName(bgEl, "Image")[0];
+                    if (!imgEl) return;
+
+                    const imageType = getChildValue(imgEl, "type");
+                    const binaryData = getChildValue(imgEl, "binaryData");
+                    const dataUrl = `data:image/${imageType.toLowerCase()};base64,${binaryData}`;
+
+                    const newBg = createBackground({ x: startX, y: startY });
+                    newBg.name = (window.importPrefix || "") + `Imported Map ${idCounter}`;
+                    if (newBg) {
+                        newBg.locked = isLocked;
+                        newBg.konvaGroup.draggable(!isLocked); // 載入鎖定狀態
+
+                        newBg.width = Math.abs(endX - startX);
+                        newBg.height = Math.abs(endY - startY);
+                        newBg.opacity = saturation || 50;
+                        newBg.imageDataUrl = dataUrl;
+                        newBg.imageType = imageType;
+
+                        const image = new window.Image();
+                        image.src = dataUrl;
+                        image.onload = () => {
+                            newBg.konvaImage.image(image);
+                            const scale = (image.width > 0) ? newBg.width / image.width : 1;
+                            newBg.scale = scale;
+                            newBg.konvaGroup.width(image.width);
+                            newBg.konvaGroup.height(image.height);
+                            newBg.konvaGroup.scale({ x: scale, y: scale });
+                            newBg.konvaGroup.opacity(newBg.opacity / 100);
+                            newBg.konvaImage.width(image.width);
+                            newBg.konvaImage.height(image.height);
+                            newBg.konvaBorder.width(image.width);
+                            newBg.konvaBorder.height(image.height);
+                            layer.batchDraw();
+                        };
+                    }
+                } catch (err) {
+                    console.error("Failed to parse background from XML:", err);
                 }
-            } catch (err) {
-                console.error("Failed to parse background from XML:", err);
-            }
+            });
         }
 
         // --- 10. GeoAnchors ---
@@ -11744,30 +11653,34 @@ document.addEventListener('DOMContentLoaded', () => {
         xml += '  </tm:Agents>\n';
 
         // --- 5. Background ---
-        if (network.background) {
-            const bg = network.background;
-            const group = bg.konvaGroup;
-            const startX = group.x();
-            const startY = group.y();
-            const width = group.width() * group.scaleX();
-            const height = group.height() * group.scaleY();
-            const endX = startX + width;
-            const endY = startY + height;
+        if (Object.keys(network.backgrounds).length > 0) {
             xml += '  <tm:Background>\n';
-            xml += '    <tm:Tile>\n';
-            xml += '      <tm:Rectangle>\n';
-            xml += `        <tm:Start><tm:x>${startX.toFixed(4)}</tm:x><tm:y>${(startY * C_SYSTEM_Y_INVERT).toFixed(4)}</tm:y></tm:Start>\n`;
-            xml += `        <tm:End><tm:x>${endX.toFixed(4)}</tm:x><tm:y>${(endY * C_SYSTEM_Y_INVERT).toFixed(4)}</tm:y></tm:End>\n`;
-            xml += '      </tm:Rectangle>\n';
-            xml += `      <tm:saturation>${bg.opacity}</tm:saturation>\n`;
-            if (bg.imageDataUrl) {
-                const base64Data = bg.imageDataUrl.split(',')[1];
-                xml += '      <tm:Image>\n';
-                xml += `        <tm:type>${bg.imageType}</tm:type>\n`;
-                xml += `        <tm:binaryData>${base64Data}</tm:binaryData>\n`;
-                xml += '      </tm:Image>\n';
+            for (const bg of Object.values(network.backgrounds)) {
+                const group = bg.konvaGroup;
+                const startX = group.x();
+                const startY = group.y();
+                const width = group.width() * group.scaleX();
+                const height = group.height() * group.scaleY();
+                const endX = startX + width;
+                const endY = startY + height;
+
+                xml += '    <tm:Tile>\n';
+                xml += '      <tm:Rectangle>\n';
+                xml += `        <tm:Start><tm:x>${startX.toFixed(4)}</tm:x><tm:y>${(startY * C_SYSTEM_Y_INVERT).toFixed(4)}</tm:y></tm:Start>\n`;
+                xml += `        <tm:End><tm:x>${endX.toFixed(4)}</tm:x><tm:y>${(endY * C_SYSTEM_Y_INVERT).toFixed(4)}</tm:y></tm:End>\n`;
+                xml += '      </tm:Rectangle>\n';
+                xml += `      <tm:saturation>${bg.opacity}</tm:saturation>\n`;
+                xml += `      <tm:locked>${bg.locked ? 'true' : 'false'}</tm:locked>\n`; // 記錄鎖定狀態
+
+                if (bg.imageDataUrl) {
+                    const base64Data = bg.imageDataUrl.split(',')[1];
+                    xml += '      <tm:Image>\n';
+                    xml += `        <tm:type>${bg.imageType}</tm:type>\n`;
+                    xml += `        <tm:binaryData>${base64Data}</tm:binaryData>\n`;
+                    xml += '      </tm:Image>\n';
+                }
+                xml += '    </tm:Tile>\n';
             }
-            xml += '    </tm:Tile>\n';
             xml += '  </tm:Background>\n';
         }
 
@@ -11982,29 +11895,24 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function createBackground(pos) {
-        if (network.background) {
-            alert("背景已存在，無法新增。");
-            return null;
-        }
-
-        const id = 'background_0';
+        const id = window.generateId('background');
         const bgObject = {
             id,
             type: 'Background',
+            name: `Background ${idCounter}`, // 給予預設名稱
             x: pos.x,
             y: pos.y,
             width: 200,
             height: 150,
             scale: 1.0,
             opacity: 50,
-            //locked: false, // 新增鎖定狀態
+            locked: false, // 預設不鎖定，可個別操作
             imageDataUrl: null,
             imageType: null,
             konvaGroup: null,
             konvaTransformer: null
         };
 
-        // 創建群組
         const group = new Konva.Group({
             id: id,
             x: bgObject.x,
@@ -12015,74 +11923,34 @@ document.addEventListener('DOMContentLoaded', () => {
             name: 'background-group'
         });
 
-        // 創建圖片物件
-        const image = new Konva.Image({
-            x: 0,
-            y: 0,
-            width: bgObject.width,
-            height: bgObject.height,
-            listening: true
-        });
-
-        // 創建透明背景矩形作為點擊區域
-        const hitArea = new Konva.Rect({
-            x: 0,
-            y: 0,
-            width: bgObject.width,
-            height: bgObject.height,
-            fill: 'rgba(0,0,0,0.01)',
-            listening: true
-        });
-
-        // 創建邊框
-        const border = new Konva.Rect({
-            x: 0,
-            y: 0,
-            width: bgObject.width,
-            height: bgObject.height,
-            stroke: '#007bff',
-            strokeWidth: 2,
-            dash: [5, 5],
-            listening: false
-        });
+        const image = new Konva.Image({ x: 0, y: 0, width: bgObject.width, height: bgObject.height, listening: true });
+        const hitArea = new Konva.Rect({ x: 0, y: 0, width: bgObject.width, height: bgObject.height, fill: 'rgba(0,0,0,0.01)', listening: true });
+        const border = new Konva.Rect({ x: 0, y: 0, width: bgObject.width, height: bgObject.height, stroke: '#007bff', strokeWidth: 2, dash: [5, 5], listening: false });
 
         group.add(image, hitArea, border);
         layer.add(group);
         group.moveToBottom();
 
-        // 儲存參照
         bgObject.konvaGroup = group;
-        bgObject.konvaImage = image
-        bgObject.konvaHitArea = hitArea
-        bgObject.konvaBorder = border
+        bgObject.konvaImage = image;
+        bgObject.konvaHitArea = hitArea;
+        bgObject.konvaBorder = border;
 
-        network.background = bgObject;
-
-        // [修正] 更新工具列狀態，這會顯示 #bg-lock-section
-        updateBackgroundLockState();
-
+        network.backgrounds[id] = bgObject;
         return bgObject;
     }
-    function deleteBackground() {
-        if (!network.background) return;
-
-        // 清理 Transformer
-        if (network.background.konvaTransformer) {
-            network.background.konvaTransformer.destroy();
-            network.background.konvaTransformer = null;
+    function deleteBackground(id) {
+        const bg = network.backgrounds[id];
+        if (!bg) return;
+        if (bg.konvaTransformer) {
+            bg.konvaTransformer.destroy();
+            bg.konvaTransformer = null;
         }
-
-        // 清理群組
-        if (network.background.konvaGroup) {
-            network.background.konvaGroup.destroy();
-            network.background.konvaGroup = null;
+        if (bg.konvaGroup) {
+            bg.konvaGroup.destroy();
+            bg.konvaGroup = null;
         }
-
-        network.background = null;
-
-        // 隱藏浮動鎖定按鈕
-        updateBackgroundLockState();
-
+        delete network.backgrounds[id];
         layer.batchDraw();
     }
     function initBackgroundLock() {
@@ -12166,7 +12034,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return null;
         }
 
-        const id = `pin_${++idCounter}`;
+        const id = window.generateId('pin');
         const pushpin = {
             id,
             type: 'Pushpin',
@@ -12635,115 +12503,56 @@ document.addEventListener('DOMContentLoaded', () => {
     window.handleOSMImportCallback = function (data) {
         const { imageData, widthMeters, heightMeters, bounds } = data;
 
-        // 1. 如果已有背景，先刪除舊的
-        if (network.background) {
-            if (!confirm(I18N.t("Current background will be replaced. Continue?"))) return;
-            deleteBackground();
-        }
-
-        // 2. 建立 Background 物件
-        // 關鍵：將圖片放置在以原點 (0,0) 為中心的位置，方便編輯
-        // 注意：這裡的 widthMeters 和 heightMeters 是真實世界的距離
-        // 當我們將此圖片設為背景並設定其寬高為 meter 值時，畫布比例尺即自動校正為 1 unit = 1 meter
         const startX = -widthMeters / 2;
         const startY = -heightMeters / 2;
+        const id = `background_${++idCounter}`;
 
-        const id = 'background_osm';
-
-        // 建立資料模型
         const bgObject = {
             id: id,
             type: 'Background',
+            name: `OSM Map ${idCounter}`,
             x: startX,
             y: startY,
             width: widthMeters,
             height: heightMeters,
-            scale: 1.0,           // 比例尺為 1 (因為我們直接用公尺定義大小)
-            opacity: 100,         // 預設不透明
-            locked: true,         // 預設鎖定，避免誤操作
-            imageDataUrl: imageData, // [重點] 這裡儲存了 Base64，exportXML 會自動讀取此屬性並儲存
+            scale: 1.0,
+            opacity: 100,
+            locked: true, // 匯入的真實地圖預設上鎖
+            imageDataUrl: imageData,
             imageType: 'PNG',
-
-            // [新增] 儲存地理邊界資訊，這是 Phase 2 的關鍵輸入
             geoBounds: {
-                north: bounds.getNorth(),
-                south: bounds.getSouth(),
-                east: bounds.getEast(),
-                west: bounds.getWest()
+                north: bounds.getNorth(), south: bounds.getSouth(),
+                east: bounds.getEast(), west: bounds.getWest()
             },
-
-            konvaGroup: null,
-            konvaImage: null,
-            konvaBorder: null
+            konvaGroup: null, konvaImage: null, konvaBorder: null
         };
 
-        // 3. 建立 Konva 視覺物件
-        const group = new Konva.Group({
-            id: id,
-            x: bgObject.x,
-            y: bgObject.y,
-            width: bgObject.width,
-            height: bgObject.height,
-            draggable: false, // 鎖定狀態
-            name: 'background-group'
-        });
-
+        const group = new Konva.Group({ id: id, x: bgObject.x, y: bgObject.y, width: bgObject.width, height: bgObject.height, draggable: false, name: 'background-group' });
         const imageObj = new Image();
         imageObj.onload = function () {
-            const kImage = new Konva.Image({
-                x: 0,
-                y: 0,
-                image: imageObj,
-                width: bgObject.width,
-                height: bgObject.height,
-                opacity: 1
-            });
-
-            // 增加一個透明的點擊區域 (方便選取)
-            const hitArea = new Konva.Rect({
-                x: 0, y: 0, width: bgObject.width, height: bgObject.height,
-                fill: 'transparent', listening: true
-            });
-
-            // 增加虛線邊框
-            const border = new Konva.Rect({
-                x: 0, y: 0, width: bgObject.width, height: bgObject.height,
-                stroke: '#007bff', strokeWidth: 2 / stage.scaleX(), dash: [10, 10],
-                listening: false
-            });
+            const kImage = new Konva.Image({ x: 0, y: 0, image: imageObj, width: bgObject.width, height: bgObject.height, opacity: 1 });
+            const hitArea = new Konva.Rect({ x: 0, y: 0, width: bgObject.width, height: bgObject.height, fill: 'transparent', listening: true });
+            const border = new Konva.Rect({ x: 0, y: 0, width: bgObject.width, height: bgObject.height, stroke: '#007bff', strokeWidth: 2 / stage.scaleX(), dash: [10, 10], listening: false });
 
             group.add(kImage, hitArea, border);
             layer.add(group);
             group.moveToBottom();
 
-            // 綁定 Konva 參照
             bgObject.konvaGroup = group;
             bgObject.konvaImage = kImage;
-            bgObject.konvaHitArea = hitArea; // 用於後續可能的鎖定控制
+            bgObject.konvaHitArea = hitArea;
             bgObject.konvaBorder = border;
 
-            network.background = bgObject;
+            network.backgrounds[id] = bgObject;
 
-            // 4. 更新 UI 狀態
-            updateBackgroundLockState(); // 顯示鎖定按鈕
-            layer.batchDraw();
-
-            // 5. 自動設定 GeoAnchors (Pushpins)
-            // 這一步確保了地理資訊也被儲存到 .sim 檔中
-
-            // 清除舊的錨點
             Object.keys(network.pushpins).forEach(pid => deletePushpin(pid));
-
-            // 左上角錨點 (North-West)
             const pinNW = createPushpin({ x: startX, y: startY }, bounds.getNorth(), bounds.getWest());
-
-            // 右下角錨點 (South-East)
             const pinSE = createPushpin({ x: startX + widthMeters, y: startY + heightMeters }, bounds.getSouth(), bounds.getEast());
-
-            // 鎖定錨點，避免誤移
             if (pinNW) pinNW.konvaGroup.draggable(false);
             if (pinSE) pinSE.konvaGroup.draggable(false);
 
+            saveState();
+            layer.batchDraw();
             alert(I18N.t(`Map Imported Successfully!\nDimensions: ${widthMeters.toFixed(1)}m x ${heightMeters.toFixed(1)}m\nScale auto-calibrated to 1:1.`));
         };
         imageObj.src = imageData;
