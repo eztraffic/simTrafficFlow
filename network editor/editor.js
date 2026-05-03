@@ -62,7 +62,7 @@ document.addEventListener('DOMContentLoaded', () => {
     window.importPrefix = ""; // 儲存匯入時的時間戳前綴
 
     // 全域 ID 產生器
-    window.generateId = function(type) {
+    window.generateId = function (type) {
         return `${window.importPrefix || ""}${type}_${++idCounter}`;
     };
     // --- [新增] 狀態管理核心函數 ---
@@ -2611,7 +2611,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (sourceName === 'lane-port' && sourceMeta.portType === 'end') {
                     // 1. 取得新建的 Connection 物件
                     const newConn = handleConnection(sourceMeta, destMeta);
-                    
+
                     if (newConn) {
                         // 2. 確保單獨的細小連接線保持顯示 (預設為 true，這裡顯式宣告)
                         newConn.konvaBezier.visible(true);
@@ -2630,11 +2630,11 @@ document.addEventListener('DOMContentLoaded', () => {
                             const meta = shape.getAttr('meta');
                             return meta && meta.sourceLinkId === sourceLink.id && meta.destLinkId === destLink.id;
                         });
-                        
+
                         if (groupShape) {
                             // 隱藏粗綠色群組線
                             groupShape.visible(false);
-                            
+
                             // 確保該群組內的所有單條細線都是顯示狀態
                             // (這能防止使用者先用工具列的 Connect 批量連接，又手動補拉一條線時，發生部分細線被隱藏的衝突)
                             const groupMeta = groupShape.getAttr('meta');
@@ -2878,12 +2878,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 const confirmed = confirm("Generate Roads from OSM?\n\n");
                 if (confirmed) {
                     document.body.style.cursor = 'wait';
-                    OSMNetworkBuilder.generate(validBg, { // <--- 傳入抓取到的 validBg
+                    OSMNetworkBuilder.generate(validBg, {
                         autoConnect: true,
                         autoSignal: true,
                         forceIntersect: true
                     }, (result) => {
-                        // ... (後續處理邏輯保持不變) ...
                         const { newLinks, newNodes, newConnections, newTFLs } = result;
 
                         Object.assign(network.links, newLinks);
@@ -2897,9 +2896,15 @@ document.addEventListener('DOMContentLoaded', () => {
                         Object.values(newConnections).forEach(c => { layer.add(c.konvaBezier); c.konvaBezier.moveToBottom(); });
 
                         drawGrid();
+                        // 1. 將生成的路段移到下方
                         Object.values(newLinks).forEach(l => l.konvaGroup.moveToBottom());
                         Object.values(newConnections).forEach(c => c.konvaBezier.moveToBottom());
-                        if (network.background && network.background.konvaGroup) network.background.konvaGroup.moveToBottom();
+
+                        // 【修正重點】2. 遍歷所有的地圖背景移至"最"下方，確保墊底
+                        Object.values(network.backgrounds).forEach(bg => {
+                            if (bg.konvaGroup) bg.konvaGroup.moveToBottom();
+                        });
+
                         Object.values(newNodes).forEach(n => n.konvaShape.moveToTop());
 
                         layer.batchDraw();
@@ -12586,6 +12591,11 @@ document.addEventListener('DOMContentLoaded', () => {
             bgObject.konvaBorder = border;
 
             network.backgrounds[id] = bgObject;
+
+            // 【修正重點】確保被鎖定的地圖圖層不會攔截並阻擋滑鼠點擊事件
+            if (bgObject.locked) {
+                group.listening(false);
+            }
 
             Object.keys(network.pushpins).forEach(pid => deletePushpin(pid));
             const pinNW = createPushpin({ x: startX, y: startY }, bounds.getNorth(), bounds.getWest());
