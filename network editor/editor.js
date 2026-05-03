@@ -5434,6 +5434,154 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
+        // ============================================================
+        // [新增] 針對 Image (Add Background) 工具的圖層清單顯示
+        // ============================================================
+        if (activeTool === 'add-background' && !obj) {
+            let content = `
+            <div class="prop-section-header">Background Layers</div>
+            <div class="prop-hint" style="margin-bottom:12px;">
+                <i class="fa-solid fa-image"></i> Click on the canvas to add a new placeholder, or select an existing layer below to edit.
+            </div>`;
+
+            const bgs = Object.values(network.backgrounds);
+            if (bgs.length > 0) {
+                content += `<div style="display:flex; flex-direction:column; gap:8px;">`;
+                // 越新的圖層顯示在越上方
+                [...bgs].reverse().forEach(bg => {
+                    const imgThumb = bg.imageDataUrl
+                        ? `<img src="${bg.imageDataUrl}" style="width:40px; height:40px; object-fit:cover; border-radius:4px; border:1px solid #e2e8f0;">`
+                        : `<div style="width:40px; height:40px; background:#e2e8f0; border-radius:4px; display:flex; align-items:center; justify-content:center; font-size:10px; color:#94a3b8;">N/A</div>`;
+
+                    content += `
+                    <div class="prop-card bg-layer-item" data-id="${bg.id}" style="display:flex; align-items:center; justify-content:space-between; padding:8px; cursor:pointer; transition:all 0.2s;">
+                        <div style="display:flex; align-items:center; gap:10px; overflow:hidden;">
+                            ${imgThumb}
+                            <div style="display:flex; flex-direction:column; overflow:hidden;">
+                                <span style="font-weight:600; font-size:0.85rem; color:var(--text-main); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; width: 120px;" title="${bg.name || bg.id}">${bg.name || bg.id}</span>
+                                <span style="font-size:0.7rem; color:var(--text-muted);">${bg.locked ? '<i class="fa-solid fa-lock" style="color:#ef4444;"></i> Locked' : '<i class="fa-solid fa-lock-open" style="color:#10b981;"></i> Unlocked'}</span>
+                            </div>
+                        </div>
+                        <div style="display:flex; gap:4px;">
+                            <button class="btn-mini btn-bg-toggle-lock" data-id="${bg.id}" title="${bg.locked ? 'Unlock' : 'Lock'}" style="background:#fff; border:1px solid #e2e8f0; color:${bg.locked ? '#ef4444' : '#64748b'};">
+                                <i class="fa-solid ${bg.locked ? 'fa-lock' : 'fa-lock-open'}"></i>
+                            </button>
+                            <button class="btn-mini btn-bg-delete" data-id="${bg.id}" title="Delete" style="background:#fff; border:1px solid #fecaca; color:#ef4444;">
+                                <i class="fa-solid fa-trash-can"></i>
+                            </button>
+                        </div>
+                    </div>`;
+                });
+                content += `</div>`;
+            } else {
+                content += `
+                <div style="text-align:center; padding:20px 0; color:#cbd5e1;">
+                    <i class="fa-regular fa-images" style="font-size:2rem; margin-bottom:8px;"></i>
+                    <p style="font-size:0.85rem; margin:0;">No background layers yet.</p>
+                </div>`;
+            }
+
+            propertiesContent.innerHTML = content;
+
+            // ==========================================
+            // [新增] 畫布背景高亮輔助函數
+            // ==========================================
+            function clearBgHighlights() {
+                layer.find('.bg-list-highlight').forEach(shape => shape.destroy());
+                layer.batchDraw();
+            }
+
+            function highlightBg(bgId) {
+                const bg = network.backgrounds[bgId];
+                if (!bg || !bg.konvaGroup) return;
+
+                clearBgHighlights();
+
+                // 計算精確的線寬：抵銷 Stage (畫布) 與 Group (背景圖層) 的雙重縮放，
+                // 確保紅色邊框在螢幕上看起來始終是固定的 2px 細線
+                const scaleFactor = stage.scaleX() * bg.konvaGroup.scaleX();
+
+                const highlightRect = new Konva.Rect({
+                    x: 0,
+                    y: 0,
+                    width: bg.konvaGroup.width(),
+                    height: bg.konvaGroup.height(),
+                    stroke: 'red',
+                    strokeWidth: 2 / scaleFactor,
+                    listening: false, // 確保高亮框不會攔截任何滑鼠事件
+                    name: 'bg-list-highlight'
+                });
+
+                bg.konvaGroup.add(highlightRect);
+                highlightRect.moveToTop(); // 確保紅框疊在該背景圖片的最上層
+                layer.batchDraw();
+            }
+
+            // ==========================================
+            // 綁定圖層清單事件
+            // ==========================================
+            document.querySelectorAll('.bg-layer-item').forEach(item => {
+                // 點擊事件：進入該圖層編輯
+                item.addEventListener('click', (e) => {
+                    if (e.target.closest('button')) return; // 防止點擊操作按鈕時誤觸發
+                    clearBgHighlights(); // 選取後即清除 Hover 的高亮框
+                    const bg = network.backgrounds[item.dataset.id];
+                    if (bg) selectObject(bg);
+                });
+                
+                // 滑鼠移入：UI 面板變色，同時在畫布上標示紅框
+                item.addEventListener('mouseenter', () => {
+                    item.style.borderColor = 'var(--primary)';
+                    item.style.backgroundColor = '#eef2ff';
+                    highlightBg(item.dataset.id); 
+                });
+                
+                // 滑鼠移出：還原 UI 面板，並清除畫布上的紅框
+                item.addEventListener('mouseleave', () => {
+                    item.style.borderColor = 'var(--border-light)';
+                    item.style.backgroundColor = 'var(--bg-card)';
+                    clearBgHighlights(); 
+                });
+            });
+
+            document.querySelectorAll('.btn-bg-toggle-lock').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const bg = network.backgrounds[btn.dataset.id];
+                    if (bg) {
+                        bg.locked = !bg.locked;
+                        if (bg.konvaGroup) {
+                            bg.konvaGroup.draggable(!bg.locked);
+                            bg.konvaGroup.listening(!bg.locked);
+                            if (bg.konvaHitArea) bg.konvaHitArea.listening(!bg.locked);
+                        }
+                        updatePropertiesPanel(null); // 重新繪製清單以更新鎖頭圖示
+                        saveState();
+                        layer.batchDraw();
+                    }
+                });
+            });
+
+            document.querySelectorAll('.btn-bg-delete').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const bgId = btn.dataset.id;
+                    if (confirm(typeof I18N !== 'undefined' && I18N.t ? I18N.t("Delete this background layer?") : "Delete this background layer?")) {
+                        clearBgHighlights(); // 刪除前先清理可能存在的紅框
+                        deleteBackground(bgId);
+                        updatePropertiesPanel(null); // 重新繪製清單
+                        saveState();
+                    }
+                });
+            });
+
+            if (typeof I18N !== 'undefined' && I18N.translateDOM) {
+                I18N.translateDOM(propertiesContent);
+            }
+            return;
+        }
+        // ============================================================
+
         if (!obj) {
             propertiesContent.innerHTML = '<p>Select an element to edit</p>';
             return;
@@ -6169,6 +6317,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 break;
 
             case 'Background':
+                // [新增] 如果當前工具是 add-background，給予返回清單的按鈕
+                if (activeTool === 'add-background') {
+                    content += `<button id="btn-bg-back-list" class="btn-action" style="width:100%; margin-bottom:12px; background:#f1f5f9; color:var(--text-main); border:1px solid #cbd5e1;">
+                                <i class="fa-solid fa-arrow-left"></i> Back to Layer List
+                            </button>`;
+                }
+
+                //[新增] General 區塊包含名稱編輯，方便在清單中識別
+                content += `<div class="prop-section-header">General</div>`;
+                content += `<div class="prop-row">
+                            <span class="prop-label">Name</span>
+                            <input type="text" id="prop-bg-name" class="prop-input" value="${obj.name || obj.id}">
+                        </div>`;
+
                 content += `<div class="prop-section-header">Image Source</div>`;
                 content += `<button id="prop-bg-file-btn" class="btn-action" style="width:100%; justify-content:center; gap:6px;">
                             <i class="fa-regular fa-folder-open"></i> Replace Image...
@@ -6183,7 +6345,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 content += `<div class="prop-section-header">State & Appearance</div>`;
 
-                // 新增獨立鎖定設定
                 content += `<div class="prop-row">
                             <span class="prop-label"><i class="fa-solid fa-lock"></i> Locked</span>
                             <input type="checkbox" id="prop-bg-locked" ${obj.locked ? 'checked' : ''} style="cursor:pointer;">
@@ -7641,6 +7802,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // --- BACKGROUND ---
         if (obj.type === 'Background') {
+            // [新增] 返回圖層清單按鈕事件
+            const backBtn = document.getElementById('btn-bg-back-list');
+            if (backBtn) {
+                backBtn.addEventListener('click', () => {
+                    deselectAll(); // 取消選取會觸發 updatePropertiesPanel(null)，進而顯示圖層清單
+                });
+            }
+
+            //[新增] 名稱變更事件
+            const nameInput = document.getElementById('prop-bg-name');
+            if (nameInput) {
+                nameInput.addEventListener('change', (e) => {
+                    obj.name = e.target.value;
+                    saveState();
+                });
+            }
             const fileBtn = document.getElementById('prop-bg-file-btn');
             const fileInput = document.getElementById('prop-bg-file-input');
             const opacityInput = document.getElementById('prop-bg-opacity');
@@ -12542,16 +12719,88 @@ document.addEventListener('DOMContentLoaded', () => {
         enumerable: true,
         configurable: true
     });
-
     // ---------------------------------------------------------
-    // [新增] OSM 匯入回調處理
+    // [新增] OSM 匯入回調處理 (搭載智慧座標對位)
     // 這是 osm_importer.js 執行完成後呼叫的函數
     // ---------------------------------------------------------
     window.handleOSMImportCallback = function (data) {
         const { imageData, widthMeters, heightMeters, bounds } = data;
 
-        const startX = -widthMeters / 2;
-        const startY = -heightMeters / 2;
+        // 檢查畫布上是否已有剛好 2 個圖釘
+        const currentPins = Object.values(network.pushpins);
+        const hasExistingPins = currentPins.length === 2;
+
+        // 預設參數 (如果沒有圖釘時使用)
+        let startX = -widthMeters / 2;
+        let startY = -heightMeters / 2;
+        let finalWidth = widthMeters;
+        let finalHeight = heightMeters;
+        let rotationDeg = 0;
+
+        if (hasExistingPins) {
+            // ==========================================================
+            // 執行精準地理對位 (Mercator to Canvas Affine Transform)
+            // ==========================================================
+            const C1 = currentPins[0];
+            const C2 = currentPins[1];
+
+            // 1. 經緯度轉麥卡托投影，確保比例不失真
+            function latLonToMercator(lat, lon) {
+                const R = 6378137;
+                const mx = R * lon * Math.PI / 180;
+                const my = R * Math.log(Math.tan(Math.PI / 4 + lat * Math.PI / 360));
+                return { x: mx, y: my };
+            }
+
+            const cm1 = latLonToMercator(C1.lat, C1.lon);
+            const cm2 = latLonToMercator(C2.lat, C2.lon);
+
+            // 2. 空間轉換矩陣：麥卡托座標 -> 當前畫布座標
+            function geoToCurrentCanvas(lat, lon) {
+                const m = latLonToMercator(lat, lon);
+                const Xg1 = cm1.x, Yg1 = -cm1.y; // Canvas Y 向下，做反轉
+                const Xg2 = cm2.x, Yg2 = -cm2.y;
+                const dXg = Xg2 - Xg1, dYg = Yg2 - Yg1;
+
+                const Xp = m.x, Yp = -m.y;
+                const dXp = Xp - Xg1, dYp = Yp - Yg1;
+
+                const Lg2 = dXg * dXg + dYg * dYg;
+                if (Lg2 === 0) return { x: C1.x, y: C1.y };
+
+                const u = (dXp * dXg + dYp * dYg) / Lg2;
+                const v = (dYp * dXg - dXp * dYg) / Lg2;
+
+                const dxc = C2.x - C1.x;
+                const dyc = C2.y - C1.y;
+
+                return {
+                    x: C1.x + u * dxc - v * dyc,
+                    y: C1.y + u * dyc + v * dxc
+                };
+            }
+
+            // 3. 計算新地圖邊界 (西北、東北、西南) 在畫布上的實際座標
+            const pNW = geoToCurrentCanvas(bounds.getNorth(), bounds.getWest());
+            const pNE = geoToCurrentCanvas(bounds.getNorth(), bounds.getEast());
+            const pSW = geoToCurrentCanvas(bounds.getSouth(), bounds.getWest());
+
+            // 4. 計算對位後的起點、長寬與旋轉角度
+            startX = pNW.x;
+            startY = pNW.y;
+
+            const dxW = pNE.x - pNW.x;
+            const dyW = pNE.y - pNW.y;
+            finalWidth = Math.sqrt(dxW * dxW + dyW * dyW);
+
+            const dxH = pSW.x - pNW.x;
+            const dyH = pSW.y - pNW.y;
+            finalHeight = Math.sqrt(dxH * dxH + dyH * dyH);
+
+            // 旋轉角度轉換為 degrees 提供給 Konva 使用
+            rotationDeg = Math.atan2(dyW, dxW) * (180 / Math.PI);
+        }
+
         const id = `background_${++idCounter}`;
 
         const bgObject = {
@@ -12560,8 +12809,8 @@ document.addEventListener('DOMContentLoaded', () => {
             name: `OSM Map ${idCounter}`,
             x: startX,
             y: startY,
-            width: widthMeters,
-            height: heightMeters,
+            width: finalWidth,
+            height: finalHeight,
             scale: 1.0,
             opacity: 100,
             locked: true, // 匯入的真實地圖預設上鎖
@@ -12574,7 +12823,17 @@ document.addEventListener('DOMContentLoaded', () => {
             konvaGroup: null, konvaImage: null, konvaBorder: null
         };
 
-        const group = new Konva.Group({ id: id, x: bgObject.x, y: bgObject.y, width: bgObject.width, height: bgObject.height, draggable: false, name: 'background-group' });
+        const group = new Konva.Group({
+            id: id,
+            x: bgObject.x,
+            y: bgObject.y,
+            width: bgObject.width,
+            height: bgObject.height,
+            rotation: rotationDeg,  // 套用計算出的旋轉角度
+            draggable: false,
+            name: 'background-group'
+        });
+
         const imageObj = new Image();
         imageObj.onload = function () {
             const kImage = new Konva.Image({ x: 0, y: 0, image: imageObj, width: bgObject.width, height: bgObject.height, opacity: 1 });
@@ -12583,8 +12842,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
             group.add(kImage, hitArea, border);
             layer.add(group);
-            group.moveToBottom();
 
+            // 確保被鎖定的地圖圖層移至最下層，並且不攔截點擊事件
+            group.moveToBottom();
             bgObject.konvaGroup = group;
             bgObject.konvaImage = kImage;
             bgObject.konvaHitArea = hitArea;
@@ -12592,20 +12852,28 @@ document.addEventListener('DOMContentLoaded', () => {
 
             network.backgrounds[id] = bgObject;
 
-            // 【修正重點】確保被鎖定的地圖圖層不會攔截並阻擋滑鼠點擊事件
             if (bgObject.locked) {
                 group.listening(false);
             }
 
-            Object.keys(network.pushpins).forEach(pid => deletePushpin(pid));
-            const pinNW = createPushpin({ x: startX, y: startY }, bounds.getNorth(), bounds.getWest());
-            const pinSE = createPushpin({ x: startX + widthMeters, y: startY + heightMeters }, bounds.getSouth(), bounds.getEast());
-            if (pinNW) pinNW.konvaGroup.draggable(false);
-            if (pinSE) pinSE.konvaGroup.draggable(false);
+            // 【邏輯分歧】如果畫面上原本沒有圖釘，才需要新建圖釘
+            if (!hasExistingPins) {
+                Object.keys(network.pushpins).forEach(pid => deletePushpin(pid));
+                const pinNW = createPushpin({ x: startX, y: startY }, bounds.getNorth(), bounds.getWest());
+                const pinSE = createPushpin({ x: startX + finalWidth, y: startY + finalHeight }, bounds.getSouth(), bounds.getEast());
+                if (pinNW) pinNW.konvaGroup.draggable(false);
+                if (pinSE) pinSE.konvaGroup.draggable(false);
+            }
 
             saveState();
             layer.batchDraw();
-            alert(I18N.t(`Map Imported Successfully!\nDimensions: ${widthMeters.toFixed(1)}m x ${heightMeters.toFixed(1)}m\nScale auto-calibrated to 1:1.`));
+
+            // 顯示對應的提示訊息
+            if (hasExistingPins) {
+                alert(I18N?.t ? I18N.t(`Map Imported Successfully!\nAligned and scaled based on existing Geo Pins.`) : `地圖已成功匯入！\n並已根據現有圖釘自動校正座標、比例與旋轉。`);
+            } else {
+                alert(I18N?.t ? I18N.t(`Map Imported Successfully!\nDimensions: ${widthMeters.toFixed(1)}m x ${heightMeters.toFixed(1)}m\nScale auto-calibrated to 1:1.`) : `地圖已成功匯入！\n尺寸: ${widthMeters.toFixed(1)}m x ${heightMeters.toFixed(1)}m\n比例已自動校正。`);
+            }
         };
         imageObj.src = imageData;
     };
