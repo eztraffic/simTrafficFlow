@@ -1406,22 +1406,14 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- END: NEW MEASUREMENT FUNCTIONS ---	
 
 
-    // --- TOOL MANAGEMENT ---
-    // --- TOOL MANAGEMENT ---
-    // 完整替換此函數
-    // 完整替換此函數
     function setTool(toolName) {
-        // --- [修正] 將 SubNetworkTool 的重置移到最上方 ---
-        // 必須先重置 SubNetworkTool，因為它的 reset() 會寫入 "Active..." 文字到面板。
-        // 我們希望隨後的 updatePropertiesPanel() 能覆蓋掉那些文字，顯示正確的工具選項。
         if (toolName !== 'subnetwork' && window.SubNetworkTool) {
             SubNetworkTool.reset();
             if (SubNetworkTool.selectionGroup) SubNetworkTool.selectionGroup.destroy();
         }
-        // ---------------------------------------------
 
         activeTool = toolName;
-        deselectAll(); // Reset selection and update properties panel (這裡會繪製正確的面板)
+        deselectAll();
 
         document.querySelectorAll('.tool-btn').forEach(btn => {
             btn.classList.toggle('active', btn.dataset.tool === toolName);
@@ -1443,8 +1435,12 @@ document.addEventListener('DOMContentLoaded', () => {
             Object.values(network.roadMarkings).forEach(r => r.konvaGroup.listening(false));
         }
 
-        if (network.background) {
-            network.background.konvaGroup.listening(false);
+        // --- [修正重點]：將所有背景預設設為不攔截事件 ---
+        if (network.backgrounds) {
+            Object.values(network.backgrounds).forEach(bg => {
+                if (bg.konvaGroup) bg.konvaGroup.listening(false);
+                if (bg.konvaHitArea) bg.konvaHitArea.listening(false);
+            });
         }
 
         // 2. 清理
@@ -1452,18 +1448,14 @@ document.addEventListener('DOMContentLoaded', () => {
         if (tempShape) { tempShape.destroy(); tempShape = null; }
         if (tempMeasureText) { tempMeasureText.destroy(); tempMeasureText = null; }
 
-        // 清除所有輔助圖示 (號誌編輯圖示 & 選取模式圖示 & 背景圖示)
         clearTrafficLightIcons();
         clearNodeSettingsIcons();
-        //clearBackgroundSettingsIcon(); // <--- 新增此行
 
         // 3. 根據工具啟用互動
         switch (toolName) {
             case 'select':
-                // 顯示路口設定圖示
                 showNodeSettingsIcons();
 
-                // 為所有可選物件啟用監聽
                 Object.values(network.links).forEach(l => l.konvaGroup.listening(true));
                 Object.values(network.connections).forEach(c => c.konvaBezier.listening(true));
                 Object.values(network.nodes).forEach(n => n.konvaShape.listening(true));
@@ -1478,17 +1470,22 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (network.roadMarkings) {
                     Object.values(network.roadMarkings).forEach(r => r.konvaGroup.listening(true));
                 }
-                if (network.background && !network.background.locked) {
-                    network.background.konvaGroup.listening(true);
+                Object.values(network.pushpins).forEach(p => p.konvaGroup.listening(true));
+
+                // --- [修正重點]：只有「未鎖定」的背景才開啟事件攔截，允許被點擊選取 ---
+                if (network.backgrounds) {
+                    Object.values(network.backgrounds).forEach(bg => {
+                        if (bg.konvaGroup && !bg.locked) {
+                            bg.konvaGroup.listening(true);
+                            if (bg.konvaHitArea) bg.konvaHitArea.listening(true);
+                        }
+                    });
                 }
                 stage.container().style.cursor = 'default';
-                Object.values(network.pushpins).forEach(p => p.konvaGroup.listening(true));
                 break;
 
             case 'edit-tfl':
-                // 顯示號誌編輯圖示
                 showTrafficLightIcons();
-                // 仍然讓 Node 可監聽，但圖示會在最上層
                 Object.values(network.nodes).forEach(node => node.konvaShape.listening(true));
                 stage.container().style.cursor = 'default';
                 break;
@@ -1500,19 +1497,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 break;
 
             case 'add-background':
-                stage.container().style.cursor = 'crosshair';
-                break;
-
             case 'add-parking-lot':
             case 'add-intersection':
             case 'add-link':
             case 'measure':
+            case 'add-pushpin':
                 stage.container().style.cursor = 'crosshair';
                 break;
 
             case 'add-parking-gate':
                 stage.container().style.cursor = 'crosshair';
-                Object.values(network.parkingLots).forEach(p => p.konvaGroup.listening(false));
                 Object.values(network.parkingGates).forEach(g => g.konvaGroup.listening(true));
                 break;
 
@@ -1524,26 +1518,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 stage.container().style.cursor = 'pointer';
                 break;
 
-            case 'add-pushpin':
-                stage.container().style.cursor = 'crosshair';
-                Object.values(network.pushpins).forEach(p => p.konvaGroup.listening(true));
-                break;
-
             case 'add-marking':
                 Object.values(network.links).forEach(l => l.konvaGroup.listening(true));
                 Object.values(network.nodes).forEach(n => n.konvaShape.listening(true));
-                // 修改這行：根據當前模式決定游標為十字或指標
                 stage.container().style.cursor = markingMode === 'channelization' ? 'crosshair' : 'pointer';
                 break;
 
             case 'subnetwork':
-                // 啟用 subnetwork 模式
                 if (window.SubNetworkTool) SubNetworkTool.isActive = true;
                 stage.container().style.cursor = 'crosshair';
-                // 讓所有物件不接收事件，由 subnetwork tool 處理座標判定
-                Object.values(network.links).forEach(l => l.konvaGroup.listening(false));
-                Object.values(network.nodes).forEach(n => n.konvaShape.listening(false));
-                // 背景保持可聽，以便點擊畫布
                 break;
 
             default:
@@ -1901,19 +1884,27 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
 
-            // // 2. 滑鼠左鍵點擊在空白處 (Stage)
-            if (e.evt.button === 0 && e.target === stage) {
+            // --- [修正重點] 2. 滑鼠左鍵點擊在空白處 (Stage) 或鎖定的背景圖上 ---
+            let isBgLocked = false;
+            if (e.target !== stage && isDrawableCanvas(e.target)) {
+                const group = e.target.findAncestor('Group');
+                if (group && group.name() === 'background-group') {
+                    const bg = network.backgrounds[group.id()];
+                    if (bg && bg.locked) isBgLocked = true;
+                }
+            }
+
+            if (e.evt.button === 0 && (e.target === stage || isBgLocked)) {
                 // 排除清單：如果不是這些工具，則視為拖曳畫布
                 if (activeTool !== 'add-link' &&
                     activeTool !== 'measure' &&
-                    // [修正] 加入 || connectMode === 'merge' 以防止在合併模式下拖曳畫布
                     !(activeTool === 'connect-lanes' && (connectMode === 'box' || connectMode === 'merge')) &&
                     activeTool !== 'add-background' &&
                     activeTool !== 'add-pushpin' &&
                     activeTool !== 'add-parking-lot' &&
                     activeTool !== 'add-parking-gate' &&
                     activeTool !== 'add-intersection' &&
-                    !(activeTool === 'add-marking' && markingMode === 'channelization') && // <--- 新增此行
+                    !(activeTool === 'add-marking' && markingMode === 'channelization') && 
                     activeTool !== 'subnetwork') {
 
                     isPanning = true;
@@ -1924,9 +1915,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
 
-            // -----------------------------------------------------------
-            // [修正重點] 使用 stage.getPointerPosition() 獲取精確的世界座標
-            // -----------------------------------------------------------
             const pointer = stage.getPointerPosition();
             if (!pointer) return; // 防呆
 
@@ -1937,8 +1925,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // --- SubNetwork Tool 邏輯 ---
             if (activeTool === 'subnetwork') {
-                // 如果是在選取模式且點擊到物件(例如拖曳框)，讓 Konva 處理拖曳，不執行畫點
-                if (window.SubNetworkTool && window.SubNetworkTool.mode === 'selected' && e.target !== stage) {
+                if (window.SubNetworkTool && window.SubNetworkTool.mode === 'selected' && !isDrawableCanvas(e.target)) {
                     return;
                 }
 
@@ -1947,13 +1934,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 return;
             }
-            // ---------------------------
 
             // --- Connect Box / Merge Box Mode ---
             if (activeTool === 'connect-lanes' && (connectMode === 'box' || connectMode === 'merge')) {
-                if (e.target !== stage) return;
+                if (!isDrawableCanvas(e.target)) return; // <--- [修正] 允許在背景上框選連接
 
-                // 根據模式設定顏色：Box(藍色), Merge(紅色/粉色以示區別)
                 const strokeColor = connectMode === 'merge' ? '#e11d48' : '#00D2FF';
                 const fillColor = connectMode === 'merge' ? 'rgba(225, 29, 72, 0.2)' : 'rgba(0, 210, 255, 0.2)';
 
@@ -1975,8 +1960,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // --- Parking Gate ---
             if (activeTool === 'add-parking-gate') {
-                if (e.target !== stage) return;
-                isPanning = false; // 確保不觸發 Pan
+                if (!isDrawableCanvas(e.target)) return; // <--- [修正]
+                isPanning = false;
 
                 tempShape = new Konva.Rect({
                     x: worldPos.x,
@@ -1993,7 +1978,6 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             // 處理一般點擊 (Add Link, Select 等)
-            // 注意：handleStageClick 內部我們也建議檢查一下是否使用了正確的座標計算
             handleStageClick(e);
         });
 
@@ -2948,7 +2932,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 deleteLink(obj.id);
                 break;
             case 'Node':
-                deleteNode(obj.id);
+                deleteNode(obj.id, true); // <--- [修改] 啟用強制刪除，允許使用 Delete 鍵直接刪除路口
                 break;
             case 'Connection':
                 deleteConnection(obj.id);
@@ -2966,29 +2950,25 @@ document.addEventListener('DOMContentLoaded', () => {
             case 'Destination':
                 deleteDestination(obj.id);
                 break;
-            // ADD THIS CASE
             case 'Measurement':
                 deleteMeasurement(obj.id);
                 break;
             case 'Background':
-                deleteBackground(obj.id); // 傳入物件 ID
-                break; // <-- ADD THIS CASE				
+                deleteBackground(obj.id);
+                break;
             case 'ConnectionGroup':
                 deleteConnectionGroup(obj);
                 break;
-            case 'ParkingLot': // <--- Ensure ParkingLot delete is here too from previous context if it existed, otherwise add it
+            case 'ParkingLot':
                 deleteParkingLot(obj.id);
                 break;
             case 'ParkingGate':
                 deleteParkingGate(obj.id);
                 break;
-            case 'Overpass': // <--- 新增 Overpass 刪除處理
-                // Overpass 是自動生成的，通常不手動刪除。
-                // 但如果需要，可以這樣實現：
+            case 'Overpass':
                 obj.konvaRect.destroy();
                 delete network.overpasses[obj.id];
                 break;
-            // 在 switch (obj.type) 中加入
             case 'Pushpin':
                 deletePushpin(obj.id);
                 break;
@@ -3059,7 +3039,7 @@ document.addEventListener('DOMContentLoaded', () => {
         delete network.detectors[id];
     }
 
-    function deleteNode(nodeId) {
+    function deleteNode(nodeId, force = false) {
         const node = network.nodes[nodeId];
         if (!node) return;
 
@@ -3073,13 +3053,26 @@ document.addEventListener('DOMContentLoaded', () => {
         // Delete associated traffic light data
         if (network.trafficLights[nodeId]) delete network.trafficLights[nodeId];
 
+        // --- [新增] 強制刪除時，主動清除周遭路段對此路口的關聯 ---
+        if (force) {
+            node.incomingLinkIds.forEach(linkId => {
+                if (network.links[linkId]) network.links[linkId].endNodeId = null;
+            });
+            node.outgoingLinkIds.forEach(linkId => {
+                if (network.links[linkId]) network.links[linkId].startNodeId = null;
+            });
+            node.incomingLinkIds.clear();
+            node.outgoingLinkIds.clear();
+        }
+
         // Only delete the node if it's not connecting any links
         if (node.incomingLinkIds.size === 0 && node.outgoingLinkIds.size === 0) {
+            destroyNodeHandles(node); // 清除可能存在的控制點
             node.konvaShape.destroy();
             delete network.nodes[nodeId];
         }
 
-        updateAllOverpasses(); // <--- 在函數結尾新增呼叫
+        updateAllOverpasses(); // 在函數結尾更新橋樑
     }
 
     // --- 刪除單一連接線 ---
@@ -3198,26 +3191,31 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
     // --- START OF CORRECTED handleStageClick FUNCTION ---
-
+    // --- [新增] 輔助函數：判斷點擊是否落在畫布或背景圖上 ---
+    // 這能讓工具 (如新增道路、測量等) 可以在背景圖之上正常作用
+    function isDrawableCanvas(target) {
+        if (!target) return false;
+        if (target === stage) return true;
+        if (target.findAncestor) {
+            const group = target.findAncestor('Group');
+            if (group && group.name() === 'background-group') return true;
+        }
+        return false;
+    }
     function handleStageClick(e) {
-        // *** THIS IS THE FIX ***
-        // Only process left-clicks (e.evt.button === 0).
-        // This prevents the mousedown event of a right-click from incorrectly adding a point.
+        // 確保只處理滑鼠左鍵點擊
         if (e.evt.button !== 0) {
             return;
         }
-        // [修正] 改用 stage.getPointerPosition()
+
         const pointer = stage.getPointerPosition();
         const pos = {
             x: (pointer.x - stage.x()) / stage.scaleX(),
             y: (pointer.y - stage.y()) / stage.scaleY(),
         };
 
-
-
-
         if (activeTool === 'add-link') {
-            if (e.target !== stage) return;
+            if (!isDrawableCanvas(e.target)) return; // <--- [修正] 允許在背景圖上繪製
             if (!tempShape) {
                 tempShape = new Konva.Line({ points: [pos.x, pos.y, pos.x, pos.y], stroke: 'cyan', strokeWidth: 2, lineCap: 'round', lineJoin: 'round', listening: false });
                 layer.add(tempShape);
@@ -3229,7 +3227,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 tempShape.points(currentPoints);
             }
         } else if (activeTool === 'measure') {
-            if (e.target !== stage) return;
+            if (!isDrawableCanvas(e.target)) return; // <--- [修正] 允許在背景圖上繪製
 
             if (!tempShape) {
                 const scale = 1 / stage.scaleX();
@@ -3247,7 +3245,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 updateMeasurementVisuals();
             }
         } else if (activeTool === 'add-background') {
-            if (e.target !== stage) return;
+            if (!isDrawableCanvas(e.target)) return; // <--- [修正] 允許在背景圖上繪製
             const newBg = createBackground(pos);
             if (newBg) {
                 selectObject(newBg);
@@ -3256,7 +3254,7 @@ document.addEventListener('DOMContentLoaded', () => {
             setTool('select');
         }
         else if (activeTool === 'edit-tfl') {
-            const clickedShape = e.target; // <--- 新增這行，取得當前點擊的圖形
+            const clickedShape = e.target;
             if (clickedShape && clickedShape.id() && network.nodes[clickedShape.id()]) {
                 const node = network.nodes[clickedShape.id()];
                 showTrafficLightEditor(node);
@@ -3288,12 +3286,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 setTool('select');
             }
         } else if (activeTool === 'add-flow') {
-            // [修正] 定義 clickedShape 為事件目標
             const clickedShape = e.target;
-
             let linkId = clickedShape.id();
 
-            // 如果點擊的形狀本身不是 Link (通常是點到內部的幾何圖形)，則檢查其父群組
             if (!network.links[linkId] && clickedShape.parent) {
                 linkId = clickedShape.parent.id();
             }
@@ -3304,13 +3299,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 const linkLength = getPolylineLength(link.waypoints);
                 const { dist } = projectPointOnPolyline(pos, link.waypoints);
 
-                // 檢查是否已有 Origin 或 Destination
                 const hasOrigin = Object.values(network.origins).some(o => o.linkId === link.id);
                 const hasDestination = Object.values(network.destinations).some(d => d.linkId === link.id);
 
-                // 判斷點擊位置在 Link 的前半段還是後半段
                 if (dist < linkLength / 2) {
-                    // 前半段 -> 新增 Origin
                     if (hasOrigin) {
                         alert(I18N.t(`Link ${link.id} already has an Origin.`));
                         return;
@@ -3321,7 +3313,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     saveState();
                 }
                 else {
-                    // 後半段 -> 新增 Destination
                     if (hasDestination) {
                         alert(I18N.t(`Link ${link.id} already has a Destination.`));
                         return;
@@ -3335,10 +3326,9 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         } else if (activeTool === 'add-intersection') {
             if (!tempShape) {
-                // 開始繪製多邊形
                 tempShape = new Konva.Line({
                     points: [pos.x, pos.y, pos.x, pos.y],
-                    stroke: '#ff0000', // 使用顯眼的紅色
+                    stroke: '#ff0000',
                     strokeWidth: 2,
                     closed: true,
                     fill: 'rgba(255, 0, 0, 0.2)',
@@ -3346,54 +3336,40 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
                 layer.add(tempShape);
             } else {
-                // 增加點
                 const currentPoints = tempShape.points();
                 currentPoints.splice(currentPoints.length - 2, 2, pos.x, pos.y, pos.x, pos.y);
                 tempShape.points(currentPoints);
             }
             layer.batchDraw();
         } else if (activeTool === 'add-pushpin') {
-            if (e.target !== stage) return; // 避免點到其他物件
+            if (!isDrawableCanvas(e.target)) return; // <--- [修正] 允許在背景圖上繪製
             const newPin = createPushpin(pos);
             if (newPin) {
                 selectObject(newPin);
                 saveState();
-                setTool('select'); // 放完一個自動切回選取模式
+                setTool('select');
             }
         } else if (activeTool === 'add-parking-lot') {
-            // Allow clicking anywhere to start/continue drawing
-            // if (e.target !== stage) return;
-
-            // 如果還沒有暫存形狀，則開始新的多邊形
             if (!tempShape) {
-                // 使用閉合的線來表示多邊形預覽
                 tempShape = new Konva.Line({
-                    points: [pos.x, pos.y, pos.x, pos.y], // 起始點重複一次，構成最初的線段
+                    points: [pos.x, pos.y, pos.x, pos.y],
                     stroke: 'purple',
                     strokeWidth: 2,
-                    closed: true, // 閉合形狀
-                    fill: 'rgba(128, 0, 128, 0.2)', // 半透明填充
+                    closed: true,
+                    fill: 'rgba(128, 0, 128, 0.2)',
                     listening: false
                 });
                 layer.add(tempShape);
             } else {
-                // 新增點到多邊形
                 const currentPoints = tempShape.points();
-                // 在最後兩個座標（滑鼠跟隨點）之前插入新的固定點
-
-                // 替換最後一組點為固定點
                 currentPoints[currentPoints.length - 2] = pos.x;
                 currentPoints[currentPoints.length - 1] = pos.y;
-
-                // 加入新的動態點（稍後會由 mousemove 更新）
                 currentPoints.push(pos.x, pos.y);
-
                 tempShape.points(currentPoints);
             }
-            layer.batchDraw(); // <--- Fix: Ensure changes are rendered
+            layer.batchDraw();
         } else if (activeTool === 'add-marking') {
             if (markingMode === 'channelization') {
-                // 槽化線模式：連續畫多邊形
                 if (!tempShape) {
                     tempShape = new Konva.Line({
                         points: [pos.x, pos.y, pos.x, pos.y],
@@ -3410,7 +3386,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 layer.batchDraw();
             } else {
-                // 原有標準模式
                 const clickedShape = e.target;
                 let targetLink = null, targetNode = null;
                 const clickedGroup = clickedShape.findAncestor('Group');
@@ -5528,19 +5503,19 @@ document.addEventListener('DOMContentLoaded', () => {
                     const bg = network.backgrounds[item.dataset.id];
                     if (bg) selectObject(bg);
                 });
-                
+
                 // 滑鼠移入：UI 面板變色，同時在畫布上標示紅框
                 item.addEventListener('mouseenter', () => {
                     item.style.borderColor = 'var(--primary)';
                     item.style.backgroundColor = '#eef2ff';
-                    highlightBg(item.dataset.id); 
+                    highlightBg(item.dataset.id);
                 });
-                
+
                 // 滑鼠移出：還原 UI 面板，並清除畫布上的紅框
                 item.addEventListener('mouseleave', () => {
                     item.style.borderColor = 'var(--border-light)';
                     item.style.backgroundColor = 'var(--bg-card)';
-                    clearBgHighlights(); 
+                    clearBgHighlights();
                 });
             });
 
@@ -5785,8 +5760,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 break;
 
             case 'Node':
-                // 1. 定義分頁按鈕 HTML (調整順序：Settings -> Links -> Flow)
-                // 根據 lastActiveNodeTab 決定哪個按鈕有 active class
                 const getTabClass = (tabName) => lastActiveNodeTab === tabName ? 'active' : '';
 
                 content += `
@@ -5802,7 +5775,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 </button>
             </div>`;
 
-                // 2. 準備各分頁內容容器
                 const getContentClass = (tabName) => lastActiveNodeTab === tabName ? 'active' : '';
 
                 // --- TAB 1: SETTINGS (Signal Control Only) ---
@@ -5811,12 +5783,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 content += `<div class="prop-section-header">Signal Control</div>`;
 
                 const tflData = network.trafficLights[obj.id] || { timeShift: 0 };
-
-                // [修正] 判斷是否有舊版排程或新版排程
                 const hasSignal = (tflData.schedule && tflData.schedule.length > 0) ||
                     (tflData.advanced && Object.keys(tflData.advanced.schedules).length > 0);
 
-                // 1. Status
                 content += `<div class="prop-row">
                             <span class="prop-label">Status</span>
                             ${hasSignal
@@ -5824,7 +5793,6 @@ document.addEventListener('DOMContentLoaded', () => {
                         : '<span class="prop-status-indicator" style="padding:2px 8px; margin:0; background:#f1f5f9; color:#94a3b8;">No Signal</span>'}
                         </div>`;
 
-                // [新增] 萃取代表性時差 (與 Export 邏輯一致，抓取週一的第一個時制)
                 let displayTimeShift = tflData.timeShift || 0;
                 if (tflData.advanced && tflData.advanced.weekly) {
                     const monPlanId = tflData.advanced.weekly[1];
@@ -5836,14 +5804,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
 
-                // 2. Time Shift (動態顯示代表性時差)
                 content += `<div class="prop-row">
                             <span class="prop-label">Time Shift (s)</span>
                             <input type="number" id="prop-tfl-shift" class="prop-input" value="${displayTimeShift}" min="0" step="1">
                         </div>`;
 
-                // 3. Edit Button
-                // 3. Edit Button
                 content += `<button id="edit-tfl-btn" class="btn-action" style="width:100%; margin-top:8px;">
                             <i class="fa-solid fa-traffic-light"></i> Edit Schedule
                         </button>`;
@@ -5865,6 +5830,12 @@ document.addEventListener('DOMContentLoaded', () => {
                                 <span class="prop-label" title="Cross Twice Probability">Cross Twice (%)</span>
                                 <input type="number" id="prop-node-cross-twice" class="prop-input" value="${obj.crossTwiceProb || 0}" min="0" max="100" step="1">
                             </div>`;
+
+                // --- [新增] SECTION: ACTIONS ---
+                content += `<div class="prop-section-header" style="margin-top:16px;">Actions</div>`;
+                content += `<button id="btn-delete-node" class="btn-danger-outline" style="width:100%;">
+                            <i class="fa-solid fa-trash-can"></i> Delete Intersection
+                        </button>`;
 
                 content += `</div>`; // End Tab 1
 
@@ -6993,6 +6964,23 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             // ------------------------------------
 
+            // --- [新增] 刪除路口按鈕事件 ---
+            const btnDeleteNode = document.getElementById('btn-delete-node');
+            if (btnDeleteNode) {
+                btnDeleteNode.addEventListener('click', () => {
+                    const confirmMsg = (typeof I18N !== 'undefined' && I18N.t)
+                        ? I18N.t('Are you sure you want to delete this intersection?')
+                        : 'Are you sure you want to delete this intersection?';
+
+                    if (confirm(confirmMsg)) {
+                        deleteNode(obj.id, true); // true 代表強制斷開相鄰路段
+                        deselectAll();            // 取消選取，清空屬性面板
+                        layer.batchDraw();        // 重繪畫面
+                        saveState();              // 儲存狀態以供復原
+                    }
+                });
+            }
+
             // 4. Connection Group Selectors (Highlighting & Selection)
             document.querySelectorAll('.prop-group-selector').forEach(link => {
                 link.addEventListener('mouseenter', (e) => {
@@ -7875,7 +7863,16 @@ document.addEventListener('DOMContentLoaded', () => {
             // 獨立鎖定開關邏輯
             if (lockInput) lockInput.addEventListener('change', (e) => {
                 obj.locked = e.target.checked;
-                obj.konvaGroup.draggable(!obj.locked);
+                
+                // --- [修正] 同步設定 listening 屬性，允許事件穿透 ---
+                if (obj.konvaGroup) {
+                    obj.konvaGroup.draggable(!obj.locked);
+                    obj.konvaGroup.listening(!obj.locked);
+                }
+                if (obj.konvaHitArea) {
+                    obj.konvaHitArea.listening(!obj.locked);
+                }
+
                 // 重新選取以拔除或加入變形框 (Transformer)
                 selectObject(obj);
                 saveState();
@@ -12177,43 +12174,73 @@ document.addEventListener('DOMContentLoaded', () => {
         delete network.backgrounds[id];
         layer.batchDraw();
     }
-    function initBackgroundLock() {
-        // [修改] 改為選取工具列上的元素
-        const lockSection = document.getElementById('bg-lock-section');
-        const lockDivider = document.getElementById('bg-lock-divider');
+function initBackgroundLock() {
         const lockCheckbox = document.getElementById('bg-lock-checkbox');
         const lockIcon = document.getElementById('bg-lock-icon');
 
         if (!lockCheckbox) return;
 
         lockCheckbox.addEventListener('change', (e) => {
-            if (!network.background) return;
-
             const isLocked = e.target.checked;
-            network.background.locked = isLocked;
+            let deselected = false;
 
-            if (network.background.konvaGroup) {
-                network.background.konvaGroup.draggable(!isLocked);
-                network.background.konvaGroup.listening(!isLocked);
+            // --- [修正] 遍歷所有背景圖層 ---
+            Object.values(network.backgrounds).forEach(bg => {
+                bg.locked = isLocked;
 
-                // 如果有 hitArea 也要處理
-                if (network.background.konvaHitArea) {
-                    network.background.konvaHitArea.listening(!isLocked);
+                if (bg.konvaGroup) {
+                    bg.konvaGroup.draggable(!isLocked);
+                    bg.konvaGroup.listening(!isLocked);
                 }
+                if (bg.konvaHitArea) {
+                    bg.konvaHitArea.listening(!isLocked);
+                }
+
+                // 如果背景被鎖定且當前選中的是此背景，則取消選取
+                if (isLocked && selectedObject && selectedObject.id === bg.id) {
+                    deselected = true;
+                }
+            });
+
+            if (deselected) {
+                deselectAll();
             }
 
-            // 更新圖示：鎖定時顯示鎖頭，解鎖顯示開鎖
             if (lockIcon) {
                 lockIcon.className = isLocked ? 'fa-solid fa-lock' : 'fa-solid fa-lock-open';
             }
 
-            // 如果背景被鎖定且當前選中的是背景，則取消選取
-            if (isLocked && selectedObject && selectedObject.id === network.background.id) {
-                deselectAll();
-            }
-
             layer.batchDraw();
+            saveState();
         });
+    }
+
+    function updateBackgroundLockState() {
+        const lockSection = document.getElementById('bg-lock-section');
+        const lockDivider = document.getElementById('bg-lock-divider');
+        const lockCheckbox = document.getElementById('bg-lock-checkbox');
+        const lockIcon = document.getElementById('bg-lock-icon');
+
+        if (!lockSection || !lockCheckbox) return;
+
+        const bgs = Object.values(network.backgrounds);
+        
+        // --- [修正] 根據是否有任何背景圖層來判斷 ---
+        if (bgs.length > 0) {
+            lockSection.style.display = 'flex';
+            if (lockDivider) lockDivider.style.display = 'block';
+
+            // 以整體狀態為準：若全部鎖定則顯示勾選
+            const allLocked = bgs.every(bg => bg.locked);
+            lockCheckbox.checked = allLocked;
+            
+            if (lockIcon) {
+                lockIcon.className = allLocked ? 'fa-solid fa-lock' : 'fa-solid fa-lock-open';
+            }
+        } else {
+            lockSection.style.display = 'none';
+            if (lockDivider) lockDivider.style.display = 'none';
+        }
     }
 
     // --- 替換 updateBackgroundLockState 函數 ---
