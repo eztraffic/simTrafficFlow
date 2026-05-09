@@ -43,8 +43,30 @@ document.addEventListener('DOMContentLoaded', () => {
         isTwoWay: false,       // 是否為雙向
         drivingSide: 'right',  // 'right' (RHT) | 'left' (LHT)
         lanesPerDir: 2,        // 單向車道數
-        medianWidth: 2.0       // [新增] 分隔島寬度 (預設 2.0 米)
+        medianWidth: 2.0,      // [新增] 分隔島寬度 (預設 2.0 米)
+        mode: 'standard'       // 'standard' (既有中心線) 或 'lane-based' (多邊形車道)
     };
+
+    // --- [新增] Lane-based 標線語意字典 (依據真實公尺比例調整) ---
+    const STROKE_TYPES = {
+        // width: 0.2 (公尺寬), dash: [4, 6] 代表 4公尺實線配6公尺空白, gap: 0.2 (雙線間距 20公分)
+        'boundary': { color: '#f97316', dash: [], width: 0.2, label: 'Boundary (路面邊線)' },
+        'yellow_dashed': { color: '#eab308', dash: [4, 6], width: 0.15, label: 'Yellow Dashed (單黃虛線)' },
+        'yellow_double': { color: '#eab308', dual: true, leftDash: [], rightDash: [], width: 0.15, gap: 0.2, label: 'Yellow Double (雙黃實線)' },
+        'yellow_solid_dashed': { color: '#eab308', dual: true, leftDash: [], rightDash: [4, 6], width: 0.15, gap: 0.2, label: 'Yellow Solid/Dash (左實右虛)' },
+        'yellow_dashed_solid': { color: '#eab308', dual: true, leftDash: [4, 6], rightDash: [], width: 0.15, gap: 0.2, label: 'Yellow Dash/Solid (左虛右實)' },
+
+        'white_solid': { color: '#ffffff', dash: [], width: 0.15, label: 'White Solid (白實線)' },
+        'white_dashed': { color: '#ffffff', dash: [4, 6], width: 0.15, label: 'White Dashed (白虛線)' },
+        'white_double': { color: '#ffffff', dual: true, leftDash: [], rightDash: [], width: 0.15, gap: 0.2, label: 'White Double (雙白實線)' },
+        'white_solid_dashed': { color: '#ffffff', dual: true, leftDash: [], rightDash: [4, 6], width: 0.15, gap: 0.2, label: 'White Solid/Dash (左實右虛)' },
+        'white_dashed_solid': { color: '#ffffff', dual: true, leftDash: [4, 6], rightDash: [], width: 0.15, gap: 0.2, label: 'White Dash/Solid (左虛右實)' }
+    };
+
+    // --- [新增] Lane-based 草稿狀態 ---
+    let draftCurrentStrokeType = 'boundary';
+    let draftLaneStrokes = []; // 儲存使用者畫的每一條線 { type: string, konvaLine: Object }
+    let appendingStrokeToLink = null; // <--- 新增此行：紀錄正在手動添加標線的 Link
     let idCounter = 0;
     let selectedObject = null;
     let currentModalOrigin = null;
@@ -753,7 +775,30 @@ document.addEventListener('DOMContentLoaded', () => {
         const lastVec = normalize(getVector(points[points.length - 2], points[points.length - 1]));
         return { point: points[points.length - 1], vec: lastVec };
     }
+    /**
+         * [新增幾何輔助] 參數化重取樣：將一條不規則的折線，等距切割成 numSegments 段，
+         * 回傳包含 (numSegments + 1) 個點的陣列。
+         * 這能確保兩條長短、點數不同的邊界線，能有一對一的點位來計算中心線。
+         */
+    function resamplePolyline(points, numSegments) {
+        if (points.length < 2) return points;
 
+        let totalLength = getPolylineLength(points);
+        if (totalLength === 0) return points; // 防呆：長度為0直接回傳
+
+        let step = totalLength / numSegments;
+        let resampled = [points[0]]; // 第一個點必定是起點
+
+        for (let i = 1; i < numSegments; i++) {
+            let result = getPointAlongPolyline(points, step * i);
+            if (result && result.point) {
+                resampled.push(result.point);
+            }
+        }
+
+        resampled.push(points[points.length - 1]); // 最後一個點必定是終點
+        return resampled;
+    }
     function getPolylineLength(points) {
         let length = 0;
         for (let i = 0; i < points.length - 1; i++) {
@@ -783,12 +828,109 @@ document.addEventListener('DOMContentLoaded', () => {
 
         return miterNormal;
     }
+    // --- [新增] 點對線段的精確投影 ---
+    function projectPointOnSegment(pt, p1, p2) {
+        const l2 = Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2);
+        if (l2 === 0) return p1;
+        let t = ((pt.x - p1.x) * (p2.x - p1.x) + (pt.y - p1.y) * (p2.y - p1.y)) / l2;
+        t = Math.max(0, Math.min(1, t));
+        return { x: p1.x + t * (p2.x - p1.x), y: p1.y + t * (p2.y - p1.y) };
+    }
 
+    // --- [新增] 動態拓撲分析：計算實質接觸邊界的連接埠 ---
+    function getLaneBasedPorts(link) {
+        if (!link || !link.strokes || link.strokes.length < 2) return { startPorts: [], endPorts: [] };
+
+        const leftBound = link.strokes[0].points;
+        const rightBound = link.strokes[link.strokes.length - 1].points;
+
+        const pNW = leftBound[0];
+        const pNE = rightBound[0];
+        const pSW = leftBound[leftBound.length - 1];
+        const pSE = rightBound[rightBound.length - 1];
+
+        const startPorts = [];
+        const endPorts = [];
+        const EPSILON = 2.0; // 接觸判定容差
+
+        const startTouching = [];
+        const endTouching = [];
+
+        // 掃描所有標線，判斷是否切斷起訖門 (Gates)
+        link.strokes.forEach((stroke, idx) => {
+            const ptFirst = stroke.points[0];
+            const ptLast = stroke.points[stroke.points.length - 1];
+
+            // 判斷起點門 (Start Gate)
+            let distToStart1 = vecLen(getVector(ptFirst, projectPointOnSegment(ptFirst, pNW, pNE)));
+            let distToStart2 = vecLen(getVector(ptLast, projectPointOnSegment(ptLast, pNW, pNE)));
+            if (distToStart1 < EPSILON || distToStart2 < EPSILON) {
+                startTouching.push({ idx: idx, point: distToStart1 < EPSILON ? ptFirst : ptLast });
+            }
+
+            // 判斷終點門 (End Gate)
+            let distToEnd1 = vecLen(getVector(ptFirst, projectPointOnSegment(ptFirst, pSW, pSE)));
+            let distToEnd2 = vecLen(getVector(ptLast, projectPointOnSegment(ptLast, pSW, pSE)));
+            if (distToEnd1 < EPSILON || distToEnd2 < EPSILON) {
+                endTouching.push({ idx: idx, point: distToEnd1 < EPSILON ? ptFirst : ptLast });
+            }
+        });
+
+        startTouching.sort((a, b) => a.idx - b.idx);
+        endTouching.sort((a, b) => a.idx - b.idx);
+
+        // 依據觸碰到的標線，計算實體車道空間的中心點
+        for (let i = 0; i < startTouching.length - 1; i++) {
+            let p1 = startTouching[i].point;
+            let p2 = startTouching[i + 1].point;
+            startPorts.push({ laneIndex: startTouching[i].idx, point: { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 } });
+        }
+
+        for (let i = 0; i < endTouching.length - 1; i++) {
+            let p1 = endTouching[i].point;
+            let p2 = endTouching[i + 1].point;
+            endPorts.push({ laneIndex: endTouching[i].idx, point: { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 } });
+        }
+
+        return { startPorts, endPorts };
+    }
 
     function getLanePath(link, laneIndex) {
-        if (!link || !link.lanes || link.waypoints.length < 2 || laneIndex >= link.lanes.length) return [];
+        if (!link || !link.lanes || link.waypoints.length < 2 || laneIndex < 0) return [];
 
-        // 根據每個車道的寬度計算總寬度和特定車道的偏移
+        // --- [新增] Lane-Based 多型路徑計算 ---
+        if (link.geometryType === 'lane-based' && link.strokes && link.strokes.length > 1) {
+            const leftStroke = link.strokes[laneIndex];
+            const rightStroke = link.strokes[laneIndex + 1] || link.strokes[link.strokes.length - 1];
+
+            if (leftStroke && rightStroke) {
+                const SEGMENTS = 20;
+                const resampledLeft = resamplePolyline(leftStroke.points, SEGMENTS);
+                const resampledRight = resamplePolyline(rightStroke.points, SEGMENTS);
+
+                const path = [];
+                const safeSegments = Math.min(resampledLeft.length - 1, resampledRight.length - 1);
+                for (let i = 0; i <= safeSegments; i++) {
+                    path.push({
+                        x: (resampledLeft[i].x + resampledRight[i].x) / 2,
+                        y: (resampledLeft[i].y + resampledRight[i].y) / 2
+                    });
+                }
+
+                // 強制將起點/終點對齊到實體接觸門(Gates)所產生的 Port，確保貝茲曲線完美銜接
+                const ports = getLaneBasedPorts(link);
+                const sPort = ports.startPorts.find(p => p.laneIndex === laneIndex);
+                const ePort = ports.endPorts.find(p => p.laneIndex === laneIndex);
+
+                if (sPort && path.length > 0) path[0] = sPort.point;
+                if (ePort && path.length > 0) path[path.length - 1] = ePort.point;
+
+                return path;
+            }
+        }
+
+        // --- 原本 Standard 模式的 Offset 邏輯 ---
+        if (laneIndex >= link.lanes.length) return [];
         const totalWidth = getLinkTotalWidth(link);
         let cumulativeWidth = 0;
         for (let i = 0; i < laneIndex; i++) {
@@ -820,9 +962,173 @@ document.addEventListener('DOMContentLoaded', () => {
         return lanePath;
     }
 
+    /**
+     * 將使用者畫的任意標線陣列，按空間位置 (由左至右) 排序
+     */
+    function spatialSortStrokes(strokes) {
+        if (strokes.length <= 1) return strokes;
+
+        // 取第一條線作為基準軸
+        const baseLine = strokes[0].rawPoints;
+        const baseP1 = baseLine[0];
+        const baseP2 = baseLine[1];
+
+        // 計算基準線的方向與法向量 (向右)
+        const baseVec = normalize(getVector(baseP1, baseP2));
+        const baseNormal = getNormal(baseVec);
+
+        // 將所有線的起點，投影到該法向量上，並根據投影距離排序
+        strokes.forEach(stroke => {
+            const pt = stroke.rawPoints[0];
+            const v = getVector(baseP1, pt);
+            // 點積代表在法向量軸上的距離 (越負越在左邊，越正越在右邊)
+            stroke.projectionDist = dot(v, baseNormal);
+        });
+
+        return strokes.sort((a, b) => a.projectionDist - b.projectionDist);
+    }
+
+    /**
+         * Lane-Based 生成引擎 (重構版)
+         */
+    function generateLaneBasedLink(strokesArray) {
+        // 1. 空間排序 (左到右)
+        const sortedStrokes = spatialSortStrokes(strokesArray);
+
+        // 2. 建立 Link 物件 (暫時給假中心點，稍後會被自動更新覆蓋)
+        const logicalLaneCount = sortedStrokes.length - 1;
+        const newLink = createLink([{ x: 0, y: 0 }, { x: 1, y: 1 }], logicalLaneCount);
+
+        newLink.name = `LaneBased_${idCounter}`;
+        newLink.geometryType = 'lane-based';
+
+        // 儲存重構後的標線資料
+        newLink.strokes = sortedStrokes.map(s => ({
+            type: s.type,
+            points: s.rawPoints
+        }));
+
+        // 3. 呼叫同步函數，自動計算出正確的中心線
+        updateLaneBasedGeometry(newLink);
+
+        // 4. 重繪與選取
+        drawLink(newLink);
+        selectObject(newLink);
+        saveState();
+    }
+    /**
+         * [新增] 共用更新：更新中心線與所有附屬物件的位置
+         */
+    function updateDependencies(link) {
+        updateConnectionEndpoints(link.id);
+        updateAllDetectorsOnLink(link.id);
+        updateFlowPointsOnLink(link.id);
+        updateRoadSignsOnLink(link.id);
+        updateAllOverpasses();
+    }
+
+    /**
+     * [新增] Lane-based 幾何同步：當標線被編輯時，重算虛擬中心線 (Waypoints)
+     */
+    function updateLaneBasedGeometry(link) {
+        if (!link.strokes || link.strokes.length < 2) return;
+
+        const SEGMENTS = 20;
+        // 取最左與最右邊界來計算平均中心線
+        const leftBound = link.strokes[0].points;
+        const rightBound = link.strokes[link.strokes.length - 1].points;
+
+        const resampledLeft = resamplePolyline(leftBound, SEGMENTS);
+        const resampledRight = resamplePolyline(rightBound, SEGMENTS);
+
+        const safeSegments = Math.min(SEGMENTS, resampledLeft.length - 1, resampledRight.length - 1);
+        const centerPoints = [];
+
+        for (let i = 0; i <= safeSegments; i++) {
+            if (resampledLeft[i] && resampledRight[i]) {
+                centerPoints.push({
+                    x: (resampledLeft[i].x + resampledRight[i].x) / 2,
+                    y: (resampledLeft[i].y + resampledRight[i].y) / 2
+                });
+            }
+        }
+
+        if (centerPoints.length >= 2) {
+            link.waypoints = centerPoints;
+        }
+    }
     function drawLink(link) {
         link.konvaGroup.destroyChildren();
 
+        // ==========================================
+        // [新增] Lane-Based 多型渲染邏輯
+        // ==========================================
+        if (link.geometryType === 'lane-based' && link.strokes) {
+            // 1. 畫底層灰黑色路面
+            const leftPoints = link.strokes[0].points;
+            const rightPoints = link.strokes[link.strokes.length - 1].points;
+
+            const roadShape = new Konva.Shape({
+                sceneFunc: (ctx, shape) => {
+                    if (leftPoints.length < 2 || rightPoints.length < 2) return;
+                    ctx.beginPath();
+                    ctx.moveTo(leftPoints[0].x, leftPoints[0].y);
+                    for (let i = 1; i < leftPoints.length; i++) ctx.lineTo(leftPoints[i].x, leftPoints[i].y);
+                    for (let i = rightPoints.length - 1; i >= 0; i--) ctx.lineTo(rightPoints[i].x, rightPoints[i].y);
+                    ctx.closePath();
+                    ctx.fillShape(shape);
+                },
+                fill: '#444',
+                listening: true,
+                id: link.id
+            });
+            link.konvaGroup.add(roadShape);
+
+            // 2. 依照語意畫出標線
+            link.strokes.forEach(stroke => {
+                const style = STROKE_TYPES[stroke.type] || STROKE_TYPES['boundary'];
+
+                // 如果是雙線 (如雙黃線、一實一虛)
+                if (style.dual) {
+                    // 計算偏移量 (Gap / 2)
+                    const offset = style.gap / 2;
+                    const ptsLeft = getOffsetPolyline(stroke.points, offset);
+                    const ptsRight = getOffsetPolyline(stroke.points, -offset);
+
+                    if (ptsLeft.length > 0) {
+                        const lineLeft = new Konva.Line({
+                            points: ptsLeft.flatMap(p => [p.x, p.y]),
+                            stroke: style.color, strokeWidth: style.width,
+                            dash: style.leftDash, listening: false, lineCap: 'round', lineJoin: 'round'
+                        });
+                        link.konvaGroup.add(lineLeft);
+                    }
+                    if (ptsRight.length > 0) {
+                        const lineRight = new Konva.Line({
+                            points: ptsRight.flatMap(p => [p.x, p.y]),
+                            stroke: style.color, strokeWidth: style.width,
+                            dash: style.rightDash, listening: false, lineCap: 'round', lineJoin: 'round'
+                        });
+                        link.konvaGroup.add(lineRight);
+                    }
+                } else {
+                    // 單線渲染
+                    const flatPoints = stroke.points.flatMap(p => [p.x, p.y]);
+                    const line = new Konva.Line({
+                        points: flatPoints,
+                        stroke: style.color, strokeWidth: style.width,
+                        dash: style.dash, listening: false, lineCap: 'round', lineJoin: 'round'
+                    });
+                    link.konvaGroup.add(line);
+                }
+            });
+
+            return; // Lane-based 畫完直接返回，不執行下方舊邏輯
+        }
+
+        // ==========================================
+        // (以下保留原本 Standard Link 的 drawLink 邏輯)
+        // ==========================================
         const totalWidth = getLinkTotalWidth(link);
         const halfWidth = totalWidth / 2;
 
@@ -1170,11 +1476,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function getNodePolygonPoints(node) {
-        // --- 新增：如果該節點有被手動編輯過(自訂多邊形)，則優先回傳自訂頂點 ---
+        // --- 1. 如果有自訂/匯入的頂點，優先使用 ---
         if (node.customPolygonPoints && node.customPolygonPoints.length >= 6) {
             return node.customPolygonPoints;
         }
-        // ----------------------------------------------------------------
 
         const allLinkIds = [...new Set([...node.incomingLinkIds, ...node.outgoingLinkIds])];
         const allLinks = allLinkIds.map(id => network.links[id]).filter(Boolean);
@@ -1184,67 +1489,102 @@ document.addEventListener('DOMContentLoaded', () => {
         const allCornerPoints = [];
         const centerlinePoints = [];
 
+        // --- 2. 收集所有連接路段的端點 ---
         for (const link of allLinks) {
-            if (!link || !link.lanes || link.lanes.length === 0 || !link.waypoints || link.waypoints.length < 2) continue;
+            if (!link || !link.waypoints || link.waypoints.length < 2) continue;
 
-            const isTrulyIncoming = node.incomingLinkIds.has(link.id);
-            const isTrulyOutgoing = node.outgoingLinkIds.has(link.id);
+            const isIncoming = node.incomingLinkIds.has(link.id);
+            const isOutgoing = node.outgoingLinkIds.has(link.id);
 
-            let p_node, p_adj;
-            const startPoint = link.waypoints[0];
-            const endPoint = link.waypoints[link.waypoints.length - 1];
+            // 判斷該 Link 是起點還是終點連接到這個 Node
+            const connectedEnds = [];
+            if (isIncoming && !isOutgoing) connectedEnds.push('end');
+            else if (isOutgoing && !isIncoming) connectedEnds.push('start');
+            else {
+                // 複雜情況防呆 (如同一個 Node 接了同一條路的起終點)
+                const pStart = link.waypoints[0];
+                const pEnd = link.waypoints[link.waypoints.length - 1];
+                const distStart = Math.pow(pStart.x - node.x, 2) + Math.pow(pStart.y - node.y, 2);
+                const distEnd = Math.pow(pEnd.x - node.x, 2) + Math.pow(pEnd.y - node.y, 2);
 
-            // --- 恢復原始的、較為複雜但經過驗證的端點判斷邏輯 ---
-            if (isTrulyIncoming && !isTrulyOutgoing) {
-                p_node = endPoint; p_adj = link.waypoints[link.waypoints.length - 2];
-            } else if (isTrulyOutgoing && !isTrulyIncoming) {
-                p_node = startPoint; p_adj = link.waypoints[1];
-            } else {
-                // 這個 fallback 邏輯對於處理初始連接或複雜路口至關重要
-                let startPointProximity = 0, endPointProximity = 0;
-                allLinks.forEach(otherLink => {
-                    if (otherLink === link || !otherLink.waypoints || otherLink.waypoints.length < 1) return;
-                    startPointProximity += vecLen(getVector(startPoint, otherLink.waypoints[0]));
-                    startPointProximity += vecLen(getVector(startPoint, otherLink.waypoints[otherLink.waypoints.length - 1]));
-                    endPointProximity += vecLen(getVector(endPoint, otherLink.waypoints[0]));
-                    endPointProximity += vecLen(getVector(endPoint, otherLink.waypoints[otherLink.waypoints.length - 1]));
-                });
-                if (endPointProximity < startPointProximity) {
-                    p_node = endPoint; p_adj = link.waypoints[link.waypoints.length - 2];
-                } else {
-                    p_node = startPoint; p_adj = link.waypoints[1];
-                }
+                if (distStart < distEnd) connectedEnds.push('start');
+                else connectedEnds.push('end');
             }
 
-            if (!p_node || !p_adj) continue;
+            for (const endType of connectedEnds) {
+                // ==========================================
+                // [多型邏輯 A]：Lane-Based 模式 (取真實邊線)
+                // ==========================================
+                if (link.geometryType === 'lane-based' && link.strokes && link.strokes.length >= 2) {
+                    const leftStroke = link.strokes[0];
+                    const rightStroke = link.strokes[link.strokes.length - 1];
 
-            centerlinePoints.push(p_node);
-            const vec = normalize(getVector(p_adj, p_node));
-            const normal = getNormal(vec);
+                    if (leftStroke.points.length < 2 || rightStroke.points.length < 2) continue;
 
-            // --- 整合新的寬度計算方式 ---
-            const totalWidth = getLinkTotalWidth(link);
-            const p_l = add(p_node, scale(normal, totalWidth / 2));
-            const p_r = add(p_node, scale(normal, -totalWidth / 2));
+                    let pL, pR, pC;
+                    if (endType === 'start') {
+                        pL = leftStroke.points[0];
+                        pR = rightStroke.points[0];
+                    } else {
+                        pL = leftStroke.points[leftStroke.points.length - 1];
+                        pR = rightStroke.points[rightStroke.points.length - 1];
+                    }
 
-            allCornerPoints.push(p_l, p_r);
+                    pC = { x: (pL.x + pR.x) / 2, y: (pL.y + pR.y) / 2 };
+
+                    allCornerPoints.push(pL, pR);
+                    centerlinePoints.push(pC);
+                }
+                // ==========================================
+                // [多型邏輯 B]：Standard 模式 (以中心線平移)
+                // ==========================================
+                else {
+                    if (!link.lanes || link.lanes.length === 0) continue;
+
+                    let p_node, p_adj;
+                    if (endType === 'start') {
+                        p_node = link.waypoints[0];
+                        p_adj = link.waypoints[1];
+                    } else {
+                        p_node = link.waypoints[link.waypoints.length - 1];
+                        p_adj = link.waypoints[link.waypoints.length - 2];
+                    }
+
+                    centerlinePoints.push(p_node);
+                    const vec = normalize(getVector(p_adj, p_node));
+                    const normal = getNormal(vec);
+                    const totalWidth = getLinkTotalWidth(link);
+
+                    const p_l = add(p_node, scale(normal, totalWidth / 2));
+                    const p_r = add(p_node, scale(normal, -totalWidth / 2));
+
+                    allCornerPoints.push(p_l, p_r);
+                }
+            }
         }
 
+        // 若無足夠頂點構成多邊形 (例如該路口只接了 1 條路)
         if (allCornerPoints.length < 3) {
             if (node.x !== undefined) return [node.x - 5, node.y - 5, node.x + 5, node.y - 5, node.x + 5, node.y + 5, node.x - 5, node.y + 5];
             return [];
         }
 
+        // --- 3. 幾何縫合：圍繞路口幾何中心進行角度排序 ---
+        // 計算所有連接路段端點的幾何中心 (Centroid)
         const center = centerlinePoints.reduce((acc, p) => ({ x: acc.x + p.x, y: acc.y + p.y }), { x: 0, y: 0 });
-        center.x /= centerlinePoints.length;
-        center.y /= centerlinePoints.length;
+        if (centerlinePoints.length > 0) {
+            center.x /= centerlinePoints.length;
+            center.y /= centerlinePoints.length;
+        }
 
+        // 使用 atan2 依照與中心的極座標角度 (Polar Angle) 將打散的頂點依序連成凸多邊形
         allCornerPoints.sort((a, b) => {
             const angleA = Math.atan2(a.y - center.y, a.x - center.x);
             const angleB = Math.atan2(b.y - center.y, b.x - center.x);
             return angleA - angleB;
         });
 
+        // 攤平回傳 [x1, y1, x2, y2, ...]
         return allCornerPoints.flatMap(p => [p.x, p.y]);
     }
 
@@ -1510,6 +1850,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 Object.values(network.parkingGates).forEach(g => g.konvaGroup.listening(true));
                 break;
 
+            case 'append-lane-stroke': // <--- 新增這個 case
+                stage.container().style.cursor = 'crosshair';
+                break;
+
             case 'add-flow':
             case 'add-road-sign':
             case 'add-point-detector':
@@ -1699,77 +2043,80 @@ document.addEventListener('DOMContentLoaded', () => {
     function showLanePorts() {
         // 清除所有舊的連接埠
         layer.find('.lane-port, .group-connect-port').forEach(port => port.destroy());
-
-        // 獲取當前縮放比例的倒數，用於維持 UI 元素在螢幕上的大小恆定
         const portScale = 1 / stage.scaleX();
 
         for (const linkId in network.links) {
             const link = network.links[linkId];
-            if (!link.lanes || link.lanes.length === 0 || !link.waypoints || link.waypoints.length < 2) continue;
+            if (!link.waypoints || link.waypoints.length < 2) continue;
 
-            // --- 繪製每個車道的「起點」和「終點」連接埠 (圓形) ---
-            for (let i = 0; i < link.lanes.length; i++) {
-                const lanePath = getLanePath(link, i);
-                if (!lanePath || lanePath.length < 2) continue;
+            // ==========================================
+            // [新增] Lane-based 路段的動態拓撲 Port
+            // ==========================================
+            if (link.geometryType === 'lane-based' && link.strokes && link.strokes.length > 1) {
+                const ports = getLaneBasedPorts(link);
 
-                const startPos = lanePath[0];
-                const endPos = lanePath[lanePath.length - 1];
-
-                // 藍色起點埠 (接收連接)
-                const startPort = new Konva.Circle({
-                    x: startPos.x, y: startPos.y, radius: PORT_RADIUS, fill: 'blue',
-                    stroke: 'white',
-                    strokeWidth: 2 / portScale, // <-- MODIFIED: 根據縮放調整描邊寬度
-                    draggable: true,
-                    name: 'lane-port',
-                    scaleX: portScale, // <-- MODIFIED: 應用反向縮放
-                    scaleY: portScale, // <-- MODIFIED: 應用反向縮放
+                ports.startPorts.forEach(sp => {
+                    const startPort = new Konva.Circle({
+                        x: sp.point.x, y: sp.point.y, radius: PORT_RADIUS, fill: 'blue',
+                        stroke: 'white', strokeWidth: 2 / portScale, draggable: true, name: 'lane-port',
+                        scaleX: portScale, scaleY: portScale,
+                    });
+                    startPort.setAttr('meta', { linkId: link.id, laneIndex: sp.laneIndex, portType: 'start' });
+                    layer.add(startPort);
                 });
-                startPort.setAttr('meta', { linkId: link.id, laneIndex: i, portType: 'start' });
-                layer.add(startPort);
 
-                // 紅色終點埠 (發起連接)
-                const endPort = new Konva.Circle({
-                    x: endPos.x, y: endPos.y, radius: PORT_RADIUS, fill: 'red',
-                    stroke: 'white',
-                    strokeWidth: 2 / portScale, // <-- MODIFIED: 根據縮放調整描邊寬度
-                    draggable: true,
-                    name: 'lane-port',
-                    scaleX: portScale, // <-- MODIFIED: 應用反向縮放
-                    scaleY: portScale, // <-- MODIFIED: 應用反向縮放
+                ports.endPorts.forEach(ep => {
+                    const endPort = new Konva.Circle({
+                        x: ep.point.x, y: ep.point.y, radius: PORT_RADIUS, fill: 'red',
+                        stroke: 'white', strokeWidth: 2 / portScale, draggable: true, name: 'lane-port',
+                        scaleX: portScale, scaleY: portScale,
+                    });
+                    endPort.setAttr('meta', { linkId: link.id, laneIndex: ep.laneIndex, portType: 'end' });
+                    layer.add(endPort);
                 });
-                endPort.setAttr('meta', { linkId: link.id, laneIndex: i, portType: 'end' });
-                layer.add(endPort);
+            }
+            // ==========================================
+            // 原本 Standard 路段的固定 Port 邏輯
+            // ==========================================
+            else {
+                if (!link.lanes || link.lanes.length === 0) continue;
+                for (let i = 0; i < link.lanes.length; i++) {
+                    const lanePath = getLanePath(link, i);
+                    if (!lanePath || lanePath.length < 2) continue;
+
+                    const startPos = lanePath[0];
+                    const endPos = lanePath[lanePath.length - 1];
+
+                    const startPort = new Konva.Circle({
+                        x: startPos.x, y: startPos.y, radius: PORT_RADIUS, fill: 'blue',
+                        stroke: 'white', strokeWidth: 2 / portScale, draggable: true, name: 'lane-port', scaleX: portScale, scaleY: portScale,
+                    });
+                    startPort.setAttr('meta', { linkId: link.id, laneIndex: i, portType: 'start' });
+                    layer.add(startPort);
+
+                    const endPort = new Konva.Circle({
+                        x: endPos.x, y: endPos.y, radius: PORT_RADIUS, fill: 'red',
+                        stroke: 'white', strokeWidth: 2 / portScale, draggable: true, name: 'lane-port', scaleX: portScale, scaleY: portScale,
+                    });
+                    endPort.setAttr('meta', { linkId: link.id, laneIndex: i, portType: 'end' });
+                    layer.add(endPort);
+                }
             }
 
-            // --- 繪製「群組連接」箭頭 ---
+            // --- 繪製「群組連接」箭頭 (保留不變) ---
             if (ENABLE_GROUP_CONNECT) {
                 const linkLength = getPolylineLength(link.waypoints);
                 const upstreamDist = Math.max(0, linkLength - 15);
                 const { point: upstreamPoint, vec: upstreamVec } = getPointAlongPolyline(link.waypoints, upstreamDist);
 
                 const groupPort = new Konva.Text({
-                    x: upstreamPoint.x,
-                    y: upstreamPoint.y,
-                    text: '●',
-                    fontSize: 20, // <-- 基底字體大小保持不變
-                    fill: '#8B0000',
-                    stroke: 'white',
-                    strokeWidth: 1 / portScale, // <-- MODIFIED: 根據縮放調整描邊寬度
-                    align: 'center',
-                    verticalAlign: 'middle',
+                    x: upstreamPoint.x, y: upstreamPoint.y, text: '●', fontSize: 20, fill: '#8B0000', stroke: 'white',
+                    strokeWidth: 1 / portScale, align: 'center', verticalAlign: 'middle',
                     rotation: Konva.Util.radToDeg(Math.atan2(upstreamVec.y, upstreamVec.x)) - 90,
-                    name: 'group-connect-port',
-                    draggable: true,
-                    // v-- NEW: 應用與其他UI元素相同的反向縮放邏輯 --v
-                    scaleX: portScale,
-                    scaleY: portScale
-                    // ^-- END OF NEW --^
+                    name: 'group-connect-port', draggable: true, scaleX: portScale, scaleY: portScale
                 });
-                // 偏移量應在縮放前計算，以確保文字中心對齊
                 groupPort.offsetX(groupPort.width() / 2);
                 groupPort.offsetY(groupPort.height() / 2);
-
                 groupPort.setAttr('meta', { linkId: link.id, portType: 'group-end' });
                 layer.add(groupPort);
             }
@@ -1782,6 +2129,7 @@ document.addEventListener('DOMContentLoaded', () => {
         let text = `Tool: ${activeTool}`;
         switch (activeTool) {
             case 'add-link': text += " - Click to start, click to add points, right-click to finish."; break;
+            case 'append-lane-stroke': text += " - 手繪新車道線：點擊畫布開始繪製，右鍵結束。"; break; // <--- 新增這行
             case 'measure': text += " - Click to start, click to add points, right-click to finish measurement."; break;
             case 'add-background': text += " - Click on an empty area to add a background image placeholder."; break; // <-- NEW LINE
             case 'connect-lanes': text += " - Drag from a red port (lane end) to a blue port (lane start)."; break;
@@ -1897,6 +2245,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (e.evt.button === 0 && (e.target === stage || isBgLocked)) {
                 // 排除清單：如果不是這些工具，則視為拖曳畫布
                 if (activeTool !== 'add-link' &&
+                    activeTool !== 'append-lane-stroke' && // <--- 新增這行
                     activeTool !== 'measure' &&
                     !(activeTool === 'connect-lanes' && (connectMode === 'box' || connectMode === 'merge')) &&
                     activeTool !== 'add-background' &&
@@ -1904,7 +2253,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     activeTool !== 'add-parking-lot' &&
                     activeTool !== 'add-parking-gate' &&
                     activeTool !== 'add-intersection' &&
-                    !(activeTool === 'add-marking' && markingMode === 'channelization') && 
+                    !(activeTool === 'add-marking' && markingMode === 'channelization') &&
                     activeTool !== 'subnetwork') {
 
                     isPanning = true;
@@ -2038,7 +2387,22 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             // --- Add Link / Measure / Intersection 等工具的動態線條 ---
-            if ((activeTool === 'add-link' || activeTool === 'measure' || activeTool === 'add-parking-lot' || activeTool === 'add-intersection' || (activeTool === 'add-marking' && markingMode === 'channelization')) && tempShape) {
+            if ((activeTool === 'add-link' || activeTool === 'append-lane-stroke') && tempShape) {
+                // 【修正】確保 append-lane-stroke 模式下，滑鼠跟隨的線段也會套用正確的樣式
+                if (linkCreationSettings.mode === 'lane-based' || activeTool === 'append-lane-stroke') {
+                    const style = STROKE_TYPES[draftCurrentStrokeType] || STROKE_TYPES['white_dashed'];
+                    // 根據字典動態套用顏色與虛線
+                    tempShape.stroke(style.color);
+                    tempShape.dash(style.dash || []);
+                    tempShape.strokeWidth((style.width || 2) / stage.scaleX()); // 維持螢幕比例
+                }
+
+                const points = tempShape.points();
+                points[points.length - 2] = worldPos.x;
+                points[points.length - 1] = worldPos.y;
+                tempShape.points(points);
+                layer.batchDraw();
+            } else if ((activeTool === 'measure' || activeTool === 'add-parking-lot' || activeTool === 'add-intersection' || (activeTool === 'add-marking' && markingMode === 'channelization')) && tempShape) {
                 const points = tempShape.points();
                 // 更新最後一個點為當前滑鼠位置
                 points[points.length - 2] = worldPos.x;
@@ -2152,7 +2516,24 @@ document.addEventListener('DOMContentLoaded', () => {
                 tempShape.height(pos.y - startPos.y);
                 layer.batchDraw();
             }
-            if ((activeTool === 'add-link' || activeTool === 'measure' || activeTool === 'add-parking-lot' || activeTool === 'add-intersection' || (activeTool === 'add-marking' && markingMode === 'channelization')) && tempShape) {
+            if ((activeTool === 'add-link' || activeTool === 'append-lane-stroke') && tempShape) {
+                const pos = stage.getPointerPosition();
+                const localPos = { x: (pos.x - stage.x()) / stage.scaleX(), y: (pos.y - stage.y()) / stage.scaleY(), };
+
+                if (linkCreationSettings.mode === 'lane-based') {
+                    const style = STROKE_TYPES[draftCurrentStrokeType];
+                    // 根據字典動態套用顏色與虛線
+                    tempShape.stroke(style.color);
+                    tempShape.dash(style.dash);
+                    tempShape.strokeWidth(style.width / stage.scaleX()); // 維持螢幕比例
+                }
+
+                const points = tempShape.points();
+                points[points.length - 2] = localPos.x;
+                points[points.length - 1] = localPos.y;
+                tempShape.points(points);
+                layer.batchDraw();
+            } else if ((activeTool === 'measure' || activeTool === 'add-parking-lot' || activeTool === 'add-intersection' || (activeTool === 'add-marking' && markingMode === 'channelization')) && tempShape) {
                 const pos = stage.getPointerPosition();
                 const points = tempShape.points();
                 const localPos = { x: (pos.x - stage.x()) / stage.scaleX(), y: (pos.y - stage.y()) / stage.scaleY(), };
@@ -2222,7 +2603,7 @@ document.addEventListener('DOMContentLoaded', () => {
         stage.on('contextmenu', (e) => {
             e.evt.preventDefault();
 
-            if ((activeTool === 'add-link' || activeTool === 'measure') && tempShape) {
+            if ((activeTool === 'add-link' || activeTool === 'measure' || activeTool === 'append-lane-stroke') && tempShape) {
                 const currentPoints = tempShape.points();
                 const finalRawPoints = currentPoints.slice(0, -2);
                 const finalPoints = [];
@@ -2230,76 +2611,107 @@ document.addEventListener('DOMContentLoaded', () => {
                     finalPoints.push({ x: finalRawPoints[i], y: finalRawPoints[i + 1] });
                 }
 
-                if (activeTool === 'add-link') {
-                    if (finalPoints.length > 1) {
+                // ==========================================
+                // [新增] 模式 0：對既有路段手繪新增標線
+                // ==========================================
+                if (activeTool === 'append-lane-stroke') {
+                    if (finalPoints.length > 1 && appendingStrokeToLink) {
+                        const link = appendingStrokeToLink;
 
-                        // --- [修改] 雙向道路生成邏輯 (含顯式記憶) ---
-                        if (linkCreationSettings.isTwoWay) {
-                            const lanes = linkCreationSettings.lanesPerDir;
-                            const roadWidth = lanes * LANE_WIDTH;
-                            const median = linkCreationSettings.medianWidth;
+                        // 1. 將畫好的線加入該路段
+                        link.strokes.push({
+                            type: draftCurrentStrokeType || 'white_dashed',
+                            points: finalPoints
+                        });
 
-                            // 計算從中心線偏移的距離：(單邊路寬一半) + (分隔島一半)
-                            const offsetDist = (roadWidth / 2) + (median / 2);
-
-                            let forwardOffset, backwardOffset;
-
-                            if (linkCreationSettings.drivingSide === 'right') {
-                                forwardOffset = offsetDist;
-                                backwardOffset = -offsetDist;
-                            } else {
-                                forwardOffset = -offsetDist;
-                                backwardOffset = offsetDist;
-                            }
-
-                            // 1. 建立順向 Link
-                            const forwardPoints = getOffsetPolyline(finalPoints, forwardOffset);
-                            const linkF = createLink(forwardPoints, lanes);
-                            linkF.name = `Link_${idCounter} (F)`;
-
-                            // 2. 建立反向 Link (需反轉座標)
-                            let backwardPoints = getOffsetPolyline(finalPoints, backwardOffset);
-                            backwardPoints.reverse();
-                            const linkB = createLink(backwardPoints, lanes);
-                            linkB.name = `Link_${idCounter} (B)`;
-
-                            // --- [關鍵] 顯式記憶：將配對關係與分隔島寬度寫入物件 ---
-                            // 我們新增一個自定義屬性 pairInfo 來儲存這些資訊
-                            linkF.pairInfo = {
-                                pairId: linkB.id,
-                                type: 'forward',
-                                medianWidth: median
-                            };
-
-                            linkB.pairInfo = {
-                                pairId: linkF.id,
-                                type: 'backward',
-                                medianWidth: median
-                            };
-
-                            selectObject(linkF);
-
-                        } else {
-                            // 單向模式
-                            const newLink = createLink(finalPoints, linkCreationSettings.lanesPerDir);
-                            selectObject(newLink);
-                            saveState(); // [新增]
+                        // 2. 由於多了一條分隔線，車道數加 1
+                        let lastAllowed = [];
+                        if (link.lanes && link.lanes.length > 0) {
+                            const prevLaneProfiles = link.lanes[link.lanes.length - 1].allowedVehicleProfiles;
+                            if (Array.isArray(prevLaneProfiles)) lastAllowed = [...prevLaneProfiles];
                         }
+                        if (!link.lanes) link.lanes = [];
+                        link.lanes.push({ width: LANE_WIDTH, allowedVehicleProfiles: lastAllowed });
 
-                        // --- [修改結束] ---
+                        // 3. 空間排序 (左到右)，確保線條順序正確
+                        const formattedStrokes = link.strokes.map(s => ({ type: s.type, rawPoints: s.points }));
+                        const sortedStrokes = spatialSortStrokes(formattedStrokes);
+                        link.strokes = sortedStrokes.map(s => ({ type: s.type, points: s.rawPoints }));
 
-                        updateAllOverpasses();
+                        // 4. 重算中心線與重繪
+                        updateLaneBasedGeometry(link);
+                        drawLink(link);
+                        drawWaypointHandles(link); // 重建黃色/橘色控制點
+                        updateDependencies(link);
+
+                        // 5. 重新選取以更新屬性面板，並存檔
+                        selectObject(link);
+                        saveState();
                     }
-                    if (tempShape) tempShape.destroy();
-                    tempShape = null;
+                    if (tempShape) { tempShape.destroy(); tempShape = null; }
+                    appendingStrokeToLink = null;
                     setTool('select');
+                }
+                // ==========================================
+                // 模式 1 & 2：原本的 add-link 與 measure 邏輯
+                // ==========================================
+                else if (activeTool === 'add-link') {
+                    // (這裡保持您原本的 activeTool === 'add-link' 的邏輯...)
+                    if (linkCreationSettings.mode === 'standard' || !linkCreationSettings.mode) {
+                        if (finalPoints.length > 1) {
+                            if (linkCreationSettings.isTwoWay) {
+                                const lanes = linkCreationSettings.lanesPerDir;
+                                const roadWidth = lanes * LANE_WIDTH;
+                                const median = linkCreationSettings.medianWidth;
+                                const offsetDist = (roadWidth / 2) + (median / 2);
 
-                } else if (activeTool === 'measure') {
-                    // ... (保持不變)
+                                let forwardOffset = linkCreationSettings.drivingSide === 'right' ? offsetDist : -offsetDist;
+                                let backwardOffset = linkCreationSettings.drivingSide === 'right' ? -offsetDist : offsetDist;
+
+                                const forwardPoints = getOffsetPolyline(finalPoints, forwardOffset);
+                                const linkF = createLink(forwardPoints, lanes);
+                                linkF.name = `Link_${idCounter} (F)`;
+
+                                let backwardPoints = getOffsetPolyline(finalPoints, backwardOffset);
+                                backwardPoints.reverse();
+                                const linkB = createLink(backwardPoints, lanes);
+                                linkB.name = `Link_${idCounter} (B)`;
+
+                                linkF.pairInfo = { pairId: linkB.id, type: 'forward', medianWidth: median };
+                                linkB.pairInfo = { pairId: linkF.id, type: 'backward', medianWidth: median };
+                                selectObject(linkF);
+                            } else {
+                                const newLink = createLink(finalPoints, linkCreationSettings.lanesPerDir);
+                                selectObject(newLink);
+                                saveState();
+                            }
+                            updateAllOverpasses();
+                        }
+                        if (tempShape) tempShape.destroy();
+                        tempShape = null;
+                        setTool('select');
+                    }
+                    else if (linkCreationSettings.mode === 'lane-based') {
+                        if (finalPoints.length > 1) {
+                            draftLaneStrokes.push({
+                                type: draftCurrentStrokeType,
+                                konvaLine: tempShape,
+                                rawPoints: finalPoints
+                            });
+                            tempShape.opacity(0.8);
+                        } else {
+                            tempShape.destroy();
+                        }
+                        tempShape = null;
+                        layer.batchDraw();
+                        updatePropertiesPanel(null);
+                    }
+                }
+                else if (activeTool === 'measure') {
                     if (finalPoints.length > 1) {
                         const newMeasurement = createMeasurement(finalPoints);
                         selectObject(newMeasurement);
-                        saveState(); // [新增]
+                        saveState();
                     }
                     if (tempShape) tempShape.destroy();
                     if (tempMeasureText) tempMeasureText.destroy();
@@ -3215,9 +3627,56 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         if (activeTool === 'add-link') {
-            if (!isDrawableCanvas(e.target)) return; // <--- [修正] 允許在背景圖上繪製
+            // ... (原本 add-link 的程式碼保留不動) ...
+            if (!isDrawableCanvas(e.target)) return;
+
+            // --- 區分：標準模式 ---
+            if (linkCreationSettings.mode === 'standard' || !linkCreationSettings.mode) {
+                if (!tempShape) {
+                    tempShape = new Konva.Line({ points: [pos.x, pos.y, pos.x, pos.y], stroke: 'cyan', strokeWidth: 2, lineCap: 'round', lineJoin: 'round', listening: false });
+                    layer.add(tempShape);
+                } else {
+                    const currentPoints = tempShape.points();
+                    currentPoints[currentPoints.length - 2] = pos.x;
+                    currentPoints[currentPoints.length - 1] = pos.y;
+                    currentPoints.push(pos.x, pos.y);
+                    tempShape.points(currentPoints);
+                }
+            }
+            // --- 區分：Lane-Based 模式 ---
+            else if (linkCreationSettings.mode === 'lane-based') {
+                if (!tempShape) {
+                    const style = STROKE_TYPES[draftCurrentStrokeType];
+                    tempShape = new Konva.Line({
+                        points: [pos.x, pos.y, pos.x, pos.y],
+                        stroke: style.color,
+                        strokeWidth: style.width / stage.scaleX(),
+                        dash: style.dash,
+                        listening: false
+                    });
+                    layer.add(tempShape);
+                } else {
+                    const currentPoints = tempShape.points();
+                    currentPoints[currentPoints.length - 2] = pos.x;
+                    currentPoints[currentPoints.length - 1] = pos.y;
+                    currentPoints.push(pos.x, pos.y);
+                    tempShape.points(currentPoints);
+                }
+            }
+        }
+        // ▼ 新增這段 append-lane-stroke 區塊 ▼
+        else if (activeTool === 'append-lane-stroke') {
+            if (!isDrawableCanvas(e.target)) return;
+
             if (!tempShape) {
-                tempShape = new Konva.Line({ points: [pos.x, pos.y, pos.x, pos.y], stroke: 'cyan', strokeWidth: 2, lineCap: 'round', lineJoin: 'round', listening: false });
+                const style = STROKE_TYPES[draftCurrentStrokeType] || STROKE_TYPES['white_dashed'];
+                tempShape = new Konva.Line({
+                    points: [pos.x, pos.y, pos.x, pos.y],
+                    stroke: style.color,
+                    strokeWidth: style.width / stage.scaleX(),
+                    dash: style.dash,
+                    listening: false
+                });
                 layer.add(tempShape);
             } else {
                 const currentPoints = tempShape.points();
@@ -3226,7 +3685,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 currentPoints.push(pos.x, pos.y);
                 tempShape.points(currentPoints);
             }
-        } else if (activeTool === 'measure') {
+        }
+        // ▲ 新增區塊結束 ▲
+        else if (activeTool === 'measure') {
             if (!isDrawableCanvas(e.target)) return; // <--- [修正] 允許在背景圖上繪製
 
             if (!tempShape) {
@@ -4592,24 +5053,173 @@ document.addEventListener('DOMContentLoaded', () => {
         layer.batchDraw();
     }
 
-    // 完整替換此函數
     function drawWaypointHandles(link) {
         destroyWaypointHandles(link);
 
         const scale = 1 / stage.scaleX();
 
+        // ==========================================
+        // [新增] Lane-Based 多型控制點邏輯
+        // ==========================================
+        if (link.geometryType === 'lane-based' && link.strokes) {
+            // [新增] 計算母體多邊形與起訖門，用於約束與磁吸
+            const leftBound = link.strokes[0].points;
+            const rightBound = link.strokes[link.strokes.length - 1].points;
+            const boundingPoly = [...leftBound, ...[...rightBound].reverse()];
+            const startGate = [leftBound[0], rightBound[0]];
+            const endGate = [leftBound[leftBound.length - 1], rightBound[rightBound.length - 1]];
+
+            link.strokes.forEach((stroke, strokeIdx) => {
+                const isBoundary = (strokeIdx === 0 || strokeIdx === link.strokes.length - 1);
+                const handleColor = isBoundary ? '#f97316' : '#eab308'; // 邊界用橘色，車道線用黃色
+
+                // 1. 繪製實體控制點 (拖曳修改 / 雙擊刪除)
+                for (let i = 0; i < stroke.points.length; i++) {
+                    const pt = stroke.points[i];
+                    const handle = new Konva.Circle({
+                        x: pt.x, y: pt.y, radius: 5, fill: handleColor, stroke: 'white', strokeWidth: 1.5,
+                        hitStrokeWidth: 10, draggable: true, name: 'waypoint-handle', scaleX: scale, scaleY: scale
+                    });
+
+                    handle.on('dragmove', (e) => {
+                        let newPos = { x: e.target.x(), y: e.target.y() };
+
+                        // 【新增】針對內部車道線的磁吸與邊界限制邏輯
+                        if (!isBoundary) {
+                            const isFirstPt = (i === 0);
+                            const isLastPt = (i === stroke.points.length - 1);
+                            const SNAP_DIST = 15 / stage.scaleX(); // 螢幕上的 15px 磁吸距離
+
+                            // 1. 磁吸邏輯 (Snapping)
+                            if (isFirstPt || isLastPt) {
+                                let projStart = projectPointOnSegment(newPos, startGate[0], startGate[1]);
+                                let distStart = vecLen(getVector(newPos, projStart));
+
+                                let projEnd = projectPointOnSegment(newPos, endGate[0], endGate[1]);
+                                let distEnd = vecLen(getVector(newPos, projEnd));
+
+                                if (distStart < SNAP_DIST && distStart <= distEnd) {
+                                    newPos = projStart;
+                                } else if (distEnd < SNAP_DIST) {
+                                    newPos = projEnd;
+                                }
+                            }
+
+                            // 2. 邊界限制邏輯 (Constraining)
+                            if (!isPointInPolygon(newPos, boundingPoly)) {
+                                let closestPt = null;
+                                let minDist = Infinity;
+                                for (let j = 0; j < boundingPoly.length; j++) {
+                                    let p1 = boundingPoly[j];
+                                    let p2 = boundingPoly[(j + 1) % boundingPoly.length];
+                                    let proj = projectPointOnSegment(newPos, p1, p2);
+                                    let d = vecLen(getVector(newPos, proj));
+                                    if (d < minDist) { minDist = d; closestPt = proj; }
+                                }
+                                if (closestPt) newPos = closestPt;
+                            }
+
+                            // 強制更新 Konva node 座標，防止滑鼠拉出去
+                            e.target.x(newPos.x);
+                            e.target.y(newPos.y);
+                        }
+
+                        stroke.points[i] = newPos;
+                        updateLaneBasedGeometry(link);
+                        drawLink(link);
+                        updateDependencies(link);
+                        layer.batchDraw();
+                    });
+
+                    handle.on('dragend', () => {
+                        drawWaypointHandles(link);
+                        updatePropertiesPanel(link);
+                        saveState();
+                    });
+
+                    handle.on('dblclick', () => {
+                        if (stroke.points.length > 2) {
+                            stroke.points.splice(i, 1);
+                            updateLaneBasedGeometry(link);
+                            drawLink(link);
+                            drawWaypointHandles(link);
+                            updateDependencies(link);
+                            layer.batchDraw();
+                            saveState();
+                        } else {
+                            alert(I18N.t ? I18N.t("A line must have at least 2 points.") : "A line must have at least 2 points.");
+                        }
+                    });
+
+                    layer.add(handle);
+                    link.konvaHandles.push(handle);
+                }
+
+                // 2. 繪製虛擬中點 (粉紅色，拖曳即新增節點)
+                for (let i = 0; i < stroke.points.length - 1; i++) {
+                    const p1 = stroke.points[i];
+                    const p2 = stroke.points[i + 1];
+                    const mx = (p1.x + p2.x) / 2;
+                    const my = (p1.y + p2.y) / 2;
+
+                    const midHandle = new Konva.Circle({
+                        x: mx, y: my, radius: 4, fill: '#fca5a5', stroke: 'white', strokeWidth: 1,
+                        hitStrokeWidth: 10, draggable: true, name: 'waypoint-handle', scaleX: scale, scaleY: scale, opacity: 0.8
+                    });
+
+                    midHandle.on('dragstart', (e) => {
+                        stroke.points.splice(i + 1, 0, { x: e.target.x(), y: e.target.y() });
+                    });
+
+                    midHandle.on('dragmove', (e) => {
+                        let newPos = { x: e.target.x(), y: e.target.y() };
+
+                        // 【新增】中點剛被拉出來時，也受限於邊界 (簡化版，無磁吸)
+                        if (!isBoundary && !isPointInPolygon(newPos, boundingPoly)) {
+                            let closestPt = null;
+                            let minDist = Infinity;
+                            for (let j = 0; j < boundingPoly.length; j++) {
+                                let pp1 = boundingPoly[j];
+                                let pp2 = boundingPoly[(j + 1) % boundingPoly.length];
+                                let proj = projectPointOnSegment(newPos, pp1, pp2);
+                                let d = vecLen(getVector(newPos, proj));
+                                if (d < minDist) { minDist = d; closestPt = proj; }
+                            }
+                            if (closestPt) newPos = closestPt;
+                            e.target.x(newPos.x);
+                            e.target.y(newPos.y);
+                        }
+
+                        stroke.points[i + 1] = newPos;
+                        updateLaneBasedGeometry(link);
+                        drawLink(link);
+                        updateDependencies(link);
+                        layer.batchDraw();
+                    });
+
+                    midHandle.on('dragend', () => {
+                        drawWaypointHandles(link);
+                        updatePropertiesPanel(link);
+                        saveState();
+                    });
+
+                    layer.add(midHandle);
+                    link.konvaHandles.push(midHandle);
+                }
+            });
+
+            link.konvaHandles.forEach(h => h.moveToTop());
+            layer.batchDraw();
+            return; // 執行完 Lane-based 邏輯直接跳出
+        }
+
+        // ==========================================
+        // (以下為保留的 Standard Link 原本控制點邏輯)
+        // ==========================================
         link.waypoints.forEach((waypoint, index) => {
             const handle = new Konva.Circle({
-                x: waypoint.x,
-                y: waypoint.y,
-                radius: 5,
-                fill: 'white',
-                stroke: '#007bff',
-                strokeWidth: 2,
-                draggable: true,
-                name: 'waypoint-handle',
-                scaleX: scale,
-                scaleY: scale,
+                x: waypoint.x, y: waypoint.y, radius: 5, fill: 'white', stroke: '#007bff', strokeWidth: 2,
+                draggable: true, name: 'waypoint-handle', scaleX: scale, scaleY: scale,
             });
 
             handle.setAttr('meta', { linkId: link.id, waypointIndex: index });
@@ -4622,14 +5232,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 targetLink.waypoints[meta.waypointIndex] = { x: movedHandle.x(), y: movedHandle.y() };
 
                 drawLink(targetLink);
-                updateConnectionEndpoints(targetLink.id);
-                updateAllDetectorsOnLink(targetLink.id);
-                updateFlowPointsOnLink(targetLink.id);
-                updateRoadSignsOnLink(targetLink.id);
-                updateAllOverpasses(); // <--- 新增呼叫
+                updateDependencies(targetLink); // 使用新封裝的同步函數
 
-                updatePropertiesPanel(targetLink);
-
+                if (selectedObject && selectedObject.id === targetLink.id) {
+                    updatePropertiesPanel(targetLink);
+                }
                 layer.batchDraw();
             });
 
@@ -4987,6 +5594,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function drawRoadMarking(marking) {
         marking.konvaGroup.destroyChildren();
+
+        // 槽化線邏輯保持不變
         if (marking.markingType === 'channelization') {
             const localPoints = marking.points.map((val, i) => (i % 2 === 0) ? val - marking.x : val - marking.y);
             marking.konvaGroup.position({ x: marking.x, y: marking.y });
@@ -5003,9 +5612,10 @@ document.addEventListener('DOMContentLoaded', () => {
             marking.konvaGroup.rotation(marking.rotation);
             return; // 畫完直接返回
         }
+
         const LINE_COLOR = 'white';
         const STROKE_WIDTH = 0.5;
-        const HIT_WIDTH = 5; // <--- [修正] 將命中範圍加大到 30px
+        const HIT_WIDTH = 5; // 命中範圍加大到 5px
 
         const isLaneAttached = marking.linkId && !marking.isFree;
 
@@ -5017,10 +5627,42 @@ document.addEventListener('DOMContentLoaded', () => {
             const normal = getNormal(vec);
             let p1, p2;
 
-            if (marking.markingType === 'crosswalk') {
-                const totalWidth = getLinkTotalWidth(link);
-                const halfWidth = totalWidth / 2;
+            // =================================================================
+            // ★★★ [核心修正] 輔助函數：取得實體標線上的精確座標 ★★★
+            // 解決 Lane-Based 模式下寬度漸變，導致標線超出或短缺的問題
+            // =================================================================
+            const getStrokePoint = (targetLink, strokeIdx, refPt) => {
+                if (!targetLink.strokes || targetLink.strokes.length === 0) return refPt;
+                let stroke = targetLink.strokes[strokeIdx];
+                // 防呆：若找不到指定標線，往外推至最外側邊界
+                if (!stroke) stroke = (strokeIdx <= 0) ? targetLink.strokes[0] : targetLink.strokes[targetLink.strokes.length - 1];
 
+                let minDist = Infinity;
+                let bestPt = refPt;
+                // 利用最短投影距離，找出曲線上最近的那一個點
+                for (let i = 0; i < stroke.points.length - 1; i++) {
+                    const proj = projectPointOnSegment(refPt, stroke.points[i], stroke.points[i + 1]);
+                    const d = vecLen(getVector(refPt, proj));
+                    if (d < minDist) { minDist = d; bestPt = proj; }
+                }
+                return bestPt;
+            };
+
+            const isLaneBased = (link.geometryType === 'lane-based' && link.strokes && link.strokes.length >= 2);
+
+            if (marking.markingType === 'crosswalk') {
+                // --- 斑馬線 ---
+                if (isLaneBased) {
+                    p1 = getStrokePoint(link, 0, point); // 絕對左邊界
+                    p2 = getStrokePoint(link, link.strokes.length - 1, point); // 絕對右邊界
+                } else {
+                    const totalWidth = getLinkTotalWidth(link);
+                    const halfWidth = totalWidth / 2;
+                    p1 = add(point, scale(normal, halfWidth));
+                    p2 = add(point, scale(normal, -halfWidth));
+                }
+
+                // 處理跨越邏輯 (對向車道)
                 if (marking.spanToLinkId && network.links[marking.spanToLinkId]) {
                     const targetLink = network.links[marking.spanToLinkId];
                     const projResult = projectPointOnPolyline(point, targetLink.waypoints);
@@ -5030,64 +5672,92 @@ document.addEventListener('DOMContentLoaded', () => {
 
                     if (dist > 0) {
                         const spanDir = normalize(spanVec);
-                        const targetHalfWidth = getLinkTotalWidth(targetLink) / 2;
-                        p1 = add(point, scale(spanDir, -halfWidth));
-                        p2 = add(targetPt, scale(spanDir, targetHalfWidth));
-                    } else {
-                        p1 = add(point, scale(normal, halfWidth));
-                        p2 = add(point, scale(normal, -halfWidth));
+                        let w1, w2;
+
+                        if (isLaneBased) {
+                            w1 = vecLen(getVector(p1, p2)) / 2;
+                        } else {
+                            w1 = getLinkTotalWidth(link) / 2;
+                        }
+
+                        if (targetLink.geometryType === 'lane-based' && targetLink.strokes && targetLink.strokes.length >= 2) {
+                            const tpL = getStrokePoint(targetLink, 0, targetPt);
+                            const tpR = getStrokePoint(targetLink, targetLink.strokes.length - 1, targetPt);
+                            w2 = vecLen(getVector(tpL, tpR)) / 2;
+                        } else {
+                            w2 = getLinkTotalWidth(targetLink) / 2;
+                        }
+
+                        p1 = add(point, scale(spanDir, -w1));
+                        p2 = add(targetPt, scale(spanDir, w2));
                     }
-                } else {
-                    p1 = add(point, scale(normal, halfWidth));
-                    p2 = add(point, scale(normal, -halfWidth));
                 }
 
-                // <--- [修正重點：解決虛線點不到的問題] --->
-                // 1. 建立一條透明的粗實線，專門用來捕捉點擊
+                // 繪製斑馬線
                 const hitLine = new Konva.Line({
                     points: [p1.x, p1.y, p2.x, p2.y],
-                    stroke: 'transparent',
-                    strokeWidth: Math.max(HIT_WIDTH, marking.length || 3),
-                    listening: true,
-                    name: 'marking-hit-area'
+                    stroke: 'transparent', strokeWidth: Math.max(HIT_WIDTH, marking.length || 3),
+                    listening: true, name: 'marking-hit-area'
                 });
                 marking.konvaGroup.add(hitLine);
 
-                // 2. 建立實際視覺上的虛線 (不捕捉點擊)
                 const line = new Konva.Line({
                     points: [p1.x, p1.y, p2.x, p2.y],
-                    stroke: LINE_COLOR,
-                    strokeWidth: marking.length || 3,
-                    dash: [0.6, 0.6],
-                    listening: false,
-                    name: 'marking-shape'
+                    stroke: LINE_COLOR, strokeWidth: marking.length || 3, dash: [0.6, 0.6],
+                    listening: false, name: 'marking-shape'
                 });
                 marking.konvaGroup.add(line);
 
             } else {
+                // --- 其他標線 (停止線, 待轉區, 停等區) ---
                 const selectedLanes = marking.laneIndices.sort((a, b) => a - b);
-                let startW = 0, endW = 0;
-                for (let i = 0; i < selectedLanes[0]; i++) startW += link.lanes[i].width;
-                for (let i = 0; i <= selectedLanes[selectedLanes.length - 1]; i++) endW += link.lanes[i].width;
 
-                const linkTotalW = getLinkTotalWidth(link);
-                const offsetLeft = startW - linkTotalW / 2;
-                const offsetRight = endW - linkTotalW / 2;
+                if (isLaneBased) {
+                    const minIdx = selectedLanes[0];
+                    const maxIdx = selectedLanes[selectedLanes.length - 1];
+                    // 在 Lane-Based 中，Lane 0 的左邊界是 Stroke 0，右邊界是 Stroke 1
+                    p1 = getStrokePoint(link, minIdx, point);
+                    p2 = getStrokePoint(link, maxIdx + 1, point);
+                } else {
+                    let startW = 0, endW = 0;
+                    for (let i = 0; i < selectedLanes[0]; i++) startW += link.lanes[i].width;
+                    for (let i = 0; i <= selectedLanes[selectedLanes.length - 1]; i++) endW += link.lanes[i].width;
 
-                p1 = add(point, scale(normal, offsetLeft));
-                p2 = add(point, scale(normal, offsetRight));
+                    const linkTotalW = getLinkTotalWidth(link);
+                    const offsetLeft = startW - linkTotalW / 2;
+                    const offsetRight = endW - linkTotalW / 2;
+
+                    p1 = add(point, scale(normal, offsetLeft));
+                    p2 = add(point, scale(normal, offsetRight));
+                }
 
                 if (marking.markingType === 'stop_line') {
-                    // [修正] 停止線套用加大的 HIT_WIDTH
                     const line = new Konva.Line({ points: [p1.x, p1.y, p2.x, p2.y], stroke: LINE_COLOR, strokeWidth: STROKE_WIDTH, hitStrokeWidth: HIT_WIDTH, listening: true, name: 'marking-shape' });
                     marking.konvaGroup.add(line);
                 } else if (marking.markingType === 'waiting_area' || marking.markingType === 'two_stage_box') {
                     const startDist = Math.max(0, marking.position - marking.length);
                     const { point: backPoint, vec: backVec } = getPointAlongPolyline(link.waypoints, startDist);
-                    const backNormal = getNormal(backVec);
-                    const p3 = add(backPoint, scale(backNormal, offsetRight));
-                    const p4 = add(backPoint, scale(backNormal, offsetLeft));
-                    // [修正] 加入 1% 的透明黑色填充 (rgba(0,0,0,0.01))，使得點擊框內任何一處都能選取
+
+                    let p3, p4;
+                    if (isLaneBased) {
+                        const minIdx = selectedLanes[0];
+                        const maxIdx = selectedLanes[selectedLanes.length - 1];
+                        // 注意 p3, p4 的順序 (構成封閉矩形 p1->p2->p3->p4)
+                        p3 = getStrokePoint(link, maxIdx + 1, backPoint);
+                        p4 = getStrokePoint(link, minIdx, backPoint);
+                    } else {
+                        const backNormal = getNormal(backVec);
+                        let startW = 0, endW = 0;
+                        for (let i = 0; i < selectedLanes[0]; i++) startW += link.lanes[i].width;
+                        for (let i = 0; i <= selectedLanes[selectedLanes.length - 1]; i++) endW += link.lanes[i].width;
+                        const linkTotalW = getLinkTotalWidth(link);
+                        const offsetLeft = startW - linkTotalW / 2;
+                        const offsetRight = endW - linkTotalW / 2;
+
+                        p3 = add(backPoint, scale(backNormal, offsetRight));
+                        p4 = add(backPoint, scale(backNormal, offsetLeft));
+                    }
+
                     const rect = new Konva.Line({ points: [p1.x, p1.y, p2.x, p2.y, p3.x, p3.y, p4.x, p4.y], closed: true, stroke: LINE_COLOR, strokeWidth: STROKE_WIDTH, hitStrokeWidth: HIT_WIDTH, fill: 'rgba(0,0,0,0.01)', listening: true, name: 'marking-shape' });
                     marking.konvaGroup.add(rect);
                 }
@@ -5097,7 +5767,7 @@ document.addEventListener('DOMContentLoaded', () => {
             marking.konvaGroup.rotation(0);
 
         } else {
-            // 自由模式
+            // --- 自由模式 ---
             const rectWidth = marking.length || 3;
             let rectHeight = marking.width || 2.5;
 
@@ -5105,7 +5775,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (!marking.width) marking.width = 10;
                 rectHeight = marking.width;
 
-                // [修正重點] 自由模式下的虛線同樣增加透明 HitLine
                 const hitLine = new Konva.Line({
                     points: [0, -rectHeight / 2, 0, rectHeight / 2],
                     stroke: 'transparent',
@@ -5123,7 +5792,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
                 marking.konvaGroup.add(hitLine, line);
             } else {
-                // [修正] 自由模式矩形同樣加入微量填充以捕捉點擊
                 const rect = new Konva.Rect({
                     x: -rectWidth / 2, y: -rectHeight / 2, width: rectWidth, height: rectHeight,
                     stroke: LINE_COLOR, strokeWidth: STROKE_WIDTH, hitStrokeWidth: HIT_WIDTH, fill: 'rgba(0,0,0,0.01)', listening: true, name: 'marking-shape'
@@ -5254,64 +5922,163 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // --- [新增] 針對 Add Link 工具的面板顯示 ---
         if (activeTool === 'add-link' && !obj) {
-            // ... (保留原本 add-link 的代碼) ...
-            // 控制分隔島輸入框顯示的 CSS display
             const twoWayDisplay = linkCreationSettings.isTwoWay ? 'block' : 'none';
+            const laneBasedDisplay = linkCreationSettings.mode === 'lane-based' ? 'block' : 'none';
+            const standardDisplay = linkCreationSettings.mode === 'standard' ? 'block' : 'none';
+
+            // 產生標線選擇器的 HTML
+            let strokeOptionsHtml = '';
+            for (const [key, prop] of Object.entries(STROKE_TYPES)) {
+                const isChecked = draftCurrentStrokeType === key ? 'checked' : '';
+
+                // 動態產生 CSS 視覺預覽
+                let previewCss = '';
+                if (prop.dual) {
+                    const lStyle = prop.leftDash.length > 0 ? 'dashed' : 'solid';
+                    const rStyle = prop.rightDash.length > 0 ? 'dashed' : 'solid';
+                    previewCss = `border-top: 2px ${lStyle} ${prop.color}; border-bottom: 2px ${rStyle} ${prop.color}; height: 6px; width: 24px;`;
+                } else {
+                    const style = prop.dash && prop.dash.length > 0 ? 'dashed' : 'solid';
+                    previewCss = `border-top: ${prop.width}px ${style} ${prop.color}; width: 24px; height: 0px;`;
+                }
+
+                strokeOptionsHtml += `
+                    <label style="cursor:pointer; display:flex; align-items:center; gap:8px; margin-bottom:6px; padding:4px; border:1px solid #e2e8f0; border-radius:4px; background:#fff;">
+                        <input type="radio" name="strokeType" value="${key}" ${isChecked}>
+                        <div style="background:#555; padding:4px; border-radius:2px; display:flex; align-items:center; justify-content:center;">
+                            <div style="${previewCss}"></div>
+                        </div>
+                        <span style="font-size:0.75rem; font-weight:600;">${prop.label}</span>
+                    </label>
+                `;
+            }
 
             propertiesContent.innerHTML = `
-        <div class="prop-section-header">Link Tool Settings</div>
-        
-        <!-- 1. Road Type -->
+        <div class="prop-section-header">Link Creation Mode</div>
         <div class="prop-group">
-            <label class="prop-label">Directionality</label>
-            <div style="display:flex; gap:10px; margin-top:5px;">
-                <label style="cursor:pointer; display:flex; align-items:center; gap:5px;">
-                    <input type="radio" name="linkType" value="one-way" ${!linkCreationSettings.isTwoWay ? 'checked' : ''}>
-                    One-way
+            <div style="display:flex; flex-direction:column; gap:10px; margin-top:5px;">
+                <label style="cursor:pointer; display:flex; align-items:flex-start; gap:5px;">
+                    <input type="radio" name="linkMode" value="standard" ${linkCreationSettings.mode === 'standard' ? 'checked' : ''}>
+                    <div>
+                        <strong style="color:var(--text-main);">Standard (Centerline)</strong>
+                        <div style="font-size:0.75rem; color:#64748b;">Constant lane width.</div>
+                    </div>
                 </label>
-                <label style="cursor:pointer; display:flex; align-items:center; gap:5px;">
-                    <input type="radio" name="linkType" value="two-way" ${linkCreationSettings.isTwoWay ? 'checked' : ''}>
-                    Two-way
+                <label style="cursor:pointer; display:flex; align-items:flex-start; gap:5px;">
+                    <input type="radio" name="linkMode" value="lane-based" ${linkCreationSettings.mode === 'lane-based' ? 'checked' : ''}>
+                    <div>
+                        <strong style="color:var(--text-main);">Lane-Based (Freeform)</strong>
+                        <div style="font-size:0.75rem; color:#64748b;">Draw exact bounds and dividers. Variable width.</div>
+                    </div>
                 </label>
             </div>
         </div>
 
-        <!-- 2. Driving Side (僅在雙向模式顯示) -->
-        <div class="prop-group" id="driving-side-group" style="display: ${twoWayDisplay};">
-            <label class="prop-label">Driving Side</label>
-            <div style="display:flex; gap:10px; margin-top:5px;">
-                <label style="cursor:pointer; display:flex; align-items:center; gap:5px;">
-                    <input type="radio" name="driveSide" value="right" ${linkCreationSettings.drivingSide === 'right' ? 'checked' : ''}>
-                    Right-Hand (RHT)
-                </label>
-                <label style="cursor:pointer; display:flex; align-items:center; gap:5px;">
-                    <input type="radio" name="driveSide" value="left" ${linkCreationSettings.drivingSide === 'left' ? 'checked' : ''}>
-                    Left-Hand (LHT)
-                </label>
+        <!-- ========================================== -->
+        <!-- Lane-Based Mode 專用控制面板 -->
+        <!-- ========================================== -->
+        <div id="lane-based-draft-panel" style="display: ${laneBasedDisplay}; background:#f8fafc; padding:10px; border-radius:6px; border:1px solid #cbd5e1; margin-top:10px;">
+            <div style="font-weight:600; margin-bottom:8px; font-size:0.85rem;">1. Select Line Type to Draw</div>
+            
+            ${strokeOptionsHtml}
+
+            <div style="font-size:0.75rem; color:#64748b; margin-top:12px; margin-bottom:12px;">
+                <strong>Draft Lines:</strong> ${draftLaneStrokes.length} (Requires at least 2 boundaries)
             </div>
+
+            <button id="btn-generate-lane-based" class="btn-action" style="width:100%; margin-bottom:6px; background:#10b981;">
+                <i class="fa-solid fa-code-branch"></i> Generate Link
+            </button>
+            <button id="btn-clear-drafts" class="btn-danger-outline btn-sm" style="width:100%;">
+                <i class="fa-solid fa-trash-can"></i> Clear Drafts
+            </button>
         </div>
 
-        <!-- 3. Median Width (僅在雙向模式顯示) -->
-        <div class="prop-group" id="median-width-group" style="display: ${twoWayDisplay};">
-            <label class="prop-label">Median Width (m)</label>
-            <input type="number" id="creation-median" class="prop-input" value="${linkCreationSettings.medianWidth}" min="0" step="0.5">
-        </div>
+        <!-- ========================================== -->
+        <!-- Standard Mode 專用設定 -->
+        <!-- ========================================== -->
+        <div id="standard-settings-panel" style="display: ${standardDisplay};">
+            <div class="prop-section-header" style="margin-top:10px;">Standard Settings</div>
+            
+            <div class="prop-group">
+                <label class="prop-label">Directionality</label>
+                <div style="display:flex; gap:10px; margin-top:5px;">
+                    <label style="cursor:pointer; display:flex; align-items:center; gap:5px;">
+                        <input type="radio" name="linkType" value="one-way" ${!linkCreationSettings.isTwoWay ? 'checked' : ''}> One-way
+                    </label>
+                    <label style="cursor:pointer; display:flex; align-items:center; gap:5px;">
+                        <input type="radio" name="linkType" value="two-way" ${linkCreationSettings.isTwoWay ? 'checked' : ''}> Two-way
+                    </label>
+                </div>
+            </div>
 
-        <hr>
+            <div class="prop-group" id="driving-side-group" style="display: ${twoWayDisplay};">
+                <label class="prop-label">Driving Side</label>
+                <div style="display:flex; gap:10px; margin-top:5px;">
+                    <label style="cursor:pointer; display:flex; align-items:center; gap:5px;">
+                        <input type="radio" name="driveSide" value="right" ${linkCreationSettings.drivingSide === 'right' ? 'checked' : ''}> RHT
+                    </label>
+                    <label style="cursor:pointer; display:flex; align-items:center; gap:5px;">
+                        <input type="radio" name="driveSide" value="left" ${linkCreationSettings.drivingSide === 'left' ? 'checked' : ''}> LHT
+                    </label>
+                </div>
+            </div>
 
-        <!-- 4. Lanes Config -->
-        <div class="prop-group">
-            <label class="prop-label">Lanes per Direction</label>
-            <input type="number" id="creation-lanes" class="prop-input" value="${linkCreationSettings.lanesPerDir}" min="1" max="10">
-        </div>
+            <div class="prop-group" id="median-width-group" style="display: ${twoWayDisplay};">
+                <label class="prop-label">Median Width (m)</label>
+                <input type="number" id="creation-median" class="prop-input" value="${linkCreationSettings.medianWidth}" min="0" step="0.5">
+            </div>
 
-        <div class="prop-hint">
-            <i class="fa-solid fa-circle-info"></i> 
-            <strong>Two-way Mode:</strong> Creates two linked roads separated by the median width.
+            <hr>
+            <div class="prop-group">
+                <label class="prop-label">Lanes per Direction</label>
+                <input type="number" id="creation-lanes" class="prop-input" value="${linkCreationSettings.lanesPerDir}" min="1" max="10">
+            </div>
         </div>
     `;
 
             // --- 綁定事件 ---
+            document.querySelectorAll('input[name="linkMode"]').forEach(radio => {
+                radio.addEventListener('change', (e) => {
+                    linkCreationSettings.mode = e.target.value;
+                    updatePropertiesPanel(null); // 刷新面板
+                });
+            });
+
+            document.querySelectorAll('input[name="strokeType"]').forEach(radio => {
+                radio.addEventListener('change', (e) => {
+                    draftCurrentStrokeType = e.target.value;
+                });
+            });
+
+            const btnClear = document.getElementById('btn-clear-drafts');
+            if (btnClear) {
+                btnClear.addEventListener('click', () => {
+                    draftLaneStrokes.forEach(s => s.konvaLine.destroy());
+                    draftLaneStrokes = [];
+                    if (tempShape) { tempShape.destroy(); tempShape = null; }
+                    layer.batchDraw();
+                    updatePropertiesPanel(null);
+                });
+            }
+
+            const btnGen = document.getElementById('btn-generate-lane-based');
+            if (btnGen) {
+                btnGen.addEventListener('click', () => {
+                    const bounds = draftLaneStrokes.filter(s => s.type === 'boundary');
+                    if (bounds.length < 2) {
+                        alert("Require at least 2 Boundary lines (Left & Right edge) to generate.");
+                        return;
+                    }
+                    generateLaneBasedLink(draftLaneStrokes);
+
+                    draftLaneStrokes.forEach(s => s.konvaLine.destroy());
+                    draftLaneStrokes = [];
+                    layer.batchDraw();
+                    updatePropertiesPanel(null);
+                    setTool('select');
+                });
+            }
 
             // 監聽單/雙向切換
             document.querySelectorAll('input[name="linkType"]').forEach(radio => {
@@ -5664,7 +6431,107 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
                 // ============================================================
+                // ============================================================
+                // [新增] Lane-Based 專屬標線編輯器
+                // ============================================================
+                if (obj.geometryType === 'lane-based' && obj.strokes) {
+                    content += `<div class="prop-section-header" style="color:#10b981; margin-top:10px;">Lane-Based Strokes</div>`;
+                    content += `<div class="prop-hint" style="margin-bottom:8px;">
+                                 Manage the individual lines that make up this road.
+                               </div>`;
 
+                    content += `<div style="display:flex; flex-direction:column; gap:6px; margin-bottom:10px;">`;
+
+                    // 產生清單 (每一條已存在的標線)
+                    obj.strokes.forEach((stroke, idx) => {
+                        let selectHtml = `<select class="prop-select lb-stroke-type-select" data-index="${idx}" style="flex:1;">`;
+                        for (const [key, prop] of Object.entries(STROKE_TYPES)) {
+                            selectHtml += `<option value="${key}" ${stroke.type === key ? 'selected' : ''}>${prop.label}</option>`;
+                        }
+                        selectHtml += `</select>`;
+
+                        // 最左與最右邊界不可刪除
+                        const isBoundary = (idx === 0 || idx === obj.strokes.length - 1);
+                        const delBtnHtml = isBoundary
+                            ? `<button class="btn-mini" disabled style="background:#f1f5f9; color:#cbd5e1; border-color:#e2e8f0;"><i class="fa-solid fa-lock"></i></button>`
+                            : `<button class="btn-mini btn-mini-danger lb-stroke-del-btn" data-index="${idx}"><i class="fa-solid fa-trash-can"></i></button>`;
+
+                        content += `
+                            <div class="prop-card" style="display:flex; align-items:center; gap:6px; padding:6px;">
+                                <div style="width:20px; text-align:center; font-weight:bold; color:#64748b;">${idx}</div>
+                                ${selectHtml}
+                                ${delBtnHtml}
+                            </div>
+                        `;
+                    });
+
+                    content += `</div>`;
+
+                    // 動態產生 CSS 視覺預覽的輔助函數
+                    const getPreviewCss = (prop) => {
+                        if (prop.dual) {
+                            const lStyle = prop.leftDash.length > 0 ? 'dashed' : 'solid';
+                            const rStyle = prop.rightDash.length > 0 ? 'dashed' : 'solid';
+                            return `border-top: 2px ${lStyle} ${prop.color}; border-bottom: 2px ${rStyle} ${prop.color}; height: 6px; width: 24px;`;
+                        } else {
+                            const style = prop.dash && prop.dash.length > 0 ? 'dashed' : 'solid';
+                            // 這裡強制 CSS 使用 2px 顯示，無視真實的 prop.width
+                            return `border-top: 2px ${style} ${prop.color}; width: 24px; height: 0px;`;
+                        }
+                    };
+
+                    // 取得預設選項
+                    let defaultKey = draftCurrentStrokeType === 'boundary' ? 'white_dashed' : draftCurrentStrokeType;
+                    if (!STROKE_TYPES[defaultKey]) defaultKey = 'white_dashed';
+                    const defaultProp = STROKE_TYPES[defaultKey];
+
+                    // 產生下拉選單的目前選取標頭 HTML
+                    let selectedHtml = `
+                        <div style="background:#555; padding:4px; border-radius:2px; display:flex; align-items:center; justify-content:center; width:32px;">
+                            <div style="${getPreviewCss(defaultProp)}"></div>
+                        </div>
+                        <span style="font-size:0.75rem; font-weight:600; color:var(--text-main);">${defaultProp.label}</span>
+                    `;
+
+                    // 產生下拉選單的所有選項 HTML
+                    let customOptionsHtml = '';
+                    for (const [key, prop] of Object.entries(STROKE_TYPES)) {
+                        customOptionsHtml += `
+                            <div class="custom-stroke-option" data-value="${key}" style="display:flex; align-items:center; gap:8px; padding:6px; cursor:pointer; border-bottom:1px solid #e2e8f0; transition:background 0.2s;">
+                                <div style="background:#555; padding:4px; border-radius:2px; display:flex; align-items:center; justify-content:center; width:32px;">
+                                    <div style="${getPreviewCss(prop)}"></div>
+                                </div>
+                                <span style="font-size:0.75rem; font-weight:600; color:var(--text-main);">${prop.label}</span>
+                            </div>
+                        `;
+                    }
+
+                    // 自訂的圖文並存下拉選單 UI
+                    content += `
+                    <div style="display:flex; flex-direction:column; gap:6px; margin-bottom:15px; padding:8px; background:#f1f5f9; border-radius:6px; border: 1px solid #cbd5e1;">
+                        <span style="font-size:0.75rem; font-weight:bold; color:#475569;">Draw New Line (手繪新標線)</span>
+
+                        <div id="custom-stroke-dropdown" style="position:relative; width:100%; user-select:none;">
+                            <!-- 下拉選單標頭 (點擊展開) -->
+                            <div id="custom-stroke-header" style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px; background:#fff; border:1px solid #cbd5e1; border-radius:4px; cursor:pointer;">
+                                <div id="custom-stroke-selected" style="display:flex; align-items:center; gap:8px;">
+                                    ${selectedHtml}
+                                </div>
+                                <i class="fa-solid fa-chevron-down" style="color:#64748b; font-size:0.8rem;"></i>
+                            </div>
+                            
+                            <!-- 下拉選單清單 -->
+                            <div id="custom-stroke-list" style="display:none; position:absolute; top:100%; left:0; width:100%; background:#fff; border:1px solid #cbd5e1; border-radius:4px; margin-top:4px; z-index:100; max-height:220px; overflow-y:auto; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                                ${customOptionsHtml}
+                            </div>
+                        </div>
+
+                        <button id="btn-lb-add-stroke" class="btn-action" style="width:100%; background:#fff; color:var(--text-main); border:1px dashed #cbd5e1; margin-top:4px;">
+                            <i class="fa-solid fa-pen"></i> Start Drawing
+                        </button>
+                    </div>`;
+                }
+                // ============================================================
                 // 2. 幾何資訊 (Geometry)
                 content += `<div class="prop-section-header">Geometry</div>`;
                 content += `<div class="prop-row">
@@ -5734,7 +6601,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                         // [修正] 加入 class "conn-list-item" 與 data-conn-id，用於滑鼠移入高亮
                         content += `
-                     <div class="prop-card conn-list-item" data-conn-id="${conn.id}" style="padding: 8px; border-left: 3px solid #3b82f6; cursor:default;">
+                     <div class="prop-card conn-list-item" data-conn-id="${conn.id}" style="padding: 8px; border-left: 3px solid #3b82f6; cursor:pointer; transition: background 0.2s;">
                          <div style="display:flex; justify-content:space-between; align-items:center;">
                              <div style="font-size:0.85rem; color:var(--text-main);">
                                  <span style="font-weight:bold; color:#2563eb;">Lane ${conn.sourceLaneIndex + 1}</span>
@@ -6724,11 +7591,11 @@ document.addEventListener('DOMContentLoaded', () => {
     function attachPropertiesEventListeners(obj) {
         if (!obj) return;
 
-        // --- 通用：分頁切換邏輯 (針對 Node) ---
-        if (obj.type === 'Node') {
-            const tabBtns = document.querySelectorAll('.prop-tab-btn');
-            const tabContents = document.querySelectorAll('.prop-tab-content');
+        // --- 通用：分頁切換邏輯 (支援 Node 與 Link) ---
+        const tabBtns = document.querySelectorAll('.prop-tab-btn');
+        const tabContents = document.querySelectorAll('.prop-tab-content');
 
+        if (tabBtns.length > 0) {
             tabBtns.forEach(btn => {
                 btn.addEventListener('click', (e) => {
                     // 1. 移除所有 active 狀態
@@ -6741,8 +7608,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     const targetContent = document.getElementById(targetId);
                     if (targetContent) targetContent.classList.add('active');
 
-                    // 3. 更新全域狀態，記住使用者選擇
-                    lastActiveNodeTab = targetId;
+                    // 3. 更新全域狀態，依據物件類型分別記憶使用者選擇
+                    if (obj.type === 'Node') {
+                        lastActiveNodeTab = targetId;
+                    } else if (obj.type === 'Link') {
+                        lastActiveLinkTab = targetId;
+                    }
                 });
             });
         }
@@ -6764,10 +7635,51 @@ document.addEventListener('DOMContentLoaded', () => {
 
         function highlightLink(linkId) {
             const link = network.links[linkId];
-            if (!link || !link.waypoints || link.waypoints.length < 2) return;
+            if (!link) return;
+
+            // ==========================================
+            // [新增] Lane-Based 多型高亮邏輯
+            // ==========================================
+            if (link.geometryType === 'lane-based' && link.strokes && link.strokes.length >= 2) {
+                const leftStroke = link.strokes[0].points;
+                const rightStroke = link.strokes[link.strokes.length - 1].points;
+
+                const highlightShape = new Konva.Shape({
+                    sceneFunc: (ctx, shape) => {
+                        if (leftStroke.length < 2 || rightStroke.length < 2) return;
+                        ctx.beginPath();
+                        ctx.moveTo(leftStroke[0].x, leftStroke[0].y);
+                        for (let i = 1; i < leftStroke.length; i++) {
+                            ctx.lineTo(leftStroke[i].x, leftStroke[i].y);
+                        }
+                        for (let i = rightStroke.length - 1; i >= 0; i--) {
+                            ctx.lineTo(rightStroke[i].x, rightStroke[i].y);
+                        }
+                        ctx.closePath();
+                        ctx.fillShape(shape);
+                        ctx.strokeShape(shape);
+                    },
+                    fill: 'rgba(255, 0, 43, 0.67)', // 半透明紅色
+                    stroke: 'rgba(255, 0, 43, 0.3)', // 外層加個透明紅框
+                    strokeWidth: 10,                 // 利用粗邊框創造「外擴 +5px」的視覺效果
+                    lineJoin: 'round',
+                    name: 'link-highlight',
+                    listening: false
+                });
+
+                layer.add(highlightShape);
+                highlightShape.moveToBottom();
+                layer.batchDraw();
+                return; // 畫完直接離開，不執行下方舊邏輯
+            }
+
+            // ==========================================
+            // 原本 Standard 模式的高亮邏輯
+            // ==========================================
+            if (!link.waypoints || link.waypoints.length < 2) return;
 
             const totalWidth = getLinkTotalWidth(link);
-            const halfWidth = totalWidth / 2 + 5;
+            const halfWidth = totalWidth / 2 + 5; // 原本的外擴 5px
             const waypoints = link.waypoints;
             const leftBoundary = [];
             const rightBoundary = [];
@@ -7405,242 +8317,179 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // --- LINK ---
         if (obj.type === 'Link') {
-            // [新增] 監聽名稱變更
-            const nameInput = document.getElementById('prop-link-name');
-            if (nameInput) {
-                nameInput.addEventListener('change', (e) => {
-                    obj.name = e.target.value;
-                });
-            }
 
-            document.getElementById('prop-lanes').addEventListener('change', (e) => {
-                const newLaneCount = parseInt(e.target.value, 10);
-                const currentLaneCount = obj.lanes.length;
+            // ============================================================
+            // [新增] Lane-Based 標線編輯器事件綁定
+            // ============================================================
+            if (obj.geometryType === 'lane-based' && obj.strokes) {
 
-                if (newLaneCount > currentLaneCount) {
-                    for (let i = 0; i < newLaneCount - currentLaneCount; i++) {
-                        const lastLaneWidth = currentLaneCount > 0 ? obj.lanes[currentLaneCount - 1].width : LANE_WIDTH;
-                        const lastAllowed = currentLaneCount > 0 ? (obj.lanes[currentLaneCount - 1].allowedVehicleProfiles || []) : [];
-                        obj.lanes.push({ width: lastLaneWidth, allowedVehicleProfiles: [...lastAllowed] });
-                    }
-                } else if (newLaneCount < currentLaneCount) {
-                    obj.lanes.splice(newLaneCount);
-                }
+                // 1. 變更既有標線的型態
+                document.querySelectorAll('.lb-stroke-type-select').forEach(select => {
+                    select.addEventListener('change', (e) => {
+                        const idx = parseInt(e.target.dataset.index, 10);
+                        obj.strokes[idx].type = e.target.value;
 
-                drawLink(obj);
-                updateConnectionEndpoints(obj.id);
-                updateFlowPointsOnLink(obj.id);
-                updateAllDetectorsOnLink(obj.id);
-                updateRoadSignsOnLink(obj.id);
-                if (activeTool === 'connect-lanes') { showLanePorts(); }
-                layer.batchDraw();
-                updatePropertiesPanel(obj);
-                saveState();
-            });
-
-            document.querySelectorAll('.prop-lane-width').forEach(input => {
-                input.addEventListener('change', (e) => {
-                    const laneIndex = parseInt(e.target.dataset.index, 10);
-                    const newWidth = parseFloat(e.target.value);
-
-                    if (!isNaN(newWidth) && newWidth > 0) {
-                        obj.lanes[laneIndex].width = newWidth;
                         drawLink(obj);
-                        updateConnectionEndpoints(obj.id);
-                        updateFlowPointsOnLink(obj.id);
-                        updateAllDetectorsOnLink(obj.id);
-                        updateRoadSignsOnLink(obj.id);
-                        if (activeTool === 'connect-lanes') { showLanePorts(); }
                         layer.batchDraw();
-                        updatePropertiesPanel(obj);
                         saveState();
-                    }
+                    });
                 });
-            });
 
-            // [新增] 監聽車道允許車種變更
-            document.querySelectorAll('.prop-lane-vehicle-cb').forEach(cb => {
-                cb.addEventListener('change', (e) => {
-                    const laneIdx = parseInt(e.target.dataset.lane, 10);
+                // 2. 刪除既有車道線
+                document.querySelectorAll('.lb-stroke-del-btn').forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        const idx = parseInt(e.currentTarget.dataset.index, 10);
 
-                    // 取得該車道所有的 checkbox 狀態
-                    const allCbsForLane = document.querySelectorAll(`.prop-lane-vehicle-cb[data-lane="${laneIdx}"]`);
-                    const checkedProfiles = [];
-                    let allChecked = true;
-
-                    allCbsForLane.forEach(checkbox => {
-                        if (checkbox.checked) {
-                            checkedProfiles.push(checkbox.value);
-                        } else {
-                            allChecked = false;
+                        if (confirm("Remove this divider line? (Will merge adjacent lanes)")) {
+                            obj.strokes.splice(idx, 1);
+                            if (obj.lanes && obj.lanes.length > 1) {
+                                obj.lanes.pop();
+                            }
+                            updateLaneBasedGeometry(obj);
+                            drawLink(obj);
+                            drawWaypointHandles(obj);
+                            updateDependencies(obj);
+                            updatePropertiesPanel(obj);
+                            layer.batchDraw();
+                            saveState();
                         }
                     });
+                });
 
-                    // 如果全勾選，我們將陣列清空 (Empty array 代表不受限，以節省 XML 空間並保持向後相容)
-                    if (allChecked) {
-                        obj.lanes[laneIdx].allowedVehicleProfiles = [];
-                    } else {
-                        obj.lanes[laneIdx].allowedVehicleProfiles = checkedProfiles;
+                // 3. 綁定自訂圖文下拉選單與手動繪製按鈕
+                const addStrokeBtn = document.getElementById('btn-lb-add-stroke');
+                const customDropdown = document.getElementById('custom-stroke-dropdown');
+                const customHeader = document.getElementById('custom-stroke-header');
+                const customList = document.getElementById('custom-stroke-list');
+                const customSelected = document.getElementById('custom-stroke-selected');
+
+                if (customDropdown && customHeader && customList) {
+                    // 點擊標頭：展開/收起選單
+                    customHeader.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        customList.style.display = customList.style.display === 'none' ? 'block' : 'none';
+                    });
+
+                    // 點擊選項：更新標頭、記錄變數並收起選單
+                    customList.querySelectorAll('.custom-stroke-option').forEach(opt => {
+                        opt.addEventListener('click', (e) => {
+                            e.stopPropagation();
+                            draftCurrentStrokeType = opt.dataset.value;
+                            // 複製該選項內部的 HTML (圖示與文字) 到標頭中
+                            customSelected.innerHTML = opt.innerHTML;
+                            customList.style.display = 'none';
+                        });
+
+                        // 滑鼠 Hover 效果
+                        opt.addEventListener('mouseenter', () => { opt.style.backgroundColor = '#f1f5f9'; });
+                        opt.addEventListener('mouseleave', () => { opt.style.backgroundColor = 'transparent'; });
+                    });
+
+                    // 點擊空白處關閉選單
+                    document.addEventListener('click', (e) => {
+                        if (!customDropdown.contains(e.target)) {
+                            customList.style.display = 'none';
+                        }
+                    }, { once: true }); // 用 once 避免重複綁定，但因為每次渲染都會重建 DOM，這層防護對象是 global 的 click
+                }
+
+                if (addStrokeBtn) {
+                    addStrokeBtn.addEventListener('click', () => {
+                        appendingStrokeToLink = obj;
+                        // draftCurrentStrokeType 在點擊選項時已經更新，直接套用
+                        setTool('append-lane-stroke');
+                    });
+                }
+            }
+            // ============================================================
+            // [修復] 綁定 TAB 2: Connections 列表的互動事件
+            // ============================================================
+
+            // 1. 綁定清單項目的 Hover 高亮與點擊選取
+            document.querySelectorAll('.conn-list-item').forEach(item => {
+                const connId = item.dataset.connId;
+                const conn = network.connections[connId];
+
+                // 滑鼠移入：強制顯示該條貝茲曲線並上色
+                item.addEventListener('mouseenter', () => {
+                    item.style.backgroundColor = '#f1f5f9'; // 清單背景變色
+                    if (conn && conn.konvaBezier) {
+                        if (!conn.konvaBezier.getAttr('originalStroke')) {
+                            conn.konvaBezier.setAttr('originalStroke', conn.konvaBezier.stroke());
+                            conn.konvaBezier.setAttr('originalStrokeWidth', conn.konvaBezier.strokeWidth());
+                        }
+                        conn.konvaBezier.visible(true); // 強制顯示 (可能原先被 Group 隱藏)
+                        conn.konvaBezier.stroke('#dc3545'); // 變成紅色
+                        conn.konvaBezier.strokeWidth(3);    // 加粗
+                        layer.batchDraw();
                     }
-                    saveState();
+                });
+
+                // 滑鼠移出：恢復原狀
+                item.addEventListener('mouseleave', () => {
+                    item.style.backgroundColor = 'transparent';
+                    if (conn && conn.konvaBezier) {
+                        const originalStroke = conn.konvaBezier.getAttr('originalStroke');
+                        const originalStrokeWidth = conn.konvaBezier.getAttr('originalStrokeWidth');
+                        if (originalStroke) {
+                            conn.konvaBezier.stroke(originalStroke);
+                            conn.konvaBezier.strokeWidth(originalStrokeWidth);
+                            conn.konvaBezier.setAttr('originalStroke', null);
+                            conn.konvaBezier.setAttr('originalStrokeWidth', null);
+                        }
+
+                        // 檢查該線是否從屬於某個 Group，如果是，則恢復隱藏狀態
+                        const isInGroup = Array.from(layer.find('.group-connection-visual')).some(g => {
+                            const meta = g.getAttr('meta');
+                            return meta && meta.connectionIds && meta.connectionIds.includes(connId);
+                        });
+                        if (isInGroup && (!selectedObject || selectedObject.id !== connId)) {
+                            conn.konvaBezier.visible(false);
+                        }
+                        layer.batchDraw();
+                    }
+                });
+
+                // 點擊：選取該條連線
+                item.addEventListener('click', (e) => {
+                    if (e.target.closest('.btn-del-single-conn')) return; // 避開刪除按鈕
+                    if (conn) {
+                        item.dispatchEvent(new MouseEvent('mouseleave')); // 切換前先清除高亮
+                        selectObject(conn);
+                    }
                 });
             });
 
-            // 1. [新增] 分頁切換邏輯
-            const tabBtns = document.querySelectorAll('.prop-tab-btn');
-            const tabContents = document.querySelectorAll('.prop-tab-content');
-
-            tabBtns.forEach(btn => {
-                btn.addEventListener('click', (e) => {
-                    // 移除所有 active
-                    tabBtns.forEach(b => b.classList.remove('active'));
-                    tabContents.forEach(c => c.classList.remove('active'));
-
-                    // 啟用當前
-                    const targetId = btn.dataset.target;
-                    btn.classList.add('active');
-                    const targetContent = document.getElementById(targetId);
-                    if (targetContent) targetContent.classList.add('active');
-
-                    // 記憶狀態
-                    lastActiveLinkTab = targetId;
-                });
-            });
-
-            // 2. [新增] 刪除單一連接線的按鈕
+            // 2. 綁定刪除按鈕
             document.querySelectorAll('.btn-del-single-conn').forEach(btn => {
                 btn.addEventListener('click', (e) => {
+                    e.stopPropagation(); // 阻止冒泡觸發選取
                     const connId = btn.dataset.id;
-                    const conn = network.connections[connId];
 
-                    if (conn) {
+                    if (confirm(typeof I18N !== 'undefined' && I18N.t ? I18N.t("Remove this connection?") : "Remove this connection?")) {
                         deleteConnection(connId);
+
+                        // 同步檢查並清理可能變空的綠色 Group 線條
+                        layer.find('.group-connection-visual').forEach(g => {
+                            const meta = g.getAttr('meta');
+                            if (meta && meta.connectionIds) {
+                                meta.connectionIds = meta.connectionIds.filter(id => id !== connId);
+                                if (meta.connectionIds.length === 0) {
+                                    g.destroy();
+                                } else {
+                                    g.setAttr('meta', meta);
+                                }
+                            }
+                        });
+
+                        updatePropertiesPanel(obj); // 重新渲染目前的面板
                         layer.batchDraw();
-                        updatePropertiesPanel(obj);
                         saveState();
                     }
                 });
             });
 
-            // --- [新增] 監聽分隔島寬度修改 ---
-            const medianInput = document.getElementById('prop-edit-median');
-            if (medianInput) {
-                medianInput.addEventListener('change', (e) => {
-                    const newMedianWidth = parseFloat(e.target.value);
-                    if (isNaN(newMedianWidth) || newMedianWidth < 0) return;
-
-                    // 呼叫幾何更新函數
-                    updatePairedLinksGeometry(obj, newMedianWidth);
-                    saveState();
-                });
-            }
-
-            // --- [新增] 車道高亮輔助函數 ---
-            function clearLaneHighlights() {
-                layer.find('.lane-highlight').forEach(shape => shape.destroy());
-                layer.batchDraw();
-            }
-
-            function highlightLane(link, laneIndex) {
-                if (!link || !link.waypoints || link.waypoints.length < 2) return;
-
-                // 1. 計算該車道的左右邊界偏移量
-                const totalWidth = getLinkTotalWidth(link);
-                let cumulativeWidth = 0;
-                for (let i = 0; i < laneIndex; i++) {
-                    cumulativeWidth += link.lanes[i].width;
-                }
-                const currentLaneWidth = link.lanes[laneIndex].width;
-
-                // 計算相對於路中心的偏移 (Normal 指向左側，負值為右側)
-                // Left Boundary (Lane Outer edge)
-                const offsetLeft = (cumulativeWidth + currentLaneWidth) - totalWidth / 2;
-                // Right Boundary (Lane Inner edge)
-                const offsetRight = cumulativeWidth - totalWidth / 2;
-
-                const waypoints = link.waypoints;
-                const polyPointsLeft = [];
-                const polyPointsRight = [];
-
-                // 2. 遍歷路徑點生成幾何形狀
-                for (let i = 0; i < waypoints.length; i++) {
-                    const p_curr = waypoints[i];
-                    let normal;
-
-                    if (i === 0) {
-                        const p_next = waypoints[i + 1];
-                        normal = getNormal(normalize(getVector(p_curr, p_next)));
-                    } else if (i === waypoints.length - 1) {
-                        const p_prev = waypoints[i - 1];
-                        normal = getNormal(normalize(getVector(p_prev, p_curr)));
-                    } else {
-                        const p_prev = waypoints[i - 1];
-                        const p_next = waypoints[i + 1];
-                        normal = getMiterNormal(p_prev, p_curr, p_next);
-                    }
-
-                    polyPointsLeft.push(add(p_curr, scale(normal, offsetLeft)));
-                    polyPointsRight.push(add(p_curr, scale(normal, offsetRight)));
-                }
-
-                // 3. 繪製紅色高亮區域
-                const laneShape = new Konva.Shape({
-                    sceneFunc: (ctx, shape) => {
-                        ctx.beginPath();
-                        if (polyPointsLeft.length < 2) return;
-
-                        // 順向繪製左邊界
-                        ctx.moveTo(polyPointsLeft[0].x, polyPointsLeft[0].y);
-                        for (let i = 1; i < polyPointsLeft.length; i++) {
-                            ctx.lineTo(polyPointsLeft[i].x, polyPointsLeft[i].y);
-                        }
-                        // 逆向繪製右邊界以閉合多邊形
-                        for (let i = polyPointsRight.length - 1; i >= 0; i--) {
-                            ctx.lineTo(polyPointsRight[i].x, polyPointsRight[i].y);
-                        }
-                        ctx.closePath();
-                        ctx.fillStrokeShape(shape);
-                    },
-                    fill: 'rgba(255, 0, 43, 0.67)', // 與 Node 高亮一致的紅色
-                    name: 'lane-highlight',
-                    listening: false
-                });
-
-                layer.add(laneShape);
-                laneShape.moveToTop(); // 確保蓋在路面上
-            }
-
-            // --- [新增] 清單滑鼠懸停事件 ---
-            document.querySelectorAll('.conn-list-item').forEach(item => {
-                item.addEventListener('mouseenter', (e) => {
-                    // 防止冒泡
-                    e.stopPropagation();
-
-                    const connId = item.dataset.connId;
-                    const conn = network.connections[connId];
-                    if (conn) {
-                        const srcLink = network.links[conn.sourceLinkId];
-                        const dstLink = network.links[conn.destLinkId];
-
-                        clearLaneHighlights(); // 清除舊的
-
-                        // 高亮來源車道
-                        if (srcLink) highlightLane(srcLink, conn.sourceLaneIndex);
-                        // 高亮目標車道
-                        if (dstLink) highlightLane(dstLink, conn.destLaneIndex);
-
-                        layer.batchDraw();
-
-                        // 視覺回饋：讓卡片背景變深
-                        item.style.backgroundColor = '#eef2ff';
-                    }
-                });
-
-                item.addEventListener('mouseleave', (e) => {
-                    clearLaneHighlights();
-                    item.style.backgroundColor = ''; // 恢復背景
-                });
-            });
+            // ============================================================
         }
 
         // --- CONNECTION (單一連接線) ---
@@ -7863,7 +8712,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // 獨立鎖定開關邏輯
             if (lockInput) lockInput.addEventListener('change', (e) => {
                 obj.locked = e.target.checked;
-                
+
                 // --- [修正] 同步設定 listening 屬性，允許事件穿透 ---
                 if (obj.konvaGroup) {
                     obj.konvaGroup.draggable(!obj.locked);
@@ -10326,6 +11175,40 @@ document.addEventListener('DOMContentLoaded', () => {
             const newLink = createLink(waypoints, laneWidths);
             xmlLinkIdMap.set(xmlId, newLink.id);
 
+            // ==========================================
+            // [修正] 讀取並覆寫 Lane-based 幾何特徵
+            // 為了相容剛才不小心包在 Waypoints 裡的舊存檔，我們同時搜尋 linkEl 與 wpContainer
+            // ==========================================
+            let geoTypeEl = getChildrenByLocalName(linkEl, "geometryType")[0];
+            let strokesContainer = getChildrenByLocalName(linkEl, "Strokes")[0];
+
+            if (!geoTypeEl && wpContainer) {
+                geoTypeEl = getChildrenByLocalName(wpContainer, "geometryType")[0];
+                strokesContainer = getChildrenByLocalName(wpContainer, "Strokes")[0];
+            }
+
+            if (geoTypeEl && geoTypeEl.textContent === 'lane-based') {
+                newLink.geometryType = 'lane-based';
+
+                if (strokesContainer) {
+                    newLink.strokes = [];
+                    getChildrenByLocalName(strokesContainer, "Stroke").forEach(strokeNode => {
+                        const sType = strokeNode.getAttribute("type");
+                        const pts = [];
+                        getChildrenByLocalName(strokeNode, "Point").forEach(pNode => {
+                            pts.push({
+                                x: parseFloat(getChildValue(pNode, "x")),
+                                y: parseFloat(getChildValue(pNode, "y")) * C_SYSTEM_Y_INVERT
+                            });
+                        });
+                        newLink.strokes.push({ type: sType, points: pts });
+                    });
+                }
+
+                // 【關鍵】強制重新重繪成 Lane-based
+                drawLink(newLink);
+            }
+
             // [新增] 將剛才讀取到的車種限制掛載到建立好的車道物件上
             newLink.lanes.forEach((lane, idx) => {
                 if (importedLanes[idx] && importedLanes[idx].allowedVehicleProfiles.length > 0) {
@@ -11481,8 +12364,12 @@ document.addEventListener('DOMContentLoaded', () => {
             xml += `          </tm:TrapeziumSegment>\n`;
             xml += '        </tm:Segments>\n';
 
+            // 輸出中心線座標
             xml += '        <tm:Waypoints>\n';
             link.waypoints.forEach((wp, index) => { xml += `          <tm:Waypoint><tm:id>${index}</tm:id><tm:x>${wp.x.toFixed(4)}</tm:x><tm:y>${(wp.y * C_SYSTEM_Y_INVERT).toFixed(4)}</tm:y></tm:Waypoint>\n`; });
+            // [修正] 提早關閉 Waypoints 標籤，不要把其他屬性包進去
+            xml += '        </tm:Waypoints>\n';
+
             if (link.pairInfo) {
                 const pairXmlId = linkIdMap.get(link.pairInfo.pairId);
                 if (pairXmlId !== undefined) {
@@ -11491,7 +12378,31 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
 
-            xml += '        </tm:Waypoints>\n      </tm:Link>\n';
+            // [新增] 匯出 Lane-Based 特徵與真實標線
+            if (link.geometryType === 'lane-based') {
+                xml += `        <tm:geometryType>lane-based</tm:geometryType>\n`;
+                xml += `        <tm:Strokes>\n`;
+                link.strokes.forEach((stroke, sIdx) => {
+                    xml += `          <tm:Stroke id="${sIdx}" type="${stroke.type}">\n`;
+                    stroke.points.forEach(p => {
+                        xml += `            <tm:Point><tm:x>${p.x.toFixed(4)}</tm:x><tm:y>${(p.y * C_SYSTEM_Y_INVERT).toFixed(4)}</tm:y></tm:Point>\n`;
+                    });
+                    xml += `          </tm:Stroke>\n`;
+                });
+                xml += `        </tm:Strokes>\n`;
+
+                // 匯出給微觀模型使用的 PolygonLanes (車道面)
+                xml += `        <tm:PolygonLanes>\n`;
+                for (let i = 0; i < link.strokes.length - 1; i++) {
+                    xml += `          <tm:PolygonLane index="${i}">\n`;
+                    xml += `            <tm:LeftBoundary strokeId="${i}" />\n`;
+                    xml += `            <tm:RightBoundary strokeId="${i + 1}" />\n`;
+                    xml += `          </tm:PolygonLane>\n`;
+                }
+                xml += `        </tm:PolygonLanes>\n`;
+            }
+
+            xml += '      </tm:Link>\n';
         }
         xml += '    </tm:Links>\n';
 
@@ -12174,7 +13085,7 @@ document.addEventListener('DOMContentLoaded', () => {
         delete network.backgrounds[id];
         layer.batchDraw();
     }
-function initBackgroundLock() {
+    function initBackgroundLock() {
         const lockCheckbox = document.getElementById('bg-lock-checkbox');
         const lockIcon = document.getElementById('bg-lock-icon');
 
@@ -12224,7 +13135,7 @@ function initBackgroundLock() {
         if (!lockSection || !lockCheckbox) return;
 
         const bgs = Object.values(network.backgrounds);
-        
+
         // --- [修正] 根據是否有任何背景圖層來判斷 ---
         if (bgs.length > 0) {
             lockSection.style.display = 'flex';
@@ -12233,7 +13144,7 @@ function initBackgroundLock() {
             // 以整體狀態為準：若全部鎖定則顯示勾選
             const allLocked = bgs.every(bg => bg.locked);
             lockCheckbox.checked = allLocked;
-            
+
             if (lockIcon) {
                 lockIcon.className = allLocked ? 'fa-solid fa-lock' : 'fa-solid fa-lock-open';
             }
