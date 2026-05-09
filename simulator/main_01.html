@@ -123,90 +123,122 @@
             </div>
         </div>
 
-        <!-- 右：圖層與顯示 (已修正：包含兩種偵測器) -->
-        <div class="toolbar-section layer-controls">
-            <div class="control-group">
-                <select id="layerSelector" class="dropdown-light">
-                    <option value="both" data-i18n="layerBoth">建築 + 底圖</option>
-                    <option value="buildings" data-i18n="layerBuildings">僅建築</option>
-                    <option value="basemap" data-i18n="layerBasemap">僅底圖</option>
-                    <option value="none" data-i18n="layerNone">無背景</option>
-                </select>
-            </div>
+        <div class="control-group">
+            <!-- 隱藏原有的下拉選單，保留給後台 JS 與翻譯邏輯使用 -->
+            <select id="layerSelector" style="display: none;">
+                <option value="both" data-i18n="layerBoth">建築 + 底圖</option>
+                <option value="buildings" data-i18n="layerBuildings">僅建築</option>
+                <option value="basemap" data-i18n="layerBasemap">僅底圖</option>
+                <option value="none" data-i18n="layerNone">無背景</option>
+            </select>
 
-            <div class="toggles-row">
-                <!-- 1. 路口燈號 (獨立) -->
-                <label class="mini-switch" title="Traffic Lights">
-                    <input type="checkbox" id="showPathsToggle">
-                    <span class="switch-label" data-i18n="lblLights">燈號</span>
-                </label>
 
-                <div class="divider-v"></div>
+        </div>
 
-                <!-- 2. 視角/控制模式 (3 Columns Grid) -->
-                <!-- 找到這行，加上 id="viewModeGrid" -->
-                <div class="mode-grid" id="viewModeGrid">
-                    <label class="mini-switch" title="Flyover Mode">
-                        <input type="checkbox" id="flyoverToggle">
-                        <span class="switch-label" data-i18n="lblFlyover">鳥瞰</span>
+        <!-- 1. 圖層 (下拉選單) -->
+        <div class="control-group">
+            <select id="layerSelector" style="display: none;">
+                <option value="both" data-i18n="layerBoth">建築 + 底圖</option>
+                <option value="buildings" data-i18n="layerBuildings">僅建築</option>
+                <option value="basemap" data-i18n="layerBasemap">僅底圖</option>
+                <option value="none" data-i18n="layerNone">無背景</option>
+            </select>
+
+            <div class="dropdown-hover" id="layerDropdown">
+                <button type="button" class="dropdown-btn">
+                    <i class="fa-solid fa-layer-group"></i> <span data-i18n="layerLabel">圖層</span>
+                </button>
+                <div class="dropdown-content">
+                    <label class="radio-label">
+                        <input type="radio" name="layerModeUI" value="both" checked>
+                        <span data-i18n="layerBoth">建築 + 底圖</span>
                     </label>
-                    <label class="mini-switch" title="Drone View">
-                        <input type="checkbox" id="droneToggle">
-                        <span class="switch-label" data-i18n="lblDrone">無人機</span>
+                    <label class="radio-label">
+                        <input type="radio" name="layerModeUI" value="buildings">
+                        <span data-i18n="layerBuildings">僅建築</span>
                     </label>
-                    <label class="mini-switch" title="Drive Mode">
-                        <input type="checkbox" id="driveToggle">
-                        <span class="switch-label">駕駛</span>
+                    <label class="radio-label">
+                        <input type="radio" name="layerModeUI" value="basemap">
+                        <span data-i18n="layerBasemap">僅底圖</span>
                     </label>
-
-                    <!-- 第二排 -->
-                    <label class="mini-switch" title="Police Manual">
-                        <input type="checkbox" id="policeToggle">
-                        <span class="switch-label">員警</span>
+                    <label class="radio-label">
+                        <input type="radio" name="layerModeUI" value="none">
+                        <span data-i18n="layerNone">無背景</span>
                     </label>
-                    <!-- AI 選項 (移至員警右側) -->
-                    <label class="mini-switch ai-switch" title="AI Reinforcement Learning">
-                        <input type="checkbox" id="aiToggle">
-                        <span class="switch-label">AI控制</span>
-                    </label>
-
-                    <label class="mini-switch" title="Signal Optimization (Webster)">
-                        <input type="checkbox" id="optToggle">
-                        <span class="switch-label">優化</span>
-                    </label>
-                    <div style="width: 1px;"></div>
-                </div>
-
-                <!-- ★★★ 新增：數位孿生資料更新頻率選單 (預設隱藏) ★★★ -->
-                <div id="vdUpdateFreqContainer"
-                    style="display: none; align-items: center; gap: 8px; margin-left: 10px;">
-                    <label style="font-size: 0.75rem; color: #64748b; font-weight: bold;">更新頻率:</label>
-                    <select id="vdUpdateFreqSelector" class="dropdown-light" style="font-weight: bold; color: #06b6d4;">
-                        <option value="10">10 分鐘</option>
-                        <option value="15">15 分鐘</option>
-                        <option value="30">30 分鐘</option>
-                        <option value="60">60 分鐘</option>
-                    </select>
-                </div>
-
-                <div class="divider-v"></div>
-
-                <!-- 3. 偵測器群組 -->
-                <div class="detector-group">
-                    <div class="switch-pair">
-                        <label class="tiny-switch" title="Point Detectors">
-                            <input type="checkbox" id="showPointMetersToggle">
-                            <span data-i18n="lblPoint">定點</span>
-                        </label>
-                        <label class="tiny-switch" title="Section Detectors">
-                            <input type="checkbox" id="showSectionMetersToggle">
-                            <span data-i18n="lblSection">區間</span>
-                        </label>
-                    </div>
-                    <span class="group-caption" data-i18n="lblDetector">偵測器</span>
                 </div>
             </div>
         </div>
+
+        <!-- 2. 遊戲 (下拉選單) -->
+        <div class="dropdown-hover" id="viewModeGrid">
+            <button type="button" class="dropdown-btn">
+                <i class="fa-solid fa-gamepad"></i> <span>遊戲</span>
+            </button>
+            <div class="dropdown-content">
+                <label class="mini-switch" title="Flyover Mode">
+                    <input type="checkbox" id="flyoverToggle">
+                    <span class="switch-label" data-i18n="lblFlyover">鳥瞰</span>
+                </label>
+                <label class="mini-switch" title="Drone View">
+                    <input type="checkbox" id="droneToggle">
+                    <span class="switch-label" data-i18n="lblDrone">無人機</span>
+                </label>
+                <label class="mini-switch" title="Drive Mode">
+                    <input type="checkbox" id="driveToggle">
+                    <span class="switch-label">駕駛</span>
+                </label>
+                <label class="mini-switch" title="Police Manual">
+                    <input type="checkbox" id="policeToggle">
+                    <span class="switch-label">員警</span>
+                </label>
+                <label class="mini-switch ai-switch" title="AI Reinforcement Learning">
+                    <input type="checkbox" id="aiToggle">
+                    <span class="switch-label">AI控制</span>
+                </label>
+                <label class="mini-switch" title="Signal Optimization (Webster)">
+                    <input type="checkbox" id="optToggle">
+                    <span class="switch-label">優化</span>
+                </label>
+            </div>
+        </div>
+
+        <!-- 3. 偵測器 (下拉選單) -->
+        <div class="dropdown-hover" id="detectorDropdown">
+            <button type="button" class="dropdown-btn">
+                <i class="fa-solid fa-tower-broadcast"></i> <span data-i18n="lblDetector">偵測器</span>
+            </button>
+            <div class="dropdown-content">
+                <label class="mini-switch" title="Point Detectors">
+                    <input type="checkbox" id="showPointMetersToggle" checked>
+                    <span class="switch-label" data-i18n="lblPoint">定點</span>
+                </label>
+                <label class="mini-switch" title="Section Detectors">
+                    <input type="checkbox" id="showSectionMetersToggle" checked>
+                    <span class="switch-label" data-i18n="lblSection">區間</span>
+                </label>
+            </div>
+        </div>
+
+        <div class="divider-v"></div>
+
+        <!-- 4. 路口燈號 (獨立按鈕外觀) -->
+        <label class="dropdown-btn" title="Traffic Lights" style="padding-left: 8px; user-select: none;">
+            <input type="checkbox" id="showPathsToggle"
+                style="accent-color: var(--primary); margin: 0; cursor: pointer;">
+            <span data-i18n="lblLights" style="margin-left: 4px;">燈號</span>
+        </label>
+
+        <!-- ★★★ 數位孿生資料更新頻率選單 (維持原樣預設隱藏) ★★★ -->
+        <div id="vdUpdateFreqContainer" style="display: none; align-items: center; gap: 8px; margin-left: 10px;">
+            <label style="font-size: 0.75rem; color: #64748b; font-weight: bold;">更新頻率:</label>
+            <select id="vdUpdateFreqSelector" class="dropdown-light" style="font-weight: bold; color: #06b6d4;">
+                <option value="10">10 分鐘</option>
+                <option value="15">15 分鐘</option>
+                <option value="30">30 分鐘</option>
+                <option value="60">60 分鐘</option>
+            </select>
+        </div>
+    </div>
     </div>
 
     <!-- 3. 主內容區 -->

@@ -587,7 +587,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 simTimeSpan.textContent = "0.00";
 
                 // ★ 恢復一般模式
-                if (viewModeGrid) viewModeGrid.style.display = 'grid'; // 原始是 grid
+                if (viewModeGrid) viewModeGrid.style.display = 'inline-block'; // 改用 inline-block
                 if (vdUpdateFreqContainer) vdUpdateFreqContainer.style.display = 'none';
 
                 // ★ 通知 VD API Manager 關閉並還原資料
@@ -799,6 +799,18 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Layer Selector ---
     layerSelector.addEventListener('change', () => {
         updateLayerVisibility();
+    });
+
+    // --- 同步圖層 UI 單選按鈕與隱藏的 Layer Selector ---
+    const layerRadios = document.querySelectorAll('input[name="layerModeUI"]');
+    layerRadios.forEach(radio => {
+        radio.addEventListener('change', (e) => {
+            if (e.target.checked && layerSelector) {
+                layerSelector.value = e.target.value;
+                // 手動觸發 change 事件，讓原有的 updateLayerVisibility() 執行
+                layerSelector.dispatchEvent(new Event('change'));
+            }
+        });
     });
 
     // --- Flyover Event Listeners ---
@@ -2162,18 +2174,16 @@ document.addEventListener('DOMContentLoaded', () => {
     // 計算標線的四個角點 (用於 2D 與 3D)
     function calculateMarkingCorners(mark, netData) {
         // 情境 A: 自由模式 或 依附 Node (直接使用絕對座標與寬高)
-        // 保持原本的旋轉矩形邏輯不變
         if (mark.isFree || mark.nodeId || (!mark.linkId && mark.x !== 0)) {
             const cx = mark.x;
             const cy = mark.y;
             const w = mark.width / 2;
             const l = (mark.type === 'stop_line' ? 0.5 : mark.length) / 2;
-            const rot = (mark.rotation * Math.PI) / 180; // 轉為弧度
+            const rot = (mark.rotation * Math.PI) / 180;
 
             const cos = Math.cos(rot);
             const sin = Math.sin(rot);
 
-            // 回傳四個角點 (順時針: FrontLeft, FrontRight, BackRight, BackLeft)
             return [
                 { x: cx + (l * cos - w * sin), y: cy + (l * sin + w * cos) },
                 { x: cx + (l * cos + w * sin), y: cy + (l * sin - w * cos) },
@@ -2182,21 +2192,57 @@ document.addEventListener('DOMContentLoaded', () => {
             ];
         }
 
-        // 情境 B: 依附 Link (修正版：貼合道路曲率)
+        // 情境 B: 依附 Link
         const link = netData.links[mark.linkId];
         if (!link || !mark.laneIndices || mark.laneIndices.length === 0) return null;
 
-        // 取得車道資訊
         const lanes = Object.values(link.lanes).sort((a, b) => a.index - b.index);
         if (lanes.length === 0) return null;
-
-        // 1. 計算左右邊界相對於路中心的偏移量
-        let totalWidth = 0;
-        lanes.forEach(l => totalWidth += l.width);
 
         const sortedIndices = mark.laneIndices.sort((a, b) => a - b);
         const minIdx = sortedIndices[0];
         const maxIdx = sortedIndices[sortedIndices.length - 1];
+
+        // 取得參考點
+        const samplePath = lanes[0].path;
+        const posFront = getPointAtDistanceAlongPath(samplePath, mark.position);
+        if (!posFront) return null;
+
+        const lengthVal = (mark.type === 'stop_line') ? 0.4 : mark.length;
+        const distBack = Math.max(0, mark.position - lengthVal);
+        const posBack = getPointAtDistanceAlongPath(samplePath, distBack);
+        if (!posBack) return null;
+
+        // =================================================================
+        // ★★★ [核心修正] Lane-Based 模式：動態投影至真實標線 (Stroke-based)
+        // =================================================================
+        if (link.geometryType === 'lane-based' && link.strokes && link.strokes.length >= 2) {
+            const getStrokePoint = (targetLink, strokeIdx, refPt) => {
+                let stroke = targetLink.strokes[strokeIdx];
+                if (!stroke) stroke = (strokeIdx <= 0) ? targetLink.strokes[0] : targetLink.strokes[targetLink.strokes.length - 1];
+                let minDist = Infinity;
+                let bestPt = refPt;
+                for (let i = 0; i < stroke.points.length - 1; i++) {
+                    const proj = Geom.Utils.getClosestPointOnSegment(refPt, stroke.points[i], stroke.points[i + 1]);
+                    const d = Geom.Vec.dist(refPt, proj);
+                    if (d < minDist) { minDist = d; bestPt = proj; }
+                }
+                return bestPt;
+            };
+
+            const pFrontLeft = getStrokePoint(link, minIdx, posFront.point);
+            const pFrontRight = getStrokePoint(link, maxIdx + 1, posFront.point);
+            const pBackRight = getStrokePoint(link, maxIdx + 1, posBack.point);
+            const pBackLeft = getStrokePoint(link, minIdx, posBack.point);
+
+            return [pFrontLeft, pFrontRight, pBackRight, pBackLeft];
+        }
+
+        // =================================================================
+        // 原有 Standard 模式 (等寬平移)
+        // =================================================================
+        let totalWidth = 0;
+        lanes.forEach(l => totalWidth += l.width);
 
         let offsetStart = -totalWidth / 2;
         for (let i = 0; i < minIdx; i++) offsetStart += lanes[i].width;
@@ -2204,50 +2250,30 @@ document.addEventListener('DOMContentLoaded', () => {
         let offsetEnd = -totalWidth / 2;
         for (let i = 0; i <= maxIdx; i++) offsetEnd += lanes[i].width;
 
-        // 2. 準備路徑參考 (使用第0條車道做為基準)
-        // 假設 lane[0] 中心相對於路中心的偏移量
         const lane0Offset = -totalWidth / 2 + lanes[0].width / 2;
-        const samplePath = lanes[0].path;
-
-        // 3. 計算前緣 (Front) 座標
-        // 這是標線在 position 的位置 (下游)
-        const posFront = getPointAtDistanceAlongPath(samplePath, mark.position);
-        if (!posFront) return null;
-
-        // 將 Lane0 的點校正回 "路中心"
         const centerFront = Geom.Vec.add(posFront.point, Geom.Vec.scale(posFront.normal, -lane0Offset));
         const pFrontLeft = Geom.Vec.add(centerFront, Geom.Vec.scale(posFront.normal, offsetStart));
         const pFrontRight = Geom.Vec.add(centerFront, Geom.Vec.scale(posFront.normal, offsetEnd));
-
-        // 4. 計算後緣 (Back) 座標 (修正點：重新採樣路徑，而非切線投影)
-        // 這是標線在 position - length 的位置 (上游)
-        const lengthVal = (mark.type === 'stop_line') ? 0.4 : mark.length;
-        const distBack = Math.max(0, mark.position - lengthVal);
-
-        const posBack = getPointAtDistanceAlongPath(samplePath, distBack);
-        if (!posBack) return null;
 
         const centerBack = Geom.Vec.add(posBack.point, Geom.Vec.scale(posBack.normal, -lane0Offset));
         const pBackLeft = Geom.Vec.add(centerBack, Geom.Vec.scale(posBack.normal, offsetStart));
         const pBackRight = Geom.Vec.add(centerBack, Geom.Vec.scale(posBack.normal, offsetEnd));
 
-        // 回傳順序需構成閉合多邊形 (FrontLeft -> FrontRight -> BackRight -> BackLeft)
         return [pFrontLeft, pFrontRight, pBackRight, pBackLeft];
     }
 
     // [新增] 計算斑馬線中心線的兩個端點與寬度
-    window.calculateCrosswalkLine = calculateCrosswalkLine; // 暴露給行人腳本使用
-    function calculateCrosswalkLine(mark, netData) {
+    //window.calculateCrosswalkLine = calculateCrosswalkLine; // 暴露給行人腳本使用
+    function calculateCrosswalkLine_old1(mark, netData) {
         if (mark.isFree || mark.nodeId || (!mark.linkId && mark.x !== 0)) {
             const cx = mark.x;
             const cy = mark.y;
-            const rectWidth = mark.length || 3; // 斑馬線縱向寬度
-            const rectHeight = mark.width || 10; // 橫跨長度
+            const rectWidth = mark.length || 3;
+            const rectHeight = mark.width || 10;
             const rot = mark.rotation * (Math.PI / 180);
             const cos = Math.cos(rot);
             const sin = Math.sin(rot);
 
-            // 旋轉並換算端點 (Y-Down 座標系)
             const halfH = rectHeight / 2;
             return {
                 p1: { x: cx + halfH * sin, y: cy - halfH * cos },
@@ -2264,11 +2290,73 @@ document.addEventListener('DOMContentLoaded', () => {
         const posData = getPointAtDistanceAlongPath(lanes[0].path, mark.position);
         if (!posData) return null;
 
+        // =================================================================
+        // ★★★ [核心修正] Lane-Based 斑馬線跨越計算
+        // =================================================================
+        if (link.geometryType === 'lane-based' && link.strokes && link.strokes.length >= 2) {
+            const getStrokePoint = (targetLink, strokeIdx, refPt) => {
+                let stroke = targetLink.strokes[strokeIdx];
+                if (!stroke) stroke = (strokeIdx <= 0) ? targetLink.strokes[0] : targetLink.strokes[targetLink.strokes.length - 1];
+                let minDist = Infinity; let bestPt = refPt;
+                for (let i = 0; i < stroke.points.length - 1; i++) {
+                    const proj = Geom.Utils.getClosestPointOnSegment(refPt, stroke.points[i], stroke.points[i + 1]);
+                    const d = Geom.Vec.dist(refPt, proj);
+                    if (d < minDist) { minDist = d; bestPt = proj; }
+                }
+                return bestPt;
+            };
+
+            let p1 = getStrokePoint(link, 0, posData.point);
+            let p2 = getStrokePoint(link, link.strokes.length - 1, posData.point);
+
+            if (mark.spanToLinkId && netData.links[mark.spanToLinkId]) {
+                const targetLink = netData.links[mark.spanToLinkId];
+                const tLanes = Object.values(targetLink.lanes).sort((a, b) => a.index - b.index);
+                if (tLanes.length > 0) {
+                    // 尋找對向目標車道上的最近點
+                    let bestDist = Infinity;
+                    let bestPoint = null;
+                    const path = tLanes[0].path;
+                    for (let i = 0; i < path.length - 1; i++) {
+                        const closest = Geom.Utils.getClosestPointOnSegment(posData.point, path[i], path[i + 1]);
+                        const d = Geom.Vec.dist(posData.point, closest);
+                        if (d < bestDist) { bestDist = d; bestPoint = closest; }
+                    }
+
+                    if (bestPoint) {
+                        if (targetLink.geometryType === 'lane-based' && targetLink.strokes && targetLink.strokes.length >= 2) {
+                            const tpL = getStrokePoint(targetLink, 0, bestPoint);
+                            const tpR = getStrokePoint(targetLink, targetLink.strokes.length - 1, bestPoint);
+                            // 從 p1 (本側左) 朝 p2 (本側右) 延伸到對向的最邊緣
+                            const dL = Geom.Vec.dist(p1, tpL);
+                            const dR = Geom.Vec.dist(p1, tpR);
+                            p2 = dL > dR ? tpL : tpR;
+                        } else {
+                            // 若對向是傳統道路
+                            let tTotalWidth = 0;
+                            tLanes.forEach(l => tTotalWidth += l.width);
+                            const tHalfWidth = tTotalWidth / 2;
+                            const tLane0Offset = -tTotalWidth / 2 + tLanes[0].width / 2;
+                            const spanVec = Geom.Vec.sub(bestPoint, posData.point);
+                            const dist = Geom.Vec.len(spanVec);
+                            if (dist > 0.1) {
+                                const spanDir = Geom.Vec.normalize(spanVec);
+                                p2 = Geom.Vec.add(posData.point, Geom.Vec.scale(spanDir, dist + Math.abs(tLane0Offset) + tHalfWidth));
+                            }
+                        }
+                    }
+                }
+            }
+            return { p1, p2, width: mark.length || 3 };
+        }
+
+        // =================================================================
+        // 原有 Standard Mode 邏輯
+        // =================================================================
         let totalWidth = 0;
         lanes.forEach(l => totalWidth += l.width);
         const halfWidth = totalWidth / 2;
         const lane0Offset = -totalWidth / 2 + lanes[0].width / 2;
-
         const roadCenter = Geom.Vec.add(posData.point, Geom.Vec.scale(posData.normal, -lane0Offset));
 
         let p1, p2;
@@ -2277,17 +2365,13 @@ document.addEventListener('DOMContentLoaded', () => {
             const targetLink = netData.links[mark.spanToLinkId];
             const tLanes = Object.values(targetLink.lanes).sort((a, b) => a.index - b.index);
             if (tLanes.length > 0) {
-                // 尋找目標車道上的最近點
                 let bestDist = Infinity;
                 let bestPoint = null;
                 const path = tLanes[0].path;
                 for (let i = 0; i < path.length - 1; i++) {
                     const closest = Geom.Utils.getClosestPointOnSegment(roadCenter, path[i], path[i + 1]);
                     const d = Geom.Vec.dist(roadCenter, closest);
-                    if (d < bestDist) {
-                        bestDist = d;
-                        bestPoint = closest;
-                    }
+                    if (d < bestDist) { bestDist = d; bestPoint = closest; }
                 }
 
                 if (bestPoint) {
@@ -2300,7 +2384,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     const dist = Geom.Vec.len(spanVec);
                     if (dist > 0.1) {
                         const spanDir = Geom.Vec.normalize(spanVec);
-                        // 從本側外緣一路畫到對向外緣
                         p1 = Geom.Vec.add(roadCenter, Geom.Vec.scale(spanDir, -halfWidth));
                         p2 = Geom.Vec.add(roadCenter, Geom.Vec.scale(spanDir, dist + Math.abs(tLane0Offset) + tHalfWidth));
                         return { p1, p2, width: mark.length || 3 };
@@ -2309,11 +2392,121 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
 
-        // 一般依附模式 (未跨越或跨越失敗)
         p1 = Geom.Vec.add(roadCenter, Geom.Vec.scale(posData.normal, halfWidth));
         p2 = Geom.Vec.add(roadCenter, Geom.Vec.scale(posData.normal, -halfWidth));
 
         return { p1, p2, width: mark.length || 3 };
+    }
+
+    // [新增] 計算斑馬線中心線的兩個端點與寬度
+    window.calculateCrosswalkLine = calculateCrosswalkLine; // 暴露給行人腳本使用
+    function calculateCrosswalkLine(mark, netData) {
+        if (mark.isFree || mark.nodeId || (!mark.linkId && mark.x !== 0)) {
+            const cx = mark.x;
+            const cy = mark.y;
+            const rectWidth = mark.length || 3;
+            const rectHeight = mark.width || 10;
+            const rot = mark.rotation * (Math.PI / 180);
+            const cos = Math.cos(rot);
+            const sin = Math.sin(rot);
+
+            const halfH = rectHeight / 2;
+            return {
+                p1: { x: cx + halfH * sin, y: cy - halfH * cos },
+                p2: { x: cx - halfH * sin, y: cy + halfH * cos },
+                width: rectWidth,
+                roadAngle: rot // ★ 新增：輸出絕對角度
+            };
+        }
+
+        const link = netData.links[mark.linkId];
+        if (!link || !link.lanes) return null;
+        const lanes = Object.values(link.lanes).sort((a, b) => a.index - b.index);
+        if (lanes.length === 0) return null;
+
+        const posData = getPointAtDistanceAlongPath(lanes[0].path, mark.position);
+        if (!posData) return null;
+
+        const getStrokePoint = (targetLink, strokeIdx, refPt) => {
+            let stroke = targetLink.strokes[strokeIdx];
+            if (!stroke) stroke = (strokeIdx <= 0) ? targetLink.strokes[0] : targetLink.strokes[targetLink.strokes.length - 1];
+            let minDist = Infinity; let bestPt = refPt;
+            for (let i = 0; i < stroke.points.length - 1; i++) {
+                const proj = Geom.Utils.getClosestPointOnSegment(refPt, stroke.points[i], stroke.points[i + 1]);
+                const d = Geom.Vec.dist(refPt, proj);
+                if (d < minDist) { minDist = d; bestPt = proj; }
+            }
+            return bestPt;
+        };
+
+        const isLaneBased = link.geometryType === 'lane-based' && link.strokes && link.strokes.length >= 2;
+        let p1, p2, roadCenter, halfWidth;
+
+        if (isLaneBased) {
+            p1 = getStrokePoint(link, 0, posData.point);
+            p2 = getStrokePoint(link, link.strokes.length - 1, posData.point);
+            roadCenter = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+            halfWidth = Geom.Vec.dist(p1, p2) / 2;
+        } else {
+            let totalWidth = 0; lanes.forEach(l => totalWidth += l.width);
+            halfWidth = totalWidth / 2;
+            const lane0Offset = -totalWidth / 2 + lanes[0].width / 2;
+            roadCenter = Geom.Vec.add(posData.point, Geom.Vec.scale(posData.normal, -lane0Offset));
+            p1 = Geom.Vec.add(roadCenter, Geom.Vec.scale(posData.normal, halfWidth));
+            p2 = Geom.Vec.add(roadCenter, Geom.Vec.scale(posData.normal, -halfWidth));
+        }
+
+        if (mark.spanToLinkId && netData.links[mark.spanToLinkId]) {
+            const targetLink = netData.links[mark.spanToLinkId];
+            const tLanes = Object.values(targetLink.lanes).sort((a, b) => a.index - b.index);
+
+            if (tLanes.length > 0) {
+                let bestDist = Infinity;
+                let refTargetPoint = null;
+                const path = tLanes[0].path;
+                for (let i = 0; i < path.length - 1; i++) {
+                    const closest = Geom.Utils.getClosestPointOnSegment(roadCenter, path[i], path[i + 1]);
+                    const d = Geom.Vec.dist(roadCenter, closest);
+                    if (d < bestDist) { bestDist = d; refTargetPoint = closest; }
+                }
+
+                if (refTargetPoint) {
+                    let targetCenter, targetHalfWidth;
+
+                    if (targetLink.geometryType === 'lane-based' && targetLink.strokes && targetLink.strokes.length >= 2) {
+                        const tp1 = getStrokePoint(targetLink, 0, refTargetPoint);
+                        const tp2 = getStrokePoint(targetLink, targetLink.strokes.length - 1, refTargetPoint);
+                        targetCenter = { x: (tp1.x + tp2.x) / 2, y: (tp1.y + tp2.y) / 2 };
+                        targetHalfWidth = Geom.Vec.dist(tp1, tp2) / 2;
+                    } else {
+                        let tTotalWidth = 0; tLanes.forEach(l => tTotalWidth += l.width);
+                        targetHalfWidth = tTotalWidth / 2;
+                        const tLane0Offset = -tTotalWidth / 2 + tLanes[0].width / 2;
+
+                        let tNormal = { x: 0, y: 0 };
+                        for (let i = 0; i < path.length - 1; i++) {
+                            const d = Geom.Vec.dist(refTargetPoint, path[i]);
+                            if (d < 5.0) {
+                                const v = Geom.Vec.normalize(Geom.Vec.sub(path[i + 1], path[i]));
+                                tNormal = { x: -v.y, y: v.x };
+                                break;
+                            }
+                        }
+                        targetCenter = Geom.Vec.add(refTargetPoint, Geom.Vec.scale(tNormal, -tLane0Offset));
+                    }
+
+                    const spanVec = Geom.Vec.sub(targetCenter, roadCenter);
+                    const dist = Geom.Vec.len(spanVec);
+
+                    if (dist > 0.1) {
+                        const spanDir = Geom.Vec.normalize(spanVec);
+                        p1 = Geom.Vec.add(roadCenter, Geom.Vec.scale(spanDir, -halfWidth));
+                        p2 = Geom.Vec.add(targetCenter, Geom.Vec.scale(spanDir, targetHalfWidth));
+                    }
+                }
+            }
+        }
+        return { p1, p2, width: mark.length || 3, roadAngle: posData.angle }; // ★ 新增：輸出絕對角度
     }
 
     function drawNetwork2D(netData, vehicles) {
@@ -2518,24 +2711,73 @@ document.addEventListener('DOMContentLoaded', () => {
                 ctx2D.fillStyle = '#666666';
             }
 
-            link.geometry.forEach(geo => {
-                ctx2D.strokeStyle = '#666'; ctx2D.lineWidth = 1 / scale;
+            // =================================================================
+            // ★★★ [新增] 2D 多型道路繪製 (Lane-Based vs Standard) ★★★
+            // =================================================================
+            if (link.geometryType === 'lane-based' && link.strokes && link.strokes.length >= 2) {
+                // 1. 繪製路面底色
+                const leftSt = link.strokes[0].points;
+                const rightSt = link.strokes[link.strokes.length - 1].points;
                 ctx2D.beginPath();
-                ctx2D.moveTo(geo.points[0].x, geo.points[0].y);
-                for (let i = 1; i < geo.points.length; i++) ctx2D.lineTo(geo.points[i].x, geo.points[i].y);
-                ctx2D.closePath(); ctx2D.fill(); ctx2D.stroke();
-            });
-            if (link.dividingLines) {
-                ctx2D.strokeStyle = 'rgba(255, 255, 255, 0.7)'; ctx2D.lineWidth = 0.5 / scale; ctx2D.setLineDash([5 / scale, 7 / scale]);
-                link.dividingLines.forEach(line => {
-                    if (line.path.length > 1) {
-                        ctx2D.beginPath(); ctx2D.moveTo(line.path[0].x, line.path[0].y);
-                        for (let i = 1; i < line.path.length; i++) ctx2D.lineTo(line.path[i].x, line.path[i].y);
+                ctx2D.moveTo(leftSt[0].x, leftSt[0].y);
+                for (let i = 1; i < leftSt.length; i++) ctx2D.lineTo(leftSt[i].x, leftSt[i].y);
+                for (let i = rightSt.length - 1; i >= 0; i--) ctx2D.lineTo(rightSt[i].x, rightSt[i].y);
+                ctx2D.closePath();
+                ctx2D.fill();
+                ctx2D.strokeStyle = ctx2D.fillStyle;
+                ctx2D.lineWidth = 1 / scale;
+                ctx2D.stroke(); // 消除抗鋸齒接縫
+
+                // 2. 繪製精確的 10cm 標線
+                link.strokes.forEach(stroke => {
+                    const style = STROKE_TYPES[stroke.type] || STROKE_TYPES['boundary'];
+                    const realWidth = style.width; // 0.1m
+
+                    const drawLine = (pts, dashArr) => {
+                        if (pts.length < 2) return;
+                        ctx2D.beginPath();
+                        ctx2D.moveTo(pts[0].x, pts[0].y);
+                        for (let i = 1; i < pts.length; i++) ctx2D.lineTo(pts[i].x, pts[i].y);
+                        ctx2D.strokeStyle = style.color;
+                        ctx2D.lineWidth = Math.max(1 / scale, realWidth); // 確保在縮小視圖時依然可見
+                        ctx2D.setLineDash(dashArr.map(d => Math.max(d, 2 / scale)));
                         ctx2D.stroke();
+                    };
+
+                    if (style.dual) {
+                        const offset = style.gap / 2;
+                        const ptsL = getOffsetPolyline(stroke.points, -offset);
+                        const ptsR = getOffsetPolyline(stroke.points, offset);
+                        drawLine(ptsL, style.leftDash);
+                        drawLine(ptsR, style.rightDash);
+                    } else {
+                        drawLine(stroke.points, style.dash);
                     }
                 });
                 ctx2D.setLineDash([]);
+            } else {
+                // 原本 Standard 模式的繪製邏輯
+                link.geometry.forEach(geo => {
+                    ctx2D.strokeStyle = '#666'; ctx2D.lineWidth = 1 / scale;
+                    ctx2D.beginPath();
+                    ctx2D.moveTo(geo.points[0].x, geo.points[0].y);
+                    for (let i = 1; i < geo.points.length; i++) ctx2D.lineTo(geo.points[i].x, geo.points[i].y);
+                    ctx2D.closePath(); ctx2D.fill(); ctx2D.stroke();
+                });
+                if (link.dividingLines) {
+                    ctx2D.strokeStyle = 'rgba(255, 255, 255, 0.7)'; ctx2D.lineWidth = 0.1; // 統一使用 10cm 寬度
+                    ctx2D.setLineDash([3, 3]); // 換算成公尺制虛線
+                    link.dividingLines.forEach(line => {
+                        if (line.path.length > 1) {
+                            ctx2D.beginPath(); ctx2D.moveTo(line.path[0].x, line.path[0].y);
+                            for (let i = 1; i < line.path.length; i++) ctx2D.lineTo(line.path[i].x, line.path[i].y);
+                            ctx2D.stroke();
+                        }
+                    });
+                    ctx2D.setLineDash([]);
+                }
             }
+
             if (vehiclesOnLink[link.id]) vehiclesOnLink[link.id].forEach(v => drawVehicle2D(v));
 
             // =================================================================
@@ -3900,31 +4142,70 @@ document.addEventListener('DOMContentLoaded', () => {
         // =================================================================
 
         Object.values(netData.links).forEach(link => {
-            if (link.geometry) {
-                link.geometry.forEach(geo => {
-                    // ... (原有道路幾何繪製保持不變) ...
-                    if (geo.points.length < 3) return;
-                    const shape = new THREE.Shape();
-                    shape.moveTo(geo.points[0].x, -geo.points[0].y);
-                    for (let i = 1; i < geo.points.length; i++) shape.lineTo(geo.points[i].x, -geo.points[i].y);
-                    const geom = new THREE.ShapeGeometry(shape);
-                    geom.rotateX(-Math.PI / 2);
+            // =================================================================
+            // ★★★ [新增] 3D 多型道路與立體標線繪製 ★★★
+            // =================================================================
+            if (link.geometryType === 'lane-based' && link.strokes && link.strokes.length >= 2) {
+                // 1. 建立 3D 路面
+                const leftSt = link.strokes[0].points;
+                const rightSt = link.strokes[link.strokes.length - 1].points;
+                const shape = new THREE.Shape();
+                shape.moveTo(leftSt[0].x, -leftSt[0].y); // Z 是 -Y
+                for (let i = 1; i < leftSt.length; i++) shape.lineTo(leftSt[i].x, -leftSt[i].y);
+                for (let i = rightSt.length - 1; i >= 0; i--) shape.lineTo(rightSt[i].x, -rightSt[i].y);
 
-                    const mesh = new THREE.Mesh(geom, asphaltMat);
-                    mesh.receiveShadow = true;
-                    mesh.position.y = 0.1;
-                    networkGroup.add(mesh);
+                const geom = new THREE.ShapeGeometry(shape);
+                geom.rotateX(-Math.PI / 2);
+                const mesh = new THREE.Mesh(geom, asphaltMat);
+                mesh.receiveShadow = true;
+                mesh.position.y = 0.1;
+                networkGroup.add(mesh);
+
+                // 2. 建立 10cm 寬度實體標線
+                link.strokes.forEach(stroke => {
+                    const style = STROKE_TYPES[stroke.type] || STROKE_TYPES['boundary'];
+                    const colorHex = parseInt(style.color.replace('#', '0x'), 16);
+                    const markHeight = 0.11; // 略高於路面
+
+                    if (style.dual) {
+                        const offset = style.gap / 2;
+                        const ptsL = getOffsetPolyline(stroke.points, -offset);
+                        const ptsR = getOffsetPolyline(stroke.points, offset);
+
+                        const meshL = create3DLineStrips(ptsL, style.width, colorHex, style.leftDash, markHeight);
+                        if (meshL) networkGroup.add(meshL);
+
+                        const meshR = create3DLineStrips(ptsR, style.width, colorHex, style.rightDash, markHeight);
+                        if (meshR) networkGroup.add(meshR);
+                    } else {
+                        const meshLine = create3DLineStrips(stroke.points, style.width, colorHex, style.dash, markHeight);
+                        if (meshLine) networkGroup.add(meshLine);
+                    }
                 });
-            }
-            if (link.dividingLines) {
-                link.dividingLines.forEach(line => {
-                    // ... (原有車道分隔線繪製保持不變) ...
-                    if (line.path.length < 2) return;
-                    const points = line.path.map(p => to3D(p.x, p.y, 0.11));
-                    const geometry = new THREE.BufferGeometry().setFromPoints(points);
-                    const lineMesh = new THREE.Line(geometry, lineMat);
-                    networkGroup.add(lineMesh);
-                });
+            } else {
+                // 原本 Standard 模式的 3D 繪製邏輯
+                if (link.geometry) {
+                    link.geometry.forEach(geo => {
+                        if (geo.points.length < 3) return;
+                        const shape = new THREE.Shape();
+                        shape.moveTo(geo.points[0].x, -geo.points[0].y);
+                        for (let i = 1; i < geo.points.length; i++) shape.lineTo(geo.points[i].x, -geo.points[i].y);
+                        const geom = new THREE.ShapeGeometry(shape);
+                        geom.rotateX(-Math.PI / 2);
+                        const mesh = new THREE.Mesh(geom, asphaltMat);
+                        mesh.receiveShadow = true;
+                        mesh.position.y = 0.1;
+                        networkGroup.add(mesh);
+                    });
+                }
+                if (link.dividingLines) {
+                    link.dividingLines.forEach(line => {
+                        if (line.path.length < 2) return;
+                        // 傳統模式也升級成實體的 10cm 白虛線
+                        const meshLine = create3DLineStrips(line.path, 0.1, 0xffffff, [3, 3], 0.11);
+                        if (meshLine) networkGroup.add(meshLine);
+                    });
+                }
             }
 
             // =================================================================
@@ -4836,51 +5117,110 @@ document.addEventListener('DOMContentLoaded', () => {
                 const inLink = networkData.links[linkId];
                 if (!inLink) return;
 
-                const inAngle = getLinkAngle(inLink, true);
-
                 let stateLeft = 'Red', stateStraight = 'Red', stateRight = 'Red';
                 let hasLeft = false, hasStraight = false, hasRight = false;
                 let anyYellow = false;
 
-                // ★★★ [新增] 收集直行相關的 TurnGroupId，用於計算紅燈倒數
+                // ==========================================
+                // 相容舊版：依賴「幾何平行」的車流直行號誌推算
+                // ==========================================
                 const straightTurnGroups = [];
+                node.transitions.forEach(trans => {
+                    if (trans.turnGroupId) {
+                        const srcL = networkData.links[trans.sourceLinkId];
+                        const dstL = networkData.links[trans.destLinkId];
+                        if (srcL && dstL) {
+                            const srcPath = srcL.lanes[trans.sourceLaneIndex || 0]?.path;
+                            const dstPath = dstL.lanes[trans.destLaneIndex || 0]?.path;
+                            if (srcPath && dstPath && srcPath.length > 0 && dstPath.length > 0) {
+                                const pSrc = srcPath[srcPath.length - 1];
+                                const pDst = dstPath[0];
 
-                transitions.forEach(trans => {
-                    const signal = tfl.getSignalForTurnGroup(trans.turnGroupId);
-                    let turnAngle = 0;
-                    // ... (計算角度邏輯保持不變) ...
-                    if (trans.bezier && trans.bezier.points.length > 0) {
-                        const pts = trans.bezier.points;
-                        const dx = pts[pts.length - 1].x - pts[0].x;
-                        const dy = pts[pts.length - 1].y - pts[0].y;
-                        let diff = Math.atan2(dy, dx) - inAngle;
-                        while (diff <= -Math.PI) diff += Math.PI * 2;
-                        while (diff > Math.PI) diff -= Math.PI * 2;
-                        turnAngle = diff;
-                    } else {
-                        const outLink = networkData.links[trans.destLinkId];
-                        if (outLink) {
-                            const outAngle = getLinkAngle(outLink, false);
-                            let diff = outAngle - inAngle;
-                            while (diff <= -Math.PI) diff += Math.PI * 2;
-                            while (diff > Math.PI) diff -= Math.PI * 2;
-                            turnAngle = diff;
+                                let dx = pDst.x - pSrc.x;
+                                let dy = pDst.y - pSrc.y;
+                                let len = Math.hypot(dx, dy);
+
+                                // 修正：若來源與目標端點重疊 (Stroke-based 常見現象)，改用車道切線向量
+                                if (len < 0.1 && srcPath.length >= 2) {
+                                    const pPrev = srcPath[srcPath.length - 2];
+                                    dx = pSrc.x - pPrev.x;
+                                    dy = pSrc.y - pPrev.y;
+                                    len = Math.hypot(dx, dy);
+                                }
+                                if (len < 0.1 && dstPath.length >= 2) {
+                                    const pNext = dstPath[1];
+                                    dx = pNext.x - pDst.x;
+                                    dy = pNext.y - pDst.y;
+                                    len = Math.hypot(dx, dy);
+                                }
+
+                                if (len > 0.1) {
+                                    // 穩健取角函數
+                                    const getRobustAngle = (lane, isEnd) => {
+                                        if (!lane || !lane.path || lane.path.length < 2) return 0;
+                                        const path = lane.path;
+                                        let p1, p2;
+                                        if (isEnd) {
+                                            p1 = path[Math.max(0, path.length - 5)];
+                                            p2 = path[path.length - 1];
+                                        } else {
+                                            p1 = path[0];
+                                            p2 = path[Math.min(path.length - 1, 4)];
+                                        }
+                                        return Math.atan2(p2.y - p1.y, p2.x - p1.x);
+                                    };
+
+                                    const inAngleTrans = getRobustAngle(srcL.lanes[trans.sourceLaneIndex || 0], true);
+                                    const outAngleTrans = getRobustAngle(dstL.lanes[trans.destLaneIndex || 0], false);
+
+                                    let diff = Math.abs(outAngleTrans - inAngleTrans);
+                                    while (diff > Math.PI) diff -= Math.PI * 2;
+                                    diff = Math.abs(diff);
+
+                                    // 若角度差小於 0.8 rad (約 45度)，即判定為直行車流
+                                    if (diff < 0.8) {
+                                        straightTurnGroups.push(trans.turnGroupId);
+                                    }
+                                }
+                            }
                         }
                     }
+                });
 
-                    if (turnAngle > 0.2) {
-                        hasRight = true;
-                        if (signal === 'Green') stateRight = 'Green';
-                        if (signal === 'Yellow') anyYellow = true;
-                    } else if (turnAngle < -0.2) {
-                        hasLeft = true;
-                        if (signal === 'Green') stateLeft = 'Green';
-                        if (signal === 'Yellow') anyYellow = true;
-                    } else {
-                        hasStraight = true;
-                        straightTurnGroups.push(trans.turnGroupId); // 收集直行群組
-                        if (signal === 'Green') stateStraight = 'Green';
-                        if (signal === 'Yellow') anyYellow = true;
+                // ==========================================
+                // 判斷該路口燈面的直行、左轉、右轉狀態
+                // ==========================================
+                transitions.forEach(t => {
+                    const signal = tfl.getSignalForTurnGroup(t.turnGroupId);
+                    if (signal === 'Yellow') anyYellow = true;
+
+                    const srcL = networkData.links[t.sourceLinkId];
+                    const dstL = networkData.links[t.destLinkId];
+                    if (srcL && dstL) {
+                        const getAngle = (lane, isEnd) => {
+                            if (!lane || !lane.path || lane.path.length < 2) return 0;
+                            const path = lane.path;
+                            let p1, p2;
+                            if (isEnd) { p1 = path[path.length - 2]; p2 = path[path.length - 1]; }
+                            else { p1 = path[0]; p2 = path[1]; }
+                            return Math.atan2(p2.y - p1.y, p2.x - p1.x);
+                        };
+                        const a1 = getAngle(srcL.lanes[t.sourceLaneIndex || 0], true);
+                        const a2 = getAngle(dstL.lanes[t.destLaneIndex || 0], false);
+                        let diff = a2 - a1;
+                        while (diff <= -Math.PI) diff += Math.PI * 2;
+                        while (diff > Math.PI) diff -= Math.PI * 2;
+
+                        if (diff < -0.2 && diff > -2.8) {
+                            hasLeft = true;
+                            if (signal === 'Green') stateLeft = 'Green';
+                        } else if (diff > 0.2 && diff < 2.8) {
+                            hasRight = true;
+                            if (signal === 'Green') stateRight = 'Green';
+                        } else {
+                            hasStraight = true;
+                            if (signal === 'Green') stateStraight = 'Green';
+                        }
                     }
                 });
 
@@ -4967,6 +5307,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     mesh.getWorldDirection(meshWorldDir);
 
                     // 行人的「過馬路方向」與發光方向相反 (-X, -Z)
+                    // ★ 確保宣告在此作用域，後方才不會發生 ReferenceError
                     const walkDirX = -meshWorldDir.x;
                     const walkDirY = -meshWorldDir.z; // 3D 的 Z 軸對應 2D 的 Y 軸
 
@@ -4986,11 +5327,15 @@ document.addEventListener('DOMContentLoaded', () => {
                                 if (belongsToNode) {
                                     const lineData = window.calculateCrosswalkLine ? window.calculateCrosswalkLine(mark, networkData) : null;
                                     if (lineData) {
-                                        const cwDx = lineData.p2.x - lineData.p1.x;
-                                        const cwDy = lineData.p2.y - lineData.p1.y;
+                                        let cwDx = lineData.p2.x - lineData.p1.x;
+                                        let cwDy = lineData.p2.y - lineData.p1.y;
+                                        if (lineData.roadAngle !== undefined) {
+                                            cwDx = -Math.sin(lineData.roadAngle);
+                                            cwDy = Math.cos(lineData.roadAngle);
+                                        }
+
                                         const cwLen = Math.hypot(cwDx, cwDy);
                                         if (cwLen > 0) {
-                                            // 內積取絕對值判斷是否平行 (0.85 約容忍 31 度誤差)
                                             const dot = Math.abs(walkDirX * (cwDx / cwLen) + walkDirY * (cwDy / cwLen));
                                             if (dot > 0.85 && dot > bestDot) {
                                                 bestDot = dot;
@@ -5004,34 +5349,48 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
 
                     if (explicitPedGroupId) {
-                        // ==========================================
                         // 採用新版：依照明確指定的行人時相群組顯示燈號
-                        // ==========================================
                         stateStraight = tfl.getSignalForTurnGroup(explicitPedGroupId);
-                        // ★ 改用專屬的連續倒數方法，確保行綠接行閃時秒數不會斷層
                         remaining = tfl.getPedestrianRemainingTime(simulation.time, explicitPedGroupId);
 
                     } else {
-                        // ==========================================
                         // 相容舊版：依賴「幾何平行」的車流直行號誌推算
-                        // ==========================================
                         const straightTurnGroups = [];
                         node.transitions.forEach(trans => {
                             if (trans.turnGroupId) {
                                 const srcL = networkData.links[trans.sourceLinkId];
                                 const dstL = networkData.links[trans.destLinkId];
                                 if (srcL && dstL) {
-                                    const srcPath = srcL.lanes[trans.sourceLaneIndex || 0]?.path;
-                                    const dstPath = dstL.lanes[trans.destLaneIndex || 0]?.path;
-                                    if (srcPath && dstPath && srcPath.length > 0 && dstPath.length > 0) {
-                                        const pSrc = srcPath[srcPath.length - 1];
-                                        const pDst = dstPath[0];
-                                        const dx = pDst.x - pSrc.x;
-                                        const dy = pDst.y - pSrc.y;
-                                        const len = Math.hypot(dx, dy);
-                                        if (len > 0.1) {
-                                            const dot = Math.abs(walkDirX * (dx / len) + walkDirY * (dy / len));
-                                            if (dot > 0.85) straightTurnGroups.push(trans.turnGroupId);
+                                    // ★ 穩健取角函數
+                                    const getRobustAngle = (lane, isEnd) => {
+                                        if (!lane || !lane.path || lane.path.length < 2) return 0;
+                                        const path = lane.path;
+                                        let p1, p2;
+                                        if (isEnd) {
+                                            p1 = path[Math.max(0, path.length - 5)];
+                                            p2 = path[path.length - 1];
+                                        } else {
+                                            p1 = path[0];
+                                            p2 = path[Math.min(path.length - 1, 4)];
+                                        }
+                                        return Math.atan2(p2.y - p1.y, p2.x - p1.x);
+                                    };
+
+                                    const inAngle = getRobustAngle(srcL.lanes[trans.sourceLaneIndex || 0], true);
+                                    const outAngle = getRobustAngle(dstL.lanes[trans.destLaneIndex || 0], false);
+
+                                    let diff = Math.abs(outAngle - inAngle);
+                                    while (diff > Math.PI) diff -= Math.PI * 2;
+                                    diff = Math.abs(diff);
+
+                                    // 嚴格篩選直行車流
+                                    if (diff < 0.8) {
+                                        const vX = Math.cos(inAngle);
+                                        const vY = Math.sin(inAngle);
+                                        // walkDir 是行人方向(過馬路)，剛好會與橫向車流的 vX/vY 平行
+                                        const dot = Math.abs(walkDirX * vX + walkDirY * vY);
+                                        if (dot > 0.85) {
+                                            straightTurnGroups.push(trans.turnGroupId);
                                         }
                                     }
                                 }
@@ -5050,7 +5409,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             stateStraight = 'Green';
                             remaining = tfl.getPedestrianRemainingTime(simulation.time, straightTurnGroups[0]);
                         } else if (isYellow) {
-                            stateStraight = 'Yellow'; // ★ 正確傳遞行閃狀態
+                            stateStraight = 'Yellow';
                             remaining = tfl.getPedestrianRemainingTime(simulation.time, straightTurnGroups[0]);
                         } else {
                             stateStraight = 'Red';
@@ -5060,7 +5419,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (isNaN(remaining)) remaining = 0;
                 }
 
-                // 將狀態傳遞給視覺管理器 (此時 stateStraight 會精準為 Green 或 Yellow 或 Red)
+                // 將狀態傳遞給視覺管理器
                 PedestrianManager.update(mesh, stateStraight, remaining, simulation.time);
             });
         }
@@ -6824,6 +7183,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 };
             },
             // 判斷點是否在多邊形內
+            // 判斷點是否在多邊形內
             isPointInPolygon: function (point, vs) {
                 let x = point.x, y = point.y;
                 let inside = false;
@@ -6834,10 +7194,184 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (intersect) inside = !inside;
                 }
                 return inside;
+            },
+            // [新增] 取得折線總長
+            getPolylineLength: function (points) {
+                let length = 0;
+                for (let i = 0; i < points.length - 1; i++) {
+                    length += Geom.Vec.dist(points[i], points[i + 1]);
+                }
+                return length;
+            },
+            // [新增] 依距離取得折線上的點
+            getPointAlongPolyline: function (points, distance) {
+                let traveled = 0;
+                for (let i = 0; i < points.length - 1; i++) {
+                    const p1 = points[i], p2 = points[i + 1];
+                    const segmentLen = Geom.Vec.dist(p1, p2);
+                    if (segmentLen > 0 && traveled + segmentLen >= distance) {
+                        const ratio = (distance - traveled) / segmentLen;
+                        const segmentVec = Geom.Vec.sub(p2, p1);
+                        return {
+                            point: Geom.Vec.add(p1, Geom.Vec.scale(segmentVec, ratio)),
+                            vec: Geom.Vec.normalize(segmentVec)
+                        };
+                    }
+                    traveled += segmentLen;
+                }
+                if (points.length >= 2) {
+                    const lastVec = Geom.Vec.normalize(Geom.Vec.sub(points[points.length - 1], points[points.length - 2]));
+                    return { point: points[points.length - 1], vec: lastVec };
+                }
+                return { point: points[0], vec: { x: 1, y: 0 } };
+            },
+            // [新增] 等距重取樣 (用於 Lane-based 車道中心線計算)
+            resamplePolyline: function (points, numSegments) {
+                if (!points || points.length < 2) return points;
+                let totalLength = Geom.Utils.getPolylineLength(points);
+                if (totalLength === 0) return points;
+                let step = totalLength / numSegments;
+                let resampled = [points[0]];
+                for (let i = 1; i < numSegments; i++) {
+                    let result = Geom.Utils.getPointAlongPolyline(points, step * i);
+                    if (result && result.point) resampled.push(result.point);
+                }
+                resampled.push(points[points.length - 1]);
+                return resampled;
             }
         }
     };
+    // =================================================================
+    // ★★★ [新增] Lane-Based 標線樣式與幾何生成輔助 ★★★
+    // =================================================================
+    const STROKE_TYPES = {
+        'boundary': { color: '#f97316', dash: [], width: 0.1, label: 'Boundary' },
+        'yellow_dashed': { color: '#eab308', dash: [3, 3], width: 0.1, label: 'Yellow Dashed' },
+        'yellow_double': { color: '#eab308', dual: true, leftDash: [], rightDash: [], width: 0.1, gap: 0.2, label: 'Yellow Double' },
+        'yellow_solid_dashed': { color: '#eab308', dual: true, leftDash: [], rightDash: [3, 3], width: 0.1, gap: 0.2, label: 'Yellow Solid/Dash' },
+        'yellow_dashed_solid': { color: '#eab308', dual: true, leftDash: [3, 3], rightDash: [], width: 0.1, gap: 0.2, label: 'Yellow Dash/Solid' },
+        'white_solid': { color: '#ffffff', dash: [], width: 0.1, label: 'White Solid' },
+        'white_dashed': { color: '#ffffff', dash: [3, 3], width: 0.1, label: 'White Dashed' },
+        'white_double': { color: '#ffffff', dual: true, leftDash: [], rightDash: [], width: 0.1, gap: 0.2, label: 'White Double' },
+        'white_solid_dashed': { color: '#ffffff', dual: true, leftDash: [], rightDash: [3, 3], width: 0.1, gap: 0.2, label: 'White Solid/Dash' },
+        'white_dashed_solid': { color: '#ffffff', dual: true, leftDash: [3, 3], rightDash: [], width: 0.1, gap: 0.2, label: 'White Dash/Solid' }
+    };
 
+    function getOffsetPolyline(points, offset) {
+        if (points.length < 2) return [];
+        const newPoints = [];
+        for (let i = 0; i < points.length; i++) {
+            const p_curr = points[i];
+            let normal;
+            if (i === 0) {
+                normal = Geom.Vec.normalize(Geom.Vec.normal(Geom.Vec.sub(points[1], points[0])));
+            } else if (i === points.length - 1) {
+                normal = Geom.Vec.normalize(Geom.Vec.normal(Geom.Vec.sub(points[i], points[i - 1])));
+            } else {
+                const v1 = Geom.Vec.normalize(Geom.Vec.sub(points[i], points[i - 1]));
+                const v2 = Geom.Vec.normalize(Geom.Vec.sub(points[i + 1], points[i]));
+                const n1 = Geom.Vec.normal(v1);
+                const dotProduct = v1.x * v2.x + v1.y * v2.y;
+                if (Math.abs(dotProduct) > 0.999) {
+                    normal = n1;
+                } else {
+                    const miterVec = Geom.Vec.normalize(Geom.Vec.add(v1, v2));
+                    const miterNormal = Geom.Vec.normal(miterVec);
+                    const miterLength = 1 / (miterNormal.x * n1.x + miterNormal.y * n1.y);
+                    if (Math.abs(miterLength) > 4) {
+                        normal = Geom.Vec.normalize(Geom.Vec.add(n1, Geom.Vec.normal(v2)));
+                    } else {
+                        normal = Geom.Vec.scale(miterNormal, miterLength);
+                    }
+                }
+            }
+            newPoints.push(Geom.Vec.add(p_curr, Geom.Vec.scale(normal, offset)));
+        }
+        return newPoints;
+    }
+
+    // 建立 3D 具有實體寬度(10cm)的多邊形標線 (支援實線與虛線)
+    function create3DLineStrips(points, width, colorHex, dashPattern, yHeight) {
+        if (!points || points.length < 2) return null;
+        const mat = new THREE.MeshBasicMaterial({
+            color: colorHex,
+            side: THREE.DoubleSide,
+            polygonOffset: true,
+            polygonOffsetFactor: -3,
+            polygonOffsetUnits: 1
+        });
+        const vertices = [];
+        const hw = width / 2;
+
+        const addQuad = (pA, pB) => {
+            const dx = pB.x - pA.x;
+            const dy = pB.y - pA.y;
+            const len = Math.hypot(dx, dy);
+            if (len < 1e-5) return;
+            const nx = -dy / len * hw;
+            const ny = dx / len * hw;
+
+            // 轉換為 3D 坐標 (yHeight 映射到 3D的Y軸, 平面y映射到 3D的Z軸)
+            const alx = pA.x + nx, alz = pA.y + ny;
+            const arx = pA.x - nx, arz = pA.y - ny;
+            const blx = pB.x + nx, blz = pB.y + ny;
+            const brx = pB.x - nx, brz = pB.y - ny;
+
+            vertices.push(
+                alx, yHeight, alz, arx, yHeight, arz, blx, yHeight, blz,
+                arx, yHeight, arz, brx, yHeight, brz, blx, yHeight, blz
+            );
+        };
+
+        if (!dashPattern || dashPattern.length === 0) {
+            for (let i = 0; i < points.length - 1; i++) addQuad(points[i], points[i + 1]);
+        } else {
+            const solidLen = dashPattern[0];
+            const gapLen = dashPattern[1];
+            let isDrawing = true;
+            let cyclePos = 0;
+            let lastPoint = points[0];
+
+            for (let i = 0; i < points.length - 1; i++) {
+                let p1 = points[i];
+                let p2 = points[i + 1];
+                let segLen = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+                if (segLen < 1e-5) continue;
+                let segDirX = (p2.x - p1.x) / segLen;
+                let segDirY = (p2.y - p1.y) / segLen;
+
+                let advanced = 0;
+                while (advanced < segLen) {
+                    let remainingInPhase = isDrawing ? (solidLen - cyclePos) : (gapLen - cyclePos);
+                    let toAdvance = Math.min(remainingInPhase, segLen - advanced);
+
+                    let nextPoint = {
+                        x: p1.x + segDirX * (advanced + toAdvance),
+                        y: p1.y + segDirY * (advanced + toAdvance)
+                    };
+
+                    if (isDrawing) addQuad(lastPoint, nextPoint);
+
+                    advanced += toAdvance;
+                    cyclePos += toAdvance;
+                    lastPoint = nextPoint;
+
+                    if (isDrawing && cyclePos + 1e-5 >= solidLen) {
+                        isDrawing = false; cyclePos = 0;
+                    } else if (!isDrawing && cyclePos + 1e-5 >= gapLen) {
+                        isDrawing = true; cyclePos = 0;
+                    }
+                }
+            }
+        }
+        if (vertices.length > 0) {
+            const geo = new THREE.BufferGeometry();
+            geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(vertices), 3));
+            return new THREE.Mesh(geo, mat);
+        }
+        return null;
+    }
+    // =================================================================
     // [新增] 偵測器發車器：依據觀測流量產生車輛
     // 請將此類別放在 Simulation 類別之前
     // [修正] 偵測器發車器：依據觀測流量產生車輛 (支援多車種權重)
@@ -11629,6 +12163,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                     link.leftEdgePoints = leftEdgePoints;
                     link.rightEdgePoints = rightEdgePoints;
+                    // 預設傳統多邊形
                     link.geometry.push({ type: 'polygon', points: [...leftEdgePoints, ...rightEdgePoints.reverse()] });
 
                     if (link.roadSigns.length === 0) {
@@ -11647,25 +12182,190 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
 
-                for (let i = 0; i < centerlinePolyline.length; i++) {
-                    const centerPoint = centerlinePolyline[i];
-                    const normal = miteredNormals[i];
-                    let cumulativeWidth = 0;
-                    for (let j = 0; j < orderedLanes.length; j++) {
-                        const lane = orderedLanes[j];
-                        const laneCenterOffsetFromEdge = cumulativeWidth + lane.width / 2;
-                        const offsetFromRoadCenter = laneCenterOffsetFromEdge - totalWidth / 2;
-                        const lanePoint = Geom.Vec.add(centerPoint, Geom.Vec.scale(normal, offsetFromRoadCenter));
-                        lane.path.push(lanePoint);
-                        cumulativeWidth += lane.width;
-                        if (j < orderedLanes.length - 1) {
-                            const divider = link.dividingLines[j];
-                            const dividerOffsetFromRoadCenter = cumulativeWidth - totalWidth / 2;
-                            const linePoint = Geom.Vec.add(centerPoint, Geom.Vec.scale(normal, dividerOffsetFromRoadCenter));
-                            divider.path.push(linePoint);
+                // =================================================================
+                // ★★★ [全面升級] 基於實體標線 (Stroke-based) 的車道軌跡生成系統 ★★★
+                // =================================================================
+                let geoTypeStr = getChildValue(linkEl, 'geometryType');
+                let strokesContainer = getChildrenByLocalName(linkEl, 'Strokes')[0];
+                let polygonLanesContainer = getChildrenByLocalName(linkEl, 'PolygonLanes')[0];
+
+                if (!geoTypeStr) {
+                    const wpContainer = getChildrenByLocalName(linkEl, 'Waypoints')[0];
+                    if (wpContainer) {
+                        geoTypeStr = getChildValue(wpContainer, 'geometryType');
+                        strokesContainer = getChildrenByLocalName(wpContainer, 'Strokes')[0];
+                        polygonLanesContainer = getChildrenByLocalName(wpContainer, 'PolygonLanes')[0];
+                    }
+                }
+
+                const isLaneBased = (geoTypeStr === 'lane-based');
+
+                if (isLaneBased) {
+                    link.geometryType = 'lane-based';
+                    link.strokes = [];
+                    link.geometry = [];      // 捨棄傳統路面
+                    link.dividingLines = []; // 捨棄傳統虛線
+
+                    // 1. 解析實體標線 (Strokes)
+                    if (strokesContainer) {
+                        getChildrenByLocalName(strokesContainer, 'Stroke').forEach(strokeEl => {
+                            const id = strokeEl.getAttribute('id');
+                            const type = strokeEl.getAttribute('type');
+                            const pts = [];
+                            getChildrenByLocalName(strokeEl, 'Point').forEach(pEl => {
+                                pts.push({
+                                    x: parseFloat(getChildValue(pEl, 'x')),
+                                    y: -parseFloat(getChildValue(pEl, 'y'))
+                                });
+                            });
+                            link.strokes.push({ id, type, points: pts });
+                        });
+                    }
+
+                    // 2. 解析車道對應關係 (PolygonLanes)
+                    if (polygonLanesContainer) {
+                        getChildrenByLocalName(polygonLanesContainer, 'PolygonLane').forEach(plEl => {
+                            const idx = parseInt(plEl.getAttribute('index'), 10);
+                            const leftBoundary = getChildrenByLocalName(plEl, 'LeftBoundary')[0];
+                            const rightBoundary = getChildrenByLocalName(plEl, 'RightBoundary')[0];
+
+                            if (link.lanes[idx]) {
+                                link.lanes[idx].leftStrokeId = leftBoundary ? leftBoundary.getAttribute('strokeId') : null;
+                                link.lanes[idx].rightStrokeId = rightBoundary ? rightBoundary.getAttribute('strokeId') : null;
+                            }
+                        });
+                    }
+
+                    // 3. 計算每一條 Stroke 在道路中心線上的有效生命週期 (s_min, s_max)
+                    link.strokes.forEach(stroke => {
+                        let s_min = Infinity, s_max = -Infinity;
+                        stroke.points.forEach(p => {
+                            const proj = getClosestPointOnPathWithDistance(centerlinePolyline, p);
+                            if (proj) {
+                                s_min = Math.min(s_min, proj.s);
+                                s_max = Math.max(s_max, proj.s);
+                            }
+                        });
+                        stroke.s_min = s_min;
+                        stroke.s_max = s_max;
+                    });
+
+                    // 4. 動態沿著道路縱向 (s) 取樣，計算真實中心點
+                    const STEP = 1.0; // 每 1 公尺取樣一次
+                    const totalS = centerlinePolyline.length > 0 ? getClosestPointOnPathWithDistance(centerlinePolyline, centerlinePolyline[centerlinePolyline.length - 1]).s : 0;
+
+                    orderedLanes.forEach(lane => lane.path = []);
+
+                    for (let s = 0; s <= totalS + STEP; s += STEP) {
+                        const currentS = Math.min(s, totalS);
+                        const refData = getPointAtDistanceAlongPath(centerlinePolyline, currentS);
+                        if (!refData) continue;
+
+                        // 輔助：尋找指定 Stroke，若不存在則退回最外側邊界
+                        const findStrokePt = (strokeId, isLeft) => {
+                            let stroke = link.strokes.find(st => st.id === strokeId);
+
+                            // [關鍵回退機制]：如果這條標線還沒開始 (例如虛線)，退回到最外側邊界
+                            if (!stroke || currentS < stroke.s_min - 0.5 || currentS > stroke.s_max + 0.5) {
+                                stroke = isLeft ? link.strokes[0] : link.strokes[link.strokes.length - 1];
+                            }
+
+                            // 找這條 Stroke 上距離當前切面最近的點
+                            let minDist = Infinity;
+                            let bestPt = refData.point;
+                            for (let i = 0; i < stroke.points.length - 1; i++) {
+                                const proj = Geom.Utils.getClosestPointOnSegment(refData.point, stroke.points[i], stroke.points[i + 1]);
+                                const d = Geom.Vec.dist(refData.point, proj);
+                                if (d < minDist) {
+                                    minDist = d;
+                                    bestPt = proj;
+                                }
+                            }
+                            return bestPt;
+                        };
+
+                        // 為每條車道計算真實物理中心
+                        orderedLanes.forEach(lane => {
+                            const leftPt = findStrokePt(lane.leftStrokeId, true);
+                            const rightPt = findStrokePt(lane.rightStrokeId, false);
+
+                            const midX = (leftPt.x + rightPt.x) / 2;
+                            const midY = (leftPt.y + rightPt.y) / 2;
+
+                            // 過濾過度密集的點
+                            if (lane.path.length > 0) {
+                                const lastP = lane.path[lane.path.length - 1];
+                                if (Math.hypot(midX - lastP.x, midY - lastP.y) < 0.1) return;
+                            }
+                            lane.path.push({ x: midX, y: midY });
+                        });
+                    } // for (s) 迴圈結束
+
+                    // =================================================================
+                    // ★★★ [新增] 軌跡平滑化濾波 (Path Smoothing) ★★★
+                    // 消除標線突然出現時的「階躍折角」，產生平滑的 S 型漸變切入曲線
+                    // =================================================================
+                    orderedLanes.forEach(lane => {
+                        // 確保點數夠多才進行平滑
+                        if (lane.path.length > 4) {
+                            const SMOOTH_ITERATIONS = 4; // 濾波次數 (次數越多越平滑，S型越長)
+                            const WINDOW_SIZE = 3;       // 觀察視窗大小 (往前/後看 3公尺)
+
+                            let currentPath = lane.path;
+                            for (let iter = 0; iter < SMOOTH_ITERATIONS; iter++) {
+                                let smoothed = [currentPath[0]]; // 強制鎖定起點不偏移 (確保完美銜接路口)
+
+                                for (let i = 1; i < currentPath.length - 1; i++) {
+                                    let sumX = 0, sumY = 0, count = 0;
+
+                                    // 計算局部視窗內的座標平均值
+                                    for (let j = -WINDOW_SIZE; j <= WINDOW_SIZE; j++) {
+                                        const idx = i + j;
+                                        if (idx >= 0 && idx < currentPath.length) {
+                                            sumX += currentPath[idx].x;
+                                            sumY += currentPath[idx].y;
+                                            count++;
+                                        }
+                                    }
+                                    smoothed.push({ x: sumX / count, y: sumY / count });
+                                }
+
+                                smoothed.push(currentPath[currentPath.length - 1]); // 強制鎖定終點
+                                currentPath = smoothed;
+                            }
+                            lane.path = currentPath; // 套用平滑後的軌跡
+                        }
+                    });
+                    // =================================================================
+
+                } else {
+                    // =================================================================
+                    // 傳統模式：維持原有的中心線平移邏輯
+                    // =================================================================
+                    for (let i = 0; i < centerlinePolyline.length; i++) {
+                        const centerPoint = centerlinePolyline[i];
+                        const normal = miteredNormals[i];
+                        let cumulativeWidth = 0;
+
+                        for (let j = 0; j < orderedLanes.length; j++) {
+                            const lane = orderedLanes[j];
+                            const laneCenterOffsetFromEdge = cumulativeWidth + lane.width / 2;
+                            const offsetFromRoadCenter = laneCenterOffsetFromEdge - totalWidth / 2;
+                            const lanePoint = Geom.Vec.add(centerPoint, Geom.Vec.scale(normal, offsetFromRoadCenter));
+                            lane.path.push(lanePoint);
+                            cumulativeWidth += lane.width;
+
+                            if (j < orderedLanes.length - 1) {
+                                const divider = link.dividingLines[j];
+                                const dividerOffsetFromRoadCenter = cumulativeWidth - totalWidth / 2;
+                                const linePoint = Geom.Vec.add(centerPoint, Geom.Vec.scale(normal, dividerOffsetFromRoadCenter));
+                                divider.path.push(linePoint);
+                            }
                         }
                     }
                 }
+
+                // 重新精算每一條車道的總長度
                 for (const lane of Object.values(link.lanes)) {
                     lane.length = 0;
                     for (let i = 0; i < lane.path.length - 1; i++) {
@@ -11691,7 +12391,6 @@ document.addEventListener('DOMContentLoaded', () => {
                                 const position = parseFloat(posStr);
                                 const lateralOffset = latStr ? parseFloat(latStr) : 0;
 
-                                // 利用道路中心線算出它的絕對 (X, Y) 座標
                                 if (centerlinePolyline.length > 1) {
                                     const posData = getPointAtDistanceAlongPath(centerlinePolyline, position);
                                     if (posData) {
@@ -11714,8 +12413,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     });
                 });
                 // =================================================================
-
-            });
+            }); // 結束 link 解析迴圈
 
             // --- 3. 解析 Nodes ---
             xmlDoc.querySelectorAll('Nodes > *').forEach(nodeEl => {
@@ -12150,25 +12848,50 @@ document.addEventListener('DOMContentLoaded', () => {
             // 輔助函數：獲取行穿線號誌ID
             const getCrosswalkSignalGroupId = (mark, nodeId, lineData) => {
                 if (mark.signalGroupId) return mark.signalGroupId;
-                const cwVecX = lineData.p2.x - lineData.p1.x;
-                const cwVecY = lineData.p2.y - lineData.p1.y;
+
+                let cwVecX = lineData.p2.x - lineData.p1.x;
+                let cwVecY = lineData.p2.y - lineData.p1.y;
+                if (lineData.roadAngle !== undefined) {
+                    cwVecX = -Math.sin(lineData.roadAngle);
+                    cwVecY = Math.cos(lineData.roadAngle);
+                }
+                const cwLen = Math.hypot(cwVecX, cwVecY);
+                if (cwLen > 0) { cwVecX /= cwLen; cwVecY /= cwLen; }
+
                 const node = nodes[nodeId];
                 if (node && node.transitions) {
                     for (const t of node.transitions) {
                         if (t.sourceLinkId !== t.destLinkId && t.turnGroupId) {
                             const srcL = links[t.sourceLinkId];
                             const dstL = links[t.destLinkId];
-                            if (srcL && dstL && srcL.lanes[t.sourceLaneIndex || 0] && dstL.lanes[t.destLaneIndex || 0]) {
-                                const srcPath = srcL.lanes[t.sourceLaneIndex || 0].path;
-                                const dstPath = dstL.lanes[t.destLaneIndex || 0].path;
-                                if (srcPath.length > 0 && dstPath.length > 0) {
-                                    const dx = dstPath[0].x - srcPath[srcPath.length - 1].x;
-                                    const dy = dstPath[0].y - srcPath[srcPath.length - 1].y;
-                                    const len = Math.hypot(dx, dy);
-                                    if (len > 0.1) {
-                                        const dot = (cwVecX * dx + cwVecY * dy) / (Math.hypot(cwVecX, cwVecY) * len);
-                                        if (Math.abs(dot) > 0.8) return t.turnGroupId;
+                            if (srcL && dstL) {
+                                const getRobustAngle = (lane, isEnd) => {
+                                    if (!lane || !lane.path || lane.path.length < 2) return 0;
+                                    const path = lane.path;
+                                    let p1, p2;
+                                    if (isEnd) {
+                                        p1 = path[Math.max(0, path.length - 5)];
+                                        p2 = path[path.length - 1];
+                                    } else {
+                                        p1 = path[0];
+                                        p2 = path[Math.min(path.length - 1, 4)];
                                     }
+                                    return Math.atan2(p2.y - p1.y, p2.x - p1.x);
+                                };
+
+                                const inAngle = getRobustAngle(srcL.lanes[t.sourceLaneIndex || 0], true);
+                                const outAngle = getRobustAngle(dstL.lanes[t.destLaneIndex || 0], false);
+
+                                let diff = Math.abs(outAngle - inAngle);
+                                while (diff > Math.PI) diff -= Math.PI * 2;
+                                diff = Math.abs(diff);
+
+                                // 嚴格篩選直行車流
+                                if (diff < 0.8) {
+                                    const vX = Math.cos(inAngle);
+                                    const vY = Math.sin(inAngle);
+                                    const dot = Math.abs(cwVecX * vX + cwVecY * vY);
+                                    if (dot > 0.85) return t.turnGroupId;
                                 }
                             }
                         }

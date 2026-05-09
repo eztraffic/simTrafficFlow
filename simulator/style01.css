@@ -1202,3 +1202,119 @@ td {
         transform: rotate(360deg);
     }
 }
+
+/* =========================================
+   下拉選單樣式 (Hover Dropdown - 遊戲選項)
+   ========================================= */
+.dropdown-hover {
+    position: relative;
+    display: inline-block;
+}
+
+.dropdown-btn {
+    background-color: #f1f5f9;
+    color: var(--text-main);
+    border: 1px solid var(--border);
+    padding: 6px 12px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    border-radius: 4px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.2s;
+}
+
+.dropdown-btn:hover {
+    background-color: var(--primary);
+    color: white;
+    border-color: var(--primary);
+}
+
+.dropdown-content {
+    display: none;
+    position: absolute;
+    /* 改用 top calc 往下推，並移除 margin-top */
+    top: calc(100% + 8px); 
+    left: 50%;
+    transform: translateX(-50%);
+    background-color: white;
+    min-width: 120px;
+    box-shadow: 0px 8px 16px 0px rgba(0,0,0,0.15);
+    border-radius: 6px;
+    border: 1px solid var(--border-light);
+    z-index: 100;
+    padding: 12px;
+    flex-direction: column;
+    gap: 12px;
+}
+
+/* ★★★ 解決消失問題的核心：建立透明橋樑 ★★★ */
+.dropdown-content::after {
+    content: '';
+    position: absolute;
+    bottom: 100%; /* 位於選單正上方 */
+    left: -10%;
+    width: 120%;  /* 稍微加寬，避免滑鼠斜向移動時超出範圍 */
+    height: 15px; /* 覆蓋按鈕與選單之間的空隙 */
+    background: transparent;
+}
+
+/* 產生頂部小箭頭 */
+.dropdown-content::before {
+    content: '';
+    position: absolute;
+    top: -6px;
+    left: 50%;
+    transform: translateX(-50%) rotate(45deg);
+    width: 10px;
+    height: 10px;
+    background-color: white;
+    border-top: 1px solid var(--border-light);
+    border-left: 1px solid var(--border-light);
+}
+
+/* 滑鼠移過時顯示選單 */
+.dropdown-hover:hover .dropdown-content {
+    display: flex;
+}
+
+/* 選單內的按鈕排版調整 */
+.dropdown-content .mini-switch {
+    width: 100%;
+    margin: 0;
+    padding: 2px 4px;
+    justify-content: flex-start;
+    transition: color 0.2s;
+}
+
+.dropdown-content .mini-switch:hover {
+    color: var(--primary);
+}
+
+/* =========================================
+   圖層單選按鈕樣式 (Radio Label)
+   ========================================= */
+.dropdown-content .radio-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    color: var(--text-muted);
+    user-select: none;
+    white-space: nowrap;
+    padding: 2px 4px;
+    transition: color 0.2s;
+}
+
+.dropdown-content .radio-label:hover {
+    color: var(--primary);
+}
+
+.dropdown-content .radio-label input[type="radio"] {
+    margin: 0;
+    accent-color: var(--primary);
+    cursor: pointer;
+}

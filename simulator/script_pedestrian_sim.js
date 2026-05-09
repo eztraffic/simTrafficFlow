@@ -63,9 +63,23 @@ class Pedestrian {
         let remainingTime = 999; // 預設充裕時間
 
         if (tfl && cw.turnGroupId) {
-            signal = tfl.getSignalForTurnGroup(cw.turnGroupId);
-            // 獲取該時相剩餘綠燈/黃燈秒數
-            remainingTime = tfl.getPedestrianRemainingTime(simTime, cw.turnGroupId);
+            // 獲取基礎燈號
+            let baseSignal = tfl.getSignalForTurnGroup(cw.turnGroupId);
+            // 獲取剩餘時間 (如果有實作此函數)
+            remainingTime = tfl.getPedestrianRemainingTime ? tfl.getPedestrianRemainingTime(simTime, cw.turnGroupId) : 999;
+
+            // ★ 如果幾何推算判定這是一組「衝突車流」，則進行燈號反轉
+            if (cw.invertSignal) {
+                if (baseSignal === 'Red') {
+                    signal = 'Green';
+                } else if (baseSignal === 'Yellow') {
+                    signal = 'Red'; // 車流黃燈時，行人視同紅燈禁止起步
+                } else {
+                    signal = 'Red';
+                }
+            } else {
+                signal = baseSignal;
+            }
         }
 
         if (this.state === 'WAITING') {
@@ -230,33 +244,80 @@ class PedestrianSimManager {
                     const lineData = window.calculateCrosswalkLine ? window.calculateCrosswalkLine(mark, this.network) : null;
                     if (lineData) {
                         let turnGroupId = null;
+                        let invertSignal = false; // ★ 修正：將變數提早到最外層宣告，解決 ReferenceError
 
                         // 1. 優先使用 XML 中明確綁定的行人號誌群組
                         if (mark.signalGroupId) {
                             turnGroupId = mark.signalGroupId;
                         }
-                        // 2. 若未綁定，使用幾何推算平行的車輛直行號誌
+                        // 2. 若未綁定，使用幾何推算平行的車輛號誌
                         else {
-                            const cwVecX = lineData.p2.x - lineData.p1.x;
-                            const cwVecY = lineData.p2.y - lineData.p1.y;
+                            let cwVecX = lineData.p2.x - lineData.p1.x;
+                            let cwVecY = lineData.p2.y - lineData.p1.y;
+                            if (lineData.roadAngle !== undefined) {
+                                cwVecX = -Math.sin(lineData.roadAngle);
+                                cwVecY = Math.cos(lineData.roadAngle);
+                            }
+                            const cwLen = Math.hypot(cwVecX, cwVecY);
+                            if (cwLen > 0) { cwVecX /= cwLen; cwVecY /= cwLen; }
+
                             const node = this.network.nodes[nodeId];
+                            let bestType = -1; // 紀錄最佳匹配權重
+
                             if (node && node.transitions) {
                                 for (const t of node.transitions) {
                                     if (t.sourceLinkId !== t.destLinkId && t.turnGroupId) {
                                         const srcL = this.network.links[t.sourceLinkId];
                                         const dstL = this.network.links[t.destLinkId];
                                         if (srcL && dstL) {
-                                            const srcPath = srcL.lanes[t.sourceLaneIndex || 0]?.path;
-                                            const dstPath = dstL.lanes[t.destLaneIndex || 0]?.path;
-                                            if (srcPath && dstPath && srcPath.length > 0 && dstPath.length > 0) {
-                                                const pSrc = srcPath[srcPath.length - 1];
-                                                const pDst = dstPath[0];
-                                                const dx = pDst.x - pSrc.x;
-                                                const dy = pDst.y - pSrc.y;
-                                                const len = Math.hypot(dx, dy);
-                                                if (len > 0.1) {
-                                                    const dot = (cwVecX * dx + cwVecY * dy) / (Math.hypot(cwVecX, cwVecY) * len);
-                                                    if (Math.abs(dot) > 0.8) { turnGroupId = t.turnGroupId; break; }
+                                            const getRobustAngle = (lane, isEnd) => {
+                                                if (!lane || !lane.path || lane.path.length < 2) return 0;
+                                                const path = lane.path;
+                                                let p1, p2;
+                                                if (isEnd) {
+                                                    p1 = path[Math.max(0, path.length - 5)];
+                                                    p2 = path[path.length - 1];
+                                                } else {
+                                                    p1 = path[0];
+                                                    p2 = path[Math.min(path.length - 1, 4)];
+                                                }
+                                                return Math.atan2(p2.y - p1.y, p2.x - p1.x);
+                                            };
+
+                                            const inAngle = getRobustAngle(srcL.lanes[t.sourceLaneIndex || 0], true);
+                                            const outAngle = getRobustAngle(dstL.lanes[t.destLaneIndex || 0], false);
+
+                                            let diff = Math.abs(outAngle - inAngle);
+                                            while (diff > Math.PI) diff -= Math.PI * 2;
+                                            diff = Math.abs(diff);
+
+                                            const vX = Math.cos(inAngle);
+                                            const vY = Math.sin(inAngle);
+                                            // dot 接近 1 代表平行，接近 0 代表垂直
+                                            const dot = Math.abs(cwVecX * vX + cwVecY * vY);
+
+                                            // 權重 3：最優先尋找平行且直行的伴隨車流
+                                            if (diff < 0.8 && dot > 0.85) {
+                                                if (bestType < 3) {
+                                                    bestType = 3;
+                                                    turnGroupId = t.turnGroupId;
+                                                    invertSignal = false;
+                                                }
+                                            }
+                                            // 權重 2：退而尋找平行的轉彎車流
+                                            else if (dot > 0.85) {
+                                                if (bestType < 2) {
+                                                    bestType = 2;
+                                                    turnGroupId = t.turnGroupId;
+                                                    invertSignal = false;
+                                                }
+                                            }
+                                            // 權重 1：尋找位於同一道路的衝突車流，採用反轉燈號 (專治T型/特殊路口)
+                                            else if (dot < 0.5 && (t.sourceLinkId == mark.linkId || t.destLinkId == mark.linkId)) {
+                                                if (bestType < 1) {
+                                                    bestType = 1;
+                                                    turnGroupId = t.turnGroupId;
+                                                    invertSignal = true; 
                                                 }
                                             }
                                         }
@@ -264,7 +325,8 @@ class PedestrianSimManager {
                                 }
                             }
                         }
-                        // ★ 新增：判斷此斑馬線是否有植栽庇護島
+
+                        // 新增：判斷此斑馬線是否有植栽庇護島
                         let hasRefuge = false;
                         if (mark.spanToLinkId && this.network.medians) {
                             const median = this.network.medians.find(m =>
@@ -276,15 +338,15 @@ class PedestrianSimManager {
                             }
                         }
 
-                        // ★ 標記這是一般斑馬線，並傳入 hasRefuge 狀態
                         cws.push({
                             id: mark.id,
                             p1: lineData.p1,
                             p2: lineData.p2,
                             width: lineData.width,
                             turnGroupId: turnGroupId,
+                            invertSignal: invertSignal, // ★ 這裡現在可以正確讀取到變數了
                             isDiagonal: false,
-                            hasRefuge: hasRefuge // ★ 新增參數
+                            hasRefuge: hasRefuge
                         });
                     }
                 }
