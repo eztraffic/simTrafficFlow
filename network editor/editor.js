@@ -50,17 +50,17 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- [新增] Lane-based 標線語意字典 (依據真實公尺比例調整) ---
     const STROKE_TYPES = {
         // width: 0.2 (公尺寬), dash: [4, 6] 代表 4公尺實線配6公尺空白, gap: 0.2 (雙線間距 20公分)
-        'boundary': { color: '#f97316', dash: [], width: 0.2, label: 'Boundary (路面邊線)' },
-        'yellow_dashed': { color: '#eab308', dash: [4, 6], width: 0.15, label: 'Yellow Dashed (單黃虛線)' },
-        'yellow_double': { color: '#eab308', dual: true, leftDash: [], rightDash: [], width: 0.15, gap: 0.2, label: 'Yellow Double (雙黃實線)' },
-        'yellow_solid_dashed': { color: '#eab308', dual: true, leftDash: [], rightDash: [4, 6], width: 0.15, gap: 0.2, label: 'Yellow Solid/Dash (左實右虛)' },
-        'yellow_dashed_solid': { color: '#eab308', dual: true, leftDash: [4, 6], rightDash: [], width: 0.15, gap: 0.2, label: 'Yellow Dash/Solid (左虛右實)' },
+        'boundary': { color: '#f97316', dash: [], width: 0.8, label: 'Boundary (路面邊線)' },
+        'yellow_dashed': { color: '#eab308', dash: [4, 6], width: 0.8, label: 'Yellow Dashed (單黃虛線)' },
+        'yellow_double': { color: '#eab308', dual: true, leftDash: [], rightDash: [], width: 0.8, gap: 0.2, label: 'Yellow Double (雙黃實線)' },
+        'yellow_solid_dashed': { color: '#eab308', dual: true, leftDash: [], rightDash: [4, 6], width: 0.8, gap: 0.2, label: 'Yellow Solid/Dash (左實右虛)' },
+        'yellow_dashed_solid': { color: '#eab308', dual: true, leftDash: [4, 6], rightDash: [], width: 0.8, gap: 0.2, label: 'Yellow Dash/Solid (左虛右實)' },
 
-        'white_solid': { color: '#ffffff', dash: [], width: 0.15, label: 'White Solid (白實線)' },
-        'white_dashed': { color: '#ffffff', dash: [4, 6], width: 0.15, label: 'White Dashed (白虛線)' },
-        'white_double': { color: '#ffffff', dual: true, leftDash: [], rightDash: [], width: 0.15, gap: 0.2, label: 'White Double (雙白實線)' },
-        'white_solid_dashed': { color: '#ffffff', dual: true, leftDash: [], rightDash: [4, 6], width: 0.15, gap: 0.2, label: 'White Solid/Dash (左實右虛)' },
-        'white_dashed_solid': { color: '#ffffff', dual: true, leftDash: [4, 6], rightDash: [], width: 0.15, gap: 0.2, label: 'White Dash/Solid (左虛右實)' }
+        'white_solid': { color: '#ffffff', dash: [], width: 0.8, label: 'White Solid (白實線)' },
+        'white_dashed': { color: '#ffffff', dash: [4, 6], width: 0.8, label: 'White Dashed (白虛線)' },
+        'white_double': { color: '#ffffff', dual: true, leftDash: [], rightDash: [], width: 0.8, gap: 0.2, label: 'White Double (雙白實線)' },
+        'white_solid_dashed': { color: '#ffffff', dual: true, leftDash: [], rightDash: [4, 6], width: 0.8, gap: 0.2, label: 'White Solid/Dash (左實右虛)' },
+        'white_dashed_solid': { color: '#ffffff', dual: true, leftDash: [4, 6], rightDash: [], width: 0.8, gap: 0.2, label: 'White Dash/Solid (左虛右實)' }
     };
 
     // --- [新增] Lane-based 草稿狀態 ---
@@ -900,8 +900,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // --- [新增] Lane-Based 多型路徑計算 ---
         if (link.geometryType === 'lane-based' && link.strokes && link.strokes.length > 1) {
-            const leftStroke = link.strokes[laneIndex];
-            const rightStroke = link.strokes[laneIndex + 1] || link.strokes[link.strokes.length - 1];
+            const lane = link.lanes[laneIndex];
+
+            // ★★★ [核心修正] 利用 ID 尋找真實標線 ★★★
+            let leftStroke, rightStroke;
+            if (lane && lane.leftStrokeId !== undefined && lane.rightStrokeId !== undefined) {
+                leftStroke = link.strokes.find(s => s.id == lane.leftStrokeId);
+                rightStroke = link.strokes.find(s => s.id == lane.rightStrokeId);
+            }
+
+            // 舊資料防呆：找不到 ID 則回歸 Index
+            if (!leftStroke) leftStroke = link.strokes[laneIndex];
+            if (!rightStroke) rightStroke = link.strokes[laneIndex + 1] || link.strokes[link.strokes.length - 1];
 
             if (leftStroke && rightStroke) {
                 const SEGMENTS = 20;
@@ -962,59 +972,218 @@ document.addEventListener('DOMContentLoaded', () => {
         return lanePath;
     }
 
+    // ==========================================
+    // [新增/修改] Lane-Based 空間排序與幾何運算核心
+    // ==========================================
+
     /**
-     * 將使用者畫的任意標線陣列，按空間位置 (由左至右) 排序
+     * 計算單一點到不規則折線的「最短帶號距離 (Signed Distance)」
+     * 正值代表點在折線的右側，負值代表在左側 (依據折線前進方向)
+     */
+    function getSignedDistToPolyline(pt, polyline) {
+        let minDist = Infinity;
+        let bestSign = 1;
+
+        for (let i = 0; i < polyline.length - 1; i++) {
+            const p1 = polyline[i];
+            const p2 = polyline[i + 1];
+
+            // 找出點到該線段的最短投影點
+            const proj = projectPointOnSegment(pt, p1, p2);
+            const dist = vecLen(getVector(pt, proj));
+
+            if (dist < minDist) {
+                minDist = dist;
+                // 利用該段線段的「局部法向量 (Local Normal)」來判斷左右
+                const segVec = normalize(getVector(p1, p2));
+                const rightNormal = getNormal(segVec); // 指向右側
+                const vToPt = getVector(p1, pt);
+                bestSign = dot(vToPt, rightNormal) >= 0 ? 1 : -1;
+            }
+        }
+        return minDist * bestSign;
+    }
+
+    /**
+     * 計算一整條標線 (Stroke) 相對於基準線 (Reference Line) 的平均空間位置
+     * 透過多點採樣，完美克服偏心、曲折或長短不一造成的誤判
+     */
+    function getAverageSignedDist(strokePoints, refPolyline) {
+        // 將標線等距切成 5 個採樣點 (0%, 25%, 50%, 75%, 100%)
+        const samples = resamplePolyline(strokePoints, 4);
+        let sumDist = 0;
+        for (let pt of samples) {
+            sumDist += getSignedDistToPolyline(pt, refPolyline);
+        }
+        return sumDist / samples.length;
+    }
+
+    /**
+     * 將使用者畫的任意標線陣列，按空間位置 (由左至右) 精確排序
      */
     function spatialSortStrokes(strokes) {
         if (strokes.length <= 1) return strokes;
 
-        // 取第一條線作為基準軸
+        // 取第一條線作為空間基準軸
         const baseLine = strokes[0].rawPoints;
-        const baseP1 = baseLine[0];
-        const baseP2 = baseLine[1];
 
-        // 計算基準線的方向與法向量 (向右)
-        const baseVec = normalize(getVector(baseP1, baseP2));
-        const baseNormal = getNormal(baseVec);
-
-        // 將所有線的起點，投影到該法向量上，並根據投影距離排序
         strokes.forEach(stroke => {
-            const pt = stroke.rawPoints[0];
-            const v = getVector(baseP1, pt);
-            // 點積代表在法向量軸上的距離 (越負越在左邊，越正越在右邊)
-            stroke.projectionDist = dot(v, baseNormal);
+            // 計算整條線相對基準軸的平均位置 (越負越在左，越正越在右)
+            stroke.projectionDist = getAverageSignedDist(stroke.rawPoints, baseLine);
         });
 
         return strokes.sort((a, b) => a.projectionDist - b.projectionDist);
     }
 
+    // 當對向車道 (Backward Link) 共用同一條不對稱標線時，視覺語意必須反轉
+    function flipStrokeSemantics(strokeType) {
+        const flipMap = {
+            'yellow_solid_dashed': 'yellow_dashed_solid',
+            'yellow_dashed_solid': 'yellow_solid_dashed',
+            'white_solid_dashed': 'white_dashed_solid',
+            'white_dashed_solid': 'white_solid_dashed'
+        };
+        return flipMap[strokeType] || strokeType;
+    }
+
+    // --- [新增輔助函數] 標線語意反轉 ---
+    // 當對向車道 (Backward Link) 共用同一條不對稱標線時，視覺語意必須反轉
+    function flipStrokeSemantics(strokeType) {
+        const flipMap = {
+            'yellow_solid_dashed': 'yellow_dashed_solid',
+            'yellow_dashed_solid': 'yellow_solid_dashed',
+            'white_solid_dashed': 'white_dashed_solid',
+            'white_dashed_solid': 'white_solid_dashed'
+        };
+        return flipMap[strokeType] || strokeType;
+    }
+
     /**
-         * Lane-Based 生成引擎 (重構版)
-         */
+     * Lane-Based 生成引擎 (支援黃線偏心自動切割雙向)
+     */
     function generateLaneBasedLink(strokesArray) {
-        // 1. 空間排序 (左到右)
-        const sortedStrokes = spatialSortStrokes(strokesArray);
+        if (strokesArray.length < 2) return;
 
-        // 2. 建立 Link 物件 (暫時給假中心點，稍後會被自動更新覆蓋)
-        const logicalLaneCount = sortedStrokes.length - 1;
-        const newLink = createLink([{ x: 0, y: 0 }, { x: 1, y: 1 }], logicalLaneCount);
+        // 1. 統一所有標線的初始方向 (防呆：防止使用者反著畫)
+        // 以第一條畫的線(通常是邊界或黃線)為總基準方向
+        const globalBasePts = strokesArray[0].rawPoints;
+        const globalBaseVec = normalize(getVector(globalBasePts[0], globalBasePts[globalBasePts.length - 1]));
 
-        newLink.name = `LaneBased_${idCounter}`;
-        newLink.geometryType = 'lane-based';
+        strokesArray.forEach(s => {
+            const sPts = s.rawPoints;
+            const sVec = normalize(getVector(sPts[0], sPts[sPts.length - 1]));
+            // 如果這條線的大方向與基準線相反，先將其點位反轉對齊
+            if (dot(sVec, globalBaseVec) < 0) {
+                s.rawPoints.reverse();
+            }
+        });
 
-        // 儲存重構後的標線資料
-        newLink.strokes = sortedStrokes.map(s => ({
-            type: s.type,
-            points: s.rawPoints
-        }));
+        // 2. 尋找「基準分割線」 (尋找黃線)
+        let centerStrokeIndex = -1;
+        for (let i = 0; i < strokesArray.length; i++) {
+            if (strokesArray[i].type.includes('yellow')) {
+                centerStrokeIndex = i;
+                break;
+            }
+        }
 
-        // 3. 呼叫同步函數，自動計算出正確的中心線
-        updateLaneBasedGeometry(newLink);
+        // ==========================================
+        // [模式 A] 單向路段 (無黃線)
+        // ==========================================
+        if (centerStrokeIndex === -1) {
+            const sortedStrokes = spatialSortStrokes(strokesArray);
+            const logicalLaneCount = Math.max(1, sortedStrokes.length - 1);
+            const newLink = createLink([{ x: 0, y: 0 }, { x: 1, y: 1 }], logicalLaneCount);
 
-        // 4. 重繪與選取
-        drawLink(newLink);
-        selectObject(newLink);
+            newLink.name = `LaneBased_${idCounter}`;
+            newLink.geometryType = 'lane-based';
+            newLink.strokes = sortedStrokes.map(s => ({ type: s.type, points: s.rawPoints }));
+
+            updateLaneBasedGeometry(newLink);
+            drawLink(newLink);
+            selectObject(newLink);
+            saveState();
+            return;
+        }
+
+        // ==========================================
+        // [模式 B] 雙向路段 (以黃線為基準軸切割)
+        // ==========================================
+        const centerStroke = strokesArray[centerStrokeIndex];
+        const forwardStrokes = [];
+        const backwardStrokes = [];
+
+        // 3. 空間分流：利用積分採樣判斷標線在黃線的左邊還是右邊
+        strokesArray.forEach((stroke, idx) => {
+            if (idx === centerStrokeIndex) return;
+
+            // 計算這條線相對於黃線的平均距離
+            const avgDist = getAverageSignedDist(stroke.rawPoints, centerStroke.rawPoints);
+            const strokeCopy = { type: stroke.type, rawPoints: [...stroke.rawPoints] };
+
+            if (avgDist > 0.1) {
+                forwardStrokes.push(strokeCopy);  // 在右側 -> 順向車道
+            } else if (avgDist < -0.1) {
+                backwardStrokes.push(strokeCopy); // 在左側 -> 逆向車道
+            }
+        });
+
+        // 4. 處理順向路段 (Forward Link)
+        if (forwardStrokes.length > 0) {
+            forwardStrokes.push({ type: centerStroke.type, rawPoints: [...centerStroke.rawPoints] });
+
+            const sortedF = spatialSortStrokes(forwardStrokes);
+            const linkF = createLink([{ x: 0, y: 0 }, { x: 1, y: 1 }], Math.max(1, sortedF.length - 1));
+            linkF.name = `LaneBased_${idCounter}_F`;
+            linkF.geometryType = 'lane-based';
+
+            // ★★★ [核心修正] 生成時必須明確賦予 Stroke ID ★★★
+            linkF.strokes = sortedF.map((s, idx) => ({ id: `${idx}`, type: s.type, points: s.rawPoints }));
+            // 明確綁定左右邊界 ID
+            linkF.lanes.forEach((lane, idx) => {
+                lane.leftStrokeId = `${idx}`;
+                lane.rightStrokeId = `${idx + 1}`;
+            });
+
+            updateLaneBasedGeometry(linkF);
+            drawLink(linkF);
+
+            centerStroke.forwardLinkId = linkF.id;
+        }
+
+        // 5. 處理逆向路段 (Backward Link)
+        if (backwardStrokes.length > 0) {
+            const flippedType = flipStrokeSemantics(centerStroke.type);
+            backwardStrokes.push({ type: flippedType, rawPoints: [...centerStroke.rawPoints] });
+
+            let sortedB = spatialSortStrokes(backwardStrokes);
+            sortedB.reverse();
+            sortedB.forEach(s => s.rawPoints.reverse());
+
+            const linkB = createLink([{ x: 0, y: 0 }, { x: 1, y: 1 }], Math.max(1, sortedB.length - 1));
+            linkB.name = `LaneBased_${idCounter}_B`;
+            linkB.geometryType = 'lane-based';
+
+            // ★★★ [核心修正] 生成時必須明確賦予 Stroke ID ★★★
+            linkB.strokes = sortedB.map((s, idx) => ({ id: `${idx}`, type: s.type, points: s.rawPoints }));
+            // 明確綁定左右邊界 ID
+            linkB.lanes.forEach((lane, idx) => {
+                lane.leftStrokeId = `${idx}`;
+                lane.rightStrokeId = `${idx + 1}`;
+            });
+
+            updateLaneBasedGeometry(linkB);
+            drawLink(linkB);
+
+            if (centerStroke.forwardLinkId) {
+                const linkF = network.links[centerStroke.forwardLinkId];
+                linkF.pairInfo = { pairId: linkB.id, type: 'forward', medianWidth: 0.2 };
+                linkB.pairInfo = { pairId: linkF.id, type: 'backward', medianWidth: 0.2 };
+            }
+        }
+
         saveState();
+        layer.batchDraw();
     }
     /**
          * [新增] 共用更新：更新中心線與所有附屬物件的位置
@@ -6543,11 +6712,18 @@ document.addEventListener('DOMContentLoaded', () => {
                              <span class="prop-value-text">${getLinkTotalWidth(obj).toFixed(2)} m</span>
                          </div>`;
 
-                // 3. 車道配置
+                // ============================================================
+                // 3. 車道配置 (Lanes Configuration - 支援動態拓撲分析)
+                // ============================================================
                 content += `<div class="prop-section-header">Lanes Configuration</div>`;
+
+                // 判斷是否為 lane-based 並預先取得 Ports 以供狀態分析
+                const isLaneBased = (obj.geometryType === 'lane-based');
+                const portsInfo = isLaneBased ? getLaneBasedPorts(obj) : null;
+
                 content += `<div class="prop-row">
                              <span class="prop-label">Count</span>
-                             <input type="number" id="prop-lanes" class="prop-input" value="${obj.lanes.length}" min="1" max="10">
+                             <input type="number" id="prop-lanes" class="prop-input" value="${obj.lanes.length}" min="1" max="10" ${isLaneBased ? 'disabled title="Lane-based 路段的車道數由標線數量自動決定"' : ''}>
                          </div>`;
 
                 // 確保預設車種存在
@@ -6559,12 +6735,43 @@ document.addEventListener('DOMContentLoaded', () => {
                 const availableProfiles = Object.keys(network.vehicleProfiles);
 
                 content += `<label class="prop-label" style="font-size:0.75rem; margin-top:8px; display:block;">Individual Lanes Setup</label>`;
+                if (isLaneBased) {
+                    content += `<div class="prop-hint" style="margin-bottom:8px;"><i class="fa-solid fa-mouse-pointer"></i> 游標移至下方車道卡片，可在畫布上預覽該車道的實體範圍。</div>`;
+                }
                 content += `<div class="prop-grid-container" id="lane-widths-container" style="display:flex; flex-direction:column; gap:8px;">`;
+
                 obj.lanes.forEach((lane, index) => {
-                    content += `<div class="prop-card" style="padding:8px; background:#f8fafc; border:1px solid #e2e8f0;">
+                    // [新增] 動態車道狀態判定與標籤生成
+                    let laneDesc = `L${index + 1}`;
+                    let statusBadge = '';
+
+                    if (isLaneBased && portsInfo) {
+                        const hasStart = portsInfo.startPorts.some(p => p.laneIndex === index);
+                        const hasEnd = portsInfo.endPorts.some(p => p.laneIndex === index);
+
+                        if (hasStart && hasEnd) {
+                            laneDesc += ' (Through)';
+                            statusBadge = '<span style="font-size:0.65rem; background:#dcfce7; color:#059669; padding:2px 4px; border-radius:3px; margin-left:6px;">貫通</span>';
+                        } else if (!hasStart && hasEnd) {
+                            laneDesc += ' (Added)';
+                            statusBadge = '<span style="font-size:0.65rem; background:#fef3c7; color:#d97706; padding:2px 4px; border-radius:3px; margin-left:6px;">附加/漸寬</span>';
+                        } else if (hasStart && !hasEnd) {
+                            laneDesc += ' (Dropped)';
+                            statusBadge = '<span style="font-size:0.65rem; background:#fee2e2; color:#dc2626; padding:2px 4px; border-radius:3px; margin-left:6px;">縮減/消失</span>';
+                        } else {
+                            laneDesc += ' (Island)';
+                            statusBadge = '<span style="font-size:0.65rem; background:#f1f5f9; color:#64748b; padding:2px 4px; border-radius:3px; margin-left:6px;">封閉/槽化</span>';
+                        }
+                    }
+
+                    // 加入 lane-config-card class 以供互動監聽
+                    content += `<div class="prop-card lane-config-card" data-lane-index="${index}" style="padding:8px; background:#f8fafc; border:1px solid #e2e8f0; transition: border-color 0.2s, box-shadow 0.2s;">
                                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-                                        <span style="font-weight:bold; color:#475569; font-size:0.8rem;">L${index + 1} Width (m)</span>
-                                        <input type="number" id="prop-lane-width-${index}" class="prop-grid-input prop-lane-width" data-index="${index}" value="${lane.width.toFixed(2)}" step="0.1" min="1" style="width:70px;">
+                                        <span style="font-weight:bold; color:#475569; font-size:0.8rem; display:flex; align-items:center;">${laneDesc} ${statusBadge}</span>
+                                        <div style="display:flex; align-items:center; gap:4px;">
+                                            <span style="font-size:0.7rem; color:#64748b;">Width(m)</span>
+                                            <input type="number" id="prop-lane-width-${index}" class="prop-grid-input prop-lane-width" data-index="${index}" value="${lane.width.toFixed(2)}" step="0.1" min="1" style="width:55px;" ${isLaneBased ? 'disabled title="Lane-based 的寬度由標線自動計算"' : ''}>
+                                        </div>
                                     </div>
                                     <div style="font-size:0.7rem; color:#64748b; margin-bottom:4px;">Allowed Vehicles (Uncheck to restrict)</div>
                                     <div style="display:flex; flex-wrap:wrap; gap:6px;">`;
@@ -8490,6 +8697,188 @@ document.addEventListener('DOMContentLoaded', () => {
             });
 
             // ============================================================
+            // [新增] 車種限制 Checkbox 變更事件
+            // ============================================================
+            document.querySelectorAll('.prop-lane-vehicle-cb').forEach(cb => {
+                cb.addEventListener('change', (e) => {
+                    const laneIdx = parseInt(e.target.dataset.lane, 10);
+                    const profId = e.target.value;
+                    const lane = obj.lanes[laneIdx];
+
+                    if (!lane.allowedVehicleProfiles || lane.allowedVehicleProfiles.length === 0) {
+                        // 如果原本是空的 (代表全允許)，在第一次取消勾選時，先初始化為包含所有現有車種
+                        lane.allowedVehicleProfiles = Object.keys(network.vehicleProfiles);
+                    }
+
+                    if (e.target.checked) {
+                        if (!lane.allowedVehicleProfiles.includes(profId)) {
+                            lane.allowedVehicleProfiles.push(profId);
+                        }
+                    } else {
+                        // 取消勾選時移除該車種
+                        lane.allowedVehicleProfiles = lane.allowedVehicleProfiles.filter(id => id !== profId);
+                    }
+                    saveState(); // 觸發 Undo 紀錄
+                });
+            });
+
+            // ============================================================
+            // [精準輪廓版] 邏輯車道 Hover 實體多邊形高亮事件
+            // ============================================================
+            if (obj.geometryType === 'lane-based') {
+                const clearLaneHighlight = () => {
+                    layer.find('.lane-polygon-highlight').forEach(s => s.destroy());
+                    layer.batchDraw();
+                };
+
+                document.querySelectorAll('.lane-config-card').forEach(card => {
+                    card.addEventListener('mouseenter', (e) => {
+                        const laneIdx = parseInt(e.currentTarget.dataset.laneIndex, 10);
+                        const lane = obj.lanes[laneIdx];
+                        // 🟢 修正 4：避免 undefined 匹配到 undefined 的致命錯誤
+                        let leftStroke = undefined;
+                        let rightStroke = undefined;
+
+                        if (lane.leftStrokeId !== undefined) {
+                            leftStroke = obj.strokes.find(s => String(s.id) === String(lane.leftStrokeId));
+                        }
+                        if (lane.rightStrokeId !== undefined) {
+                            rightStroke = obj.strokes.find(s => String(s.id) === String(lane.rightStrokeId));
+                        }
+
+                        // 舊檔或防呆降級：依賴陣列順序
+                        if (!leftStroke) leftStroke = obj.strokes[laneIdx];
+                        if (!rightStroke) rightStroke = obj.strokes[laneIdx + 1] || obj.strokes[obj.strokes.length - 1];
+                        if (!leftStroke || !rightStroke) return;
+
+                        let leftPts = [...leftStroke.points];
+                        let rightPts = [...rightStroke.points];
+
+                        // 2. 幾何方向對齊：確保兩條線段前進方向一致 (防多邊形自我交叉成麻花)
+                        const dNorm = Math.hypot(leftPts[0].x - rightPts[0].x, leftPts[0].y - rightPts[0].y) +
+                            Math.hypot(leftPts[leftPts.length - 1].x - rightPts[rightPts.length - 1].x, leftPts[leftPts.length - 1].y - rightPts[rightPts.length - 1].y);
+                        const dRev = Math.hypot(leftPts[0].x - rightPts[rightPts.length - 1].x, leftPts[0].y - rightPts[rightPts.length - 1].y) +
+                            Math.hypot(leftPts[leftPts.length - 1].x - rightPts[0].x, leftPts[leftPts.length - 1].y - rightPts[0].y);
+
+                        if (dRev < dNorm) {
+                            rightPts.reverse(); // 方向顛倒，強制轉正
+                        }
+
+                        // 3. 多邊形重疊區域計算 (沿著路徑長度 S 軸投影)
+                        const getPolyLength = (pts) => {
+                            let l = 0;
+                            for (let i = 0; i < pts.length - 1; i++) l += Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y);
+                            return l;
+                        };
+
+                        const getPointAtS = (pts, dist) => {
+                            if (dist <= 0) return pts[0];
+                            let cur = 0;
+                            for (let i = 0; i < pts.length - 1; i++) {
+                                const d = Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y);
+                                if (cur + d >= dist) {
+                                    const t = (dist - cur) / d;
+                                    return { x: pts[i].x + t * (pts[i + 1].x - pts[i].x), y: pts[i].y + t * (pts[i + 1].y - pts[i].y) };
+                                }
+                                cur += d;
+                            }
+                            return pts[pts.length - 1];
+                        };
+
+                        const projectToPolylineS = (pt, poly) => {
+                            let minDist = Infinity;
+                            let bestS = 0;
+                            let curL = 0;
+                            for (let i = 0; i < poly.length - 1; i++) {
+                                const p1 = poly[i], p2 = poly[i + 1];
+                                const segL = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+                                if (segL === 0) continue;
+                                let t = ((pt.x - p1.x) * (p2.x - p1.x) + (pt.y - p1.y) * (p2.y - p1.y)) / (segL * segL);
+                                t = Math.max(0, Math.min(1, t));
+                                const projX = p1.x + t * (p2.x - p1.x);
+                                const projY = p1.y + t * (p2.y - p1.y);
+                                const d = Math.hypot(pt.x - projX, pt.y - projY);
+                                if (d < minDist) {
+                                    minDist = d;
+                                    bestS = curL + t * segL;
+                                }
+                                curL += segL;
+                            }
+                            return bestS;
+                        };
+
+                        const lenL = getPolyLength(leftPts);
+                        const lenR = getPolyLength(rightPts);
+
+                        // L 的兩端映射到 R，R 的兩端映射到 L，求最安全的重疊交集區間
+                        const projR0_on_L = projectToPolylineS(rightPts[0], leftPts);
+                        const projREnd_on_L = projectToPolylineS(rightPts[rightPts.length - 1], leftPts);
+                        const startL = Math.max(0, Math.min(projR0_on_L, projREnd_on_L));
+                        const endL = Math.min(lenL, Math.max(projR0_on_L, projREnd_on_L));
+
+                        const projL0_on_R = projectToPolylineS(leftPts[0], rightPts);
+                        const projLEnd_on_R = projectToPolylineS(leftPts[leftPts.length - 1], rightPts);
+                        const startR = Math.max(0, Math.min(projL0_on_R, projLEnd_on_R));
+                        const endR = Math.min(lenR, Math.max(projL0_on_R, projLEnd_on_R));
+
+                        // 如果重疊長度過短 (< 0.1m)，視為無效車道
+                        if (endL - startL < 0.1 || endR - startR < 0.1) return;
+
+                        // 4. 重建精確裁切後的邊界點列
+                        const finalL = [getPointAtS(leftPts, startL)];
+                        let curL = 0;
+                        for (let i = 0; i < leftPts.length - 1; i++) {
+                            curL += Math.hypot(leftPts[i + 1].x - leftPts[i].x, leftPts[i + 1].y - leftPts[i].y);
+                            if (curL > startL + 0.05 && curL < endL - 0.05) finalL.push(leftPts[i + 1]);
+                        }
+                        finalL.push(getPointAtS(leftPts, endL));
+
+                        const finalR = [getPointAtS(rightPts, startR)];
+                        let curR = 0;
+                        for (let i = 0; i < rightPts.length - 1; i++) {
+                            curR += Math.hypot(rightPts[i + 1].x - rightPts[i].x, rightPts[i + 1].y - rightPts[i].y);
+                            if (curR > startR + 0.05 && curR < endR - 0.05) finalR.push(rightPts[i + 1]);
+                        }
+                        finalR.push(getPointAtS(rightPts, endR));
+
+                        // 5. 繪製 Konva 閉合多邊形
+                        const highlightShape = new Konva.Shape({
+                            sceneFunc: (ctx, shape) => {
+                                ctx.beginPath();
+                                ctx.moveTo(finalL[0].x, finalL[0].y);
+                                // 順著左邊界往下畫
+                                for (let i = 1; i < finalL.length; i++) ctx.lineTo(finalL[i].x, finalL[i].y);
+                                // 右側邊界必須「反向」接回，形成完美閉合迴圈
+                                for (let i = finalR.length - 1; i >= 0; i--) ctx.lineTo(finalR[i].x, finalR[i].y);
+                                ctx.closePath();
+                                ctx.fillShape(shape);
+                                ctx.strokeShape(shape);
+                            },
+                            fill: 'rgba(59, 130, 246, 0.4)', // 半透明藍色
+                            stroke: '#2563eb', // 深藍色邊框
+                            strokeWidth: 2,
+                            name: 'lane-polygon-highlight',
+                            listening: false // 不攔截滑鼠點擊
+                        });
+
+                        clearLaneHighlight();
+                        layer.add(highlightShape);
+                        highlightShape.moveToTop();
+                        layer.batchDraw();
+
+                        // 面板卡片的視覺回饋
+                        e.currentTarget.style.borderColor = '#3b82f6';
+                        e.currentTarget.style.boxShadow = '0 0 0 1px #3b82f6';
+                    });
+
+                    card.addEventListener('mouseleave', (e) => {
+                        clearLaneHighlight();
+                        e.currentTarget.style.borderColor = '#e2e8f0';
+                        e.currentTarget.style.boxShadow = 'none';
+                    });
+                });
+            }
+            // ============================================================
         }
 
         // --- CONNECTION (單一連接線) ---
@@ -8964,15 +9353,48 @@ document.addEventListener('DOMContentLoaded', () => {
                                 }
                                 obj.width = currentSpanWidth;
                             } else {
-                                // 原本計算 selectedLanes 的邏輯
+                                // ==========================================
+                                // [修正] Lane-Based 多型標線寬度精準計算
+                                // ==========================================
                                 const selectedLanes = obj.laneIndices.sort((a, b) => a - b);
-                                let totalW = 0;
-                                selectedLanes.forEach(idx => { if (link.lanes[idx]) totalW += link.lanes[idx].width; });
-                                obj.width = totalW || 2.5;
+                                
+                                if (link.geometryType === 'lane-based' && link.strokes && link.strokes.length >= 2 && selectedLanes.length > 0) {
+                                    // 取得標線在當前 position 的實際中心點
+                                    const { point } = getPointAlongPolyline(link.waypoints, obj.position);
+                                    
+                                    // 輔助函數：取得實際實體標線上的點 (重用繪圖邏輯)
+                                    const getStrokePointForWidth = (targetLink, strokeIdx, refPt) => {
+                                        let stroke = targetLink.strokes[strokeIdx];
+                                        if (!stroke) stroke = (strokeIdx <= 0) ? targetLink.strokes[0] : targetLink.strokes[targetLink.strokes.length - 1];
+                                        
+                                        let minDist = Infinity;
+                                        let bestPt = refPt;
+                                        for (let i = 0; i < stroke.points.length - 1; i++) {
+                                            const proj = projectPointOnSegment(refPt, stroke.points[i], stroke.points[i + 1]);
+                                            const d = vecLen(getVector(refPt, proj));
+                                            if (d < minDist) { minDist = d; bestPt = proj; }
+                                        }
+                                        return bestPt;
+                                    };
+
+                                    // 計算最左側與最右側標線在該點的投影點
+                                    const minIdx = selectedLanes[0];
+                                    const maxIdx = selectedLanes[selectedLanes.length - 1];
+                                    const pLeft = getStrokePointForWidth(link, minIdx, point);
+                                    const pRight = getStrokePointForWidth(link, maxIdx + 1, point);
+                                    
+                                    // 根據兩點座標計算實際幾何寬度
+                                    obj.width = vecLen(getVector(pLeft, pRight));
+                                    
+                                } else {
+                                    // 原本 Standard 模式計算 selectedLanes 的邏輯
+                                    let totalW = 0;
+                                    selectedLanes.forEach(idx => { if (link.lanes[idx]) totalW += link.lanes[idx].width; });
+                                    obj.width = totalW || 2.5;
+                                }
                             }
 
                             const { point, vec } = getPointAlongPolyline(link.waypoints, obj.position);
-                            const normal = getNormal(vec);
                             // 自由模式下退後以中心定位
                             const backVec = scale(normalize(vec), -1);
                             const centerPos = add(point, scale(backVec, (obj.length || 3) / 2));
@@ -11193,6 +11615,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (strokesContainer) {
                     newLink.strokes = [];
                     getChildrenByLocalName(strokesContainer, "Stroke").forEach(strokeNode => {
+                        const sId = strokeNode.getAttribute("id"); // 🟢 修正 1：讀取 Stroke ID
                         const sType = strokeNode.getAttribute("type");
                         const pts = [];
                         getChildrenByLocalName(strokeNode, "Point").forEach(pNode => {
@@ -11201,7 +11624,26 @@ document.addEventListener('DOMContentLoaded', () => {
                                 y: parseFloat(getChildValue(pNode, "y")) * C_SYSTEM_Y_INVERT
                             });
                         });
-                        newLink.strokes.push({ type: sType, points: pts });
+                        newLink.strokes.push({ id: sId, type: sType, points: pts }); // 🟢 修正 2：存入 id
+                    });
+                }
+
+                // 🟢 修正 3：新增讀取 PolygonLanes 以恢復車道與實體標線的綁定關係
+                let polyLanesContainer = getChildrenByLocalName(linkEl, "PolygonLanes")[0];
+                if (!polyLanesContainer && wpContainer) {
+                    polyLanesContainer = getChildrenByLocalName(wpContainer, "PolygonLanes")[0];
+                }
+
+                if (polyLanesContainer) {
+                    getChildrenByLocalName(polyLanesContainer, "PolygonLane").forEach(pLaneNode => {
+                        const idx = parseInt(pLaneNode.getAttribute("index"), 10);
+                        const leftNode = getChildrenByLocalName(pLaneNode, "LeftBoundary")[0];
+                        const rightNode = getChildrenByLocalName(pLaneNode, "RightBoundary")[0];
+
+                        if (newLink.lanes[idx]) {
+                            if (leftNode) newLink.lanes[idx].leftStrokeId = leftNode.getAttribute("strokeId");
+                            if (rightNode) newLink.lanes[idx].rightStrokeId = rightNode.getAttribute("strokeId");
+                        }
                     });
                 }
 
@@ -12393,12 +12835,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 // 匯出給微觀模型使用的 PolygonLanes (車道面)
                 xml += `        <tm:PolygonLanes>\n`;
-                for (let i = 0; i < link.strokes.length - 1; i++) {
+                link.lanes.forEach((lane, i) => {
+                    // ★★★ [核心修正] 使用實際綁定的 ID，若無則降級使用 index ★★★
+                    const leftId = lane.leftStrokeId !== undefined ? lane.leftStrokeId : i;
+                    const rightId = lane.rightStrokeId !== undefined ? lane.rightStrokeId : (i + 1);
+
                     xml += `          <tm:PolygonLane index="${i}">\n`;
-                    xml += `            <tm:LeftBoundary strokeId="${i}" />\n`;
-                    xml += `            <tm:RightBoundary strokeId="${i + 1}" />\n`;
+                    xml += `            <tm:LeftBoundary strokeId="${leftId}" />\n`;
+                    xml += `            <tm:RightBoundary strokeId="${rightId}" />\n`;
                     xml += `          </tm:PolygonLane>\n`;
-                }
+                });
                 xml += `        </tm:PolygonLanes>\n`;
             }
 
