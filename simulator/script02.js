@@ -10006,7 +10006,33 @@ document.addEventListener('DOMContentLoaded', () => {
             const tfl = network.trafficLights.find(t => t.nodeId === currentLink.destination);
             if (!tfl) return;
 
-            const signal = tfl.getSignalForTurnGroup(myTransition.turnGroupId);
+            // =================================================================
+            // ★★★ [修正] 兩段式左轉機車預判起步時，應看「直行」燈號 ★★★
+            // =================================================================
+            let effectiveTurnGroupId = myTransition.turnGroupId;
+
+            if (this.isPreparingForTwoStageTurn(network)) {
+                let straightTransition = destNode.transitions.find(t => {
+                    if (t.sourceLinkId !== this.currentLinkId) return false;
+                    const srcLink = network.links[t.sourceLinkId];
+                    const dstLink = network.links[t.destLinkId];
+                    if (!srcLink || !dstLink) return false;
+
+                    const a1 = getLinkAngle(srcLink, true);
+                    const a2 = getLinkAngle(dstLink, false);
+                    let diff = a2 - a1;
+                    while (diff <= -Math.PI) diff += Math.PI * 2;
+                    while (diff > Math.PI) diff -= Math.PI * 2;
+
+                    return Math.abs(diff) < 0.6 && t.turnGroupId;
+                });
+
+                if (straightTransition) {
+                    effectiveTurnGroupId = straightTransition.turnGroupId;
+                }
+            }
+
+            const signal = tfl.getSignalForTurnGroup(effectiveTurnGroupId);
 
             // 4. 如果是綠燈，且我現在還用著很保守的 minGap，就啟動「蜂群起步」
             // [修改後]
@@ -10762,7 +10788,37 @@ document.addEventListener('DOMContentLoaded', () => {
                             if (isSignalized) {
                                 const tfl = network.trafficLights.find(t => t.nodeId === currentLink.destination);
                                 if (tfl) {
-                                    const signal = tfl.getSignalForTurnGroup(myTransition.turnGroupId);
+                                    // =================================================================
+                                    // ★★★ [修正] 兩段式左轉機車進入待轉區前，應看「直行」燈號，而非「左轉」燈號 ★★★
+                                    // =================================================================
+                                    let effectiveTurnGroupId = myTransition.turnGroupId;
+
+                                    if (this.isPreparingForTwoStageTurn(network)) {
+                                        // 在該路口尋找「直行」的 Transition
+                                        let straightTransition = destNode.transitions.find(t => {
+                                            if (t.sourceLinkId !== this.currentLinkId) return false;
+                                            const srcLink = network.links[t.sourceLinkId];
+                                            const dstLink = network.links[t.destLinkId];
+                                            if (!srcLink || !dstLink) return false;
+
+                                            // 利用全域的 getLinkAngle 計算進出角度差
+                                            const a1 = getLinkAngle(srcLink, true);
+                                            const a2 = getLinkAngle(dstLink, false);
+                                            let diff = a2 - a1;
+                                            while (diff <= -Math.PI) diff += Math.PI * 2;
+                                            while (diff > Math.PI) diff -= Math.PI * 2;
+
+                                            // 角度差小於 0.6 rad (約 35度) 視為直行
+                                            return Math.abs(diff) < 0.6 && t.turnGroupId;
+                                        });
+
+                                        // 若成功找到直行路徑，將號誌群組竄改為直行號誌
+                                        if (straightTransition) {
+                                            effectiveTurnGroupId = straightTransition.turnGroupId;
+                                        }
+                                    }
+
+                                    const signal = tfl.getSignalForTurnGroup(effectiveTurnGroupId);
                                     if (signal === 'Red' || signal === 'Yellow') {
                                         let shouldStop = false;
                                         let obstacleDistance = distanceToEndOfCurrentPath;
