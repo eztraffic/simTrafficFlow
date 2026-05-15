@@ -8091,7 +8091,47 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!lane.allowedVehicles || lane.allowedVehicles.length === 0) return true;
             return lane.allowedVehicles.includes(this.profileId);
         }
+        // =================================================================
+        // ★★★ [新增] 檢查是否允許跨越標線換道 (依照一實一虛、雙實線規則) ★★★
+        // =================================================================
+        canCrossStroke(network, linkId, currentLaneIdx, targetLaneIdx) {
+            const link = network.links[linkId];
+            // 傳統道路維持現狀
+            if (!link || link.geometryType !== 'lane-based') return true;
 
+            const currentLane = link.lanes[currentLaneIdx];
+            if (!currentLane) return true;
+
+            const isMovingLeft = targetLaneIdx < currentLaneIdx;
+
+            // 找出要跨越的那條邊界線
+            const strokeIdToCheck = isMovingLeft ? currentLane.leftStrokeId : currentLane.rightStrokeId;
+            if (!strokeIdToCheck) return true;
+
+            const stroke = link.strokes.find(s => s.id === strokeIdToCheck);
+            if (!stroke) return true;
+
+            const type = stroke.type;
+
+            // 1. 雙實線 (雙白或雙黃) -> 絕對禁止跨越
+            if (type === 'white_double' || type === 'yellow_double') {
+                return false;
+            }
+
+            // 2. 一實一虛判定
+            if (isMovingLeft) {
+                // 車向左切：面對的是標線的「右側」
+                // white_dashed_solid 代表「左虛右實」，右邊是實線 -> 禁止跨越
+                if (type === 'white_dashed_solid' || type === 'yellow_dashed_solid') return false;
+            } else {
+                // 車向右切：面對的是標線的「左側」
+                // white_solid_dashed 代表「左實右虛」，左邊是實線 -> 禁止跨越
+                if (type === 'white_solid_dashed' || type === 'yellow_solid_dashed') return false;
+            }
+
+            // 3. 單一白實線 (white_solid) -> 依要求維持現狀 (允許跨越)
+            return true;
+        }
         // ==================================================================================
         // 核心更新循環
         // ==================================================================================
@@ -8124,6 +8164,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 this.collectMeterData(oldDistanceOnPath, simulation);
 
                 return; // ★ 直接返回，不執行 IDM 跟車、換道決策等 AI 邏輯
+            }
+            // --- 加入在 Vehicle.update 函數內的開頭處 ---
+            if (typeof this.filterCooldown !== 'undefined' && this.filterCooldown > 0) {
+                this.filterCooldown -= dt;
             }
             if (this.launchDelay > 0) {
                 this.launchDelay -= dt;
@@ -9278,27 +9322,32 @@ document.addEventListener('DOMContentLoaded', () => {
                 kp = isReturning ? 2.0 : 10.0; // 汽車避障沉穩，回正極緩
             }
 
-            // 臨界阻尼 Kd = 2 * sqrt(Kp)，保證滑順貼合目標且絕對不震盪 (Overshoot)
+            // 臨界阻尼 Kd = 2 * sqrt(Kp)，保證滑順貼合目標且絕對不震盪
             kd = 2.0 * Math.sqrt(kp);
 
-            // 計算橫向加速度 (虎克定律 + 阻尼器: F = k*x - c*v)
+            // 計算橫向加速度
             let lateralAccel = (kp * diff) - (kd * this.lateralVelocity);
-
-            // 限制最大橫向加速度 (防物理不合理的瞬間側滑)
             const maxAccel = this.isMotorcycle ? 6.0 : 4.0;
             lateralAccel = Math.max(-maxAccel, Math.min(maxAccel, lateralAccel));
 
-            // 積分求速度
+            // 積分求橫向速度
             this.lateralVelocity += lateralAccel * dt;
 
-            // 限制最大橫向速度
-            const maxLatVel = this.isMotorcycle ? 3.0 : 2.0;
+            // ★★★ [修正重點] 物理限制：保留基礎橫移能力以防避障死結 ★★★
+            // 不能在靜止時將橫移速度設為 0，否則遇到障礙物煞停後會無法橫移閃避產生死結。
+            // 我們給予一個基礎的橫向蠕行速度 (0.4 m/s)，並依據前進車速放大。
+            let maxLatVel = this.isMotorcycle ? 3.0 : 2.0;
+            const baseLatVel = 0.4; // 基礎蠕行閃避速度 (約 1.4 km/h)
+
+            const speedFactor = Math.min(1.0, this.speed / 1.5);
+            maxLatVel = baseLatVel + (maxLatVel - baseLatVel) * speedFactor;
+
             this.lateralVelocity = Math.max(-maxLatVel, Math.min(maxLatVel, this.lateralVelocity));
 
             // 積分求位置
             this.lateralOffset += this.lateralVelocity * dt;
 
-            // 邊界保護 (防止撞牆積分無效累積)
+            // 邊界保護 (防止撞牆)
             let maxLimit = 1.5;
             if (network && this.state === 'onLink') {
                 const link = network.links[this.currentLinkId];
@@ -9306,7 +9355,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     maxLimit = Math.max(0, (link.lanes[this.currentLaneIndex].width / 2) - (this.width / 2) - 0.1);
                 }
             } else if (this.state === 'inIntersection') {
-                maxLimit = 4.0; // 路口內容許較大避障偏移
+                maxLimit = 4.0;
             }
 
             if (this.lateralOffset > maxLimit) {
@@ -9324,38 +9373,72 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (typeof this.currentYawBias === 'undefined') this.currentYawBias = 0;
 
-            // 指數衰減平滑車身轉向，模擬方向盤打盤極限與車身慣性
             const tauYaw = this.isMotorcycle ? 0.15 : 0.30;
             const alphaYaw = 1 - Math.exp(-dt / tauYaw);
             this.currentYawBias += (targetYawBias - this.currentYawBias) * alphaYaw;
         }
 
         decideLaneFiltering(allVehicles, network) {
-            // --- [新增] 待轉機車禁止鑽縫 ---
             if (this.isPreparingForTwoStageTurn(network)) return;
-            // -----------------------------
-            if (!this.isMotorcycle || this.state !== 'onLink' || Math.abs(this.targetLateralOffset) > 0.1) return;
+            if (!this.isMotorcycle || this.state !== 'onLink') return;
+
+            // ★★★ [新增] 速度過低(例如等紅燈)時，禁止進行鑽車縫與游離決策
+            if (this.speed < 1.0) return;
+
+            // 只要不是因為交通錐強制閃避，或正在劇烈橫移，就可以重新決策
+            if (this.coneForcedLaneChange || Math.abs(this.targetLateralOffset - this.lateralOffset) > 0.5) return;
+
+            // 引入決策冷卻時間，避免每幀變換目標導致蛇行抖動
+            if (typeof this.filterCooldown === 'undefined') this.filterCooldown = 0;
+            if (this.filterCooldown > 0) return;
+
             const link = network.links[this.currentLinkId];
             if (!link) return;
             const myLane = link.lanes[this.currentLaneIndex];
             const laneWidth = myLane ? myLane.width : 3.0;
+
             const { leader, gap } = this.findLeader(allVehicles, network);
-            if (leader && gap < 20) {
-                const maxOffset = Math.max(0, (laneWidth / 2) - (this.width / 2) - 0.5);
-                if (maxOffset <= 0.1) return;
-                for (let i = 0; i < 3; i++) {
-                    const randomOffset = (Math.random() * 2 - 1) * maxOffset;
-                    const leaderRelativeOffset = leader.lateralOffset || 0;
-                    const distToLeader = Math.abs(randomOffset - leaderRelativeOffset);
-                    const safeWidth = (this.width + leader.width) / 2 + 0.3;
-                    if (distToLeader > safeWidth) {
-                        this.targetLateralOffset = randomOffset;
-                        break;
-                    }
+
+            // 取得車道容許的最大偏移量 (邊緣保留 0.4m 緩衝)
+            const maxOffset = Math.max(0, (laneWidth / 2) - (this.width / 2) - 0.4);
+            if (maxOffset <= 0.1) return; // 車道太窄，維持原狀
+
+            // 主動錯位邏輯：當前方 30 米內有車時
+            if (leader && gap < 30) {
+                const leaderOffset = leader.lateralOffset || 0;
+                const myOffset = this.targetLateralOffset;
+
+                // 如果我跟前車橫向對齊了（相差小於 0.8m），主動尋找縫隙交錯
+                if (Math.abs(myOffset - leaderOffset) < 0.8) {
+                    const leftSpace = maxOffset - leaderOffset;
+                    const rightSpace = leaderOffset - (-maxOffset);
+
+                    let shiftDirection = 0;
+                    if (leftSpace > rightSpace + 0.5) shiftDirection = 1;      // 左側空間大，往左偏
+                    else if (rightSpace > leftSpace + 0.5) shiftDirection = -1;// 右側空間大，往右偏
+                    else shiftDirection = Math.random() > 0.5 ? 1 : -1;        // 空間差不多，隨機閃避
+
+                    // 新目標：前車位置錯開 1.2 公尺
+                    let newTarget = leaderOffset + (shiftDirection * 1.2);
+
+                    // 防止撞牆
+                    newTarget = Math.max(-maxOffset, Math.min(maxOffset, newTarget));
+
+                    this.targetLateralOffset = newTarget;
+                    this.filterCooldown = 1.5 + Math.random() * 2.0; // 冷卻 1.5 ~ 3.5 秒
+                }
+            }
+            // 自然游離邏輯：前方空曠且車道寬度大於 2 公尺時
+            else if (maxOffset > 1.0) {
+                // 機車會傾向回到自己專屬的隨機偏好位置，打破同縱列排隊的現象
+                const preferredOffset = (this.preferredBias || 0) * maxOffset;
+
+                if (Math.abs(this.targetLateralOffset - preferredOffset) > 0.5) {
+                    this.targetLateralOffset = preferredOffset;
+                    this.filterCooldown = 4.0 + Math.random() * 3.0; // 慢慢飄移，冷卻長
                 }
             }
         }
-
         // ==================================================================================
         // 導航與路徑邏輯
         // ==================================================================================
@@ -9716,9 +9799,13 @@ document.addEventListener('DOMContentLoaded', () => {
                         this.lateralOffset = this.pendingLateralOffset;
                         this.targetLateralOffset = this.pendingLateralOffset;
                         if (this.isMotorcycle) {
-                            const link = network.links[this.currentLinkId];
-                            const laneWidth = link.lanes[this.currentLaneIndex]?.width || 3.5;
-                            this.preferredBias = Math.max(-0.9, Math.min(0.9, this.pendingLateralOffset / (laneWidth / 2)));
+                            // 【修正重點】不要用 pendingLateralOffset 覆蓋 preferredBias
+                            // 重新隨機賦予該車一個新的騎乘偏好，讓離開待轉區的車群自然散開
+                            const rand = Math.random();
+                            if (rand < 0.6) this.preferredBias = -0.5 - (Math.random() * 0.4);
+                            else if (rand < 0.8) this.preferredBias = (Math.random() - 0.5) * 0.4;
+                            else this.preferredBias = 0.5 + (Math.random() * 0.4);
+
                             this.decisionTimer = 3.0 + Math.random() * 2.0;
                         }
                         this.pendingLateralOffset = undefined;
@@ -10123,8 +10210,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (this.laneChangeState) {
                 this.laneChangeState.progress += dt / this.laneChangeState.duration;
 
-                // ★★★ [改善 #5] 換道期間持續碰撞監控 ★★★
-                // 每幀檢查目標車道是否出現新障礙，若危險則中止換道
+                // 換道期間持續碰撞監控
                 if (this.laneChangeState.progress < 1) {
                     const toLane = this.laneChangeState.toLaneIndex;
                     for (const other of allVehicles) {
@@ -10135,11 +10221,11 @@ document.addEventListener('DOMContentLoaded', () => {
                             : other.currentLaneIndex;
                         if (otherEffectiveLane !== toLane) continue;
                         const distDiff = other.distanceOnPath - this.distanceOnPath;
+
                         // 前方近距離車輛
                         if (distDiff > 0) {
                             const realGap = distDiff - (other.length / 2) - (this.length / 2);
                             if (realGap < this.minGap * 0.5) {
-                                // 危險！中止換道，回到原車道
                                 this.laneChangeState = null;
                                 this.laneChangeCooldown = 3.0;
                                 this.targetLateralOffset = 0;
@@ -10171,14 +10257,29 @@ document.addEventListener('DOMContentLoaded', () => {
                     this.laneChangeCooldown = 5.0;
                 }
             }
+
             if (!this.laneChangeGoal) { this.handleMandatoryLaneChangeDecision(network, allVehicles); }
             if (!this.laneChangeGoal && this.laneChangeCooldown <= 0) { this.handleDiscretionaryLaneChangeDecision(network, allVehicles); }
+
             if (this.laneChangeGoal !== null && !this.laneChangeState) {
                 if (this.currentLaneIndex === this.laneChangeGoal) {
                     this.laneChangeGoal = null;
                 } else {
                     const direction = Math.sign(this.laneChangeGoal - this.currentLaneIndex);
                     const nextLaneIndex = this.currentLaneIndex + direction;
+
+                    // =========================================================
+                    // ★★★ [新增] 最終物理防線：執行換道前，嚴格攔截禁止跨越的標線
+                    // 解決 decideNextLink 產生的強制目標覆蓋問題
+                    // =========================================================
+                    if (!this.canCrossStroke(network, this.currentLinkId, this.currentLaneIndex, nextLaneIndex)) {
+                        // 標線不允許跨越，車輛被困在當前車道，取消換道意圖
+                        this.laneChangeGoal = null;
+                        this.laneChangeCooldown = 2.0; // 給予冷卻，避免每幀重複計算
+                        return; // 拒絕執行
+                    }
+                    // =========================================================
+
                     const safeToChange = this.isSafeToChange(nextLaneIndex, allVehicles);
                     if (safeToChange) {
                         const link = network.links[this.currentLinkId];
@@ -10221,7 +10322,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 for (const targetLane of adjacentLanes) {
                     if (link.lanes[targetLane] && this.isLaneAllowed(network, this.currentLinkId, targetLane)) {
-
+                        // ★ [新增] 檢查實體標線是否允許跨越
+                        if (!this.canCrossStroke(network, this.currentLinkId, this.currentLaneIndex, targetLane)) continue;
                         // ★★★ [新增防呆] 確保隔壁避難車道前方沒有槽化線，否則換過去還是死路一條 ★★★
                         let hitsPolygon = false;
                         if (network.channelizationPolygons) {
@@ -10275,6 +10377,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 // [新增] 檢查這條車道是否允許本車駛入
                 if (!this.isLaneAllowed(network, this.currentLinkId, targetLane)) continue;
+                // ★ [新增] 檢查實體標線是否允許跨越 (只適用於相鄰車道，跨多車道時先擋第一關)
+                if (Math.abs(this.currentLaneIndex - targetLane) === 1) {
+                    if (!this.canCrossStroke(network, this.currentLinkId, this.currentLaneIndex, targetLane)) continue;
+                }
                 // ★★★ [終極修正] 檢查目標車道前方是否有槽化線，若有則直接放棄該車道 ★★★
                 let hitsPolygon = false;
                 if (network.channelizationPolygons) {
@@ -10327,34 +10433,39 @@ document.addEventListener('DOMContentLoaded', () => {
                 const targetLane = this.currentLaneIndex + 1;
                 if (link.lanes[targetLane] && this.isLaneAllowed(network, this.currentLinkId, targetLane)) {
 
-                    // ★★★ [終極修正] 機車超車避開槽化線 ★★★
-                    let hitsPolygon = false;
-                    if (network.channelizationPolygons) {
-                        for (let s = 5.0; s <= 20.0; s += 5.0) {
-                            const checkDist = this.distanceOnPath + s;
-                            if (checkDist <= link.lanes[targetLane].length) {
-                                const posData = this.getPositionOnPath(link.lanes[targetLane].path, checkDist);
-                                if (posData && network.channelizationPolygons.some(poly => Geom.Utils.isPointInPolygon({ x: posData.x, y: posData.y }, poly))) {
-                                    hitsPolygon = true; break;
+                    // ★ [新增] 檢查機車超車時，標線是否允許跨越 (實虛線規則)
+                    if (this.canCrossStroke(network, this.currentLinkId, this.currentLaneIndex, targetLane)) {
+
+                        // ★★★ [終極修正] 機車超車避開槽化線 ★★★
+                        let hitsPolygon = false;
+                        if (network.channelizationPolygons) {
+                            for (let s = 5.0; s <= 20.0; s += 5.0) {
+                                const checkDist = this.distanceOnPath + s;
+                                if (checkDist <= link.lanes[targetLane].length) {
+                                    const posData = this.getPositionOnPath(link.lanes[targetLane].path, checkDist);
+                                    if (posData && network.channelizationPolygons.some(poly => Geom.Utils.isPointInPolygon({ x: posData.x, y: posData.y }, poly))) {
+                                        hitsPolygon = true; break;
+                                    }
                                 }
                             }
                         }
-                    }
-                    if (hitsPolygon) return; // 發現槽化線，取消超車
 
-                    // ★ 補回遺失的 canPass 定義 ★
-                    const canPass = destNode.transitions.some(t =>
-                        t.sourceLinkId === this.currentLinkId &&
-                        t.sourceLaneIndex === targetLane &&
-                        t.destLinkId === nextLinkId &&
-                        this.isLaneAllowed(network, t.destLinkId, t.destLaneIndex)
-                    );
+                        // 如果沒有撞到槽化線，才繼續後續判斷
+                        if (!hitsPolygon) {
+                            const canPass = destNode.transitions.some(t =>
+                                t.sourceLinkId === this.currentLinkId &&
+                                t.sourceLaneIndex === targetLane &&
+                                t.destLinkId === nextLinkId &&
+                                this.isLaneAllowed(network, t.destLinkId, t.destLaneIndex)
+                            );
 
-                    if (canPass) {
-                        if (this.isSafeToChange(targetLane, allVehicles)) {
-                            if (Math.random() < 0.95) {
-                                this.laneChangeGoal = targetLane;
-                                return;
+                            if (canPass) {
+                                if (this.isSafeToChange(targetLane, allVehicles)) {
+                                    if (Math.random() < 0.95) {
+                                        this.laneChangeGoal = targetLane;
+                                        return;
+                                    }
+                                }
                             }
                         }
                     }
@@ -10366,6 +10477,9 @@ document.addEventListener('DOMContentLoaded', () => {
             for (const targetLane of adjacentLanes) {
                 if (!link.lanes[targetLane]) continue;
                 if (!this.isLaneAllowed(network, this.currentLinkId, targetLane)) continue;
+
+                // ★ [新增] 檢查一般車輛換道時，標線是否允許跨越 (實虛線規則)
+                if (!this.canCrossStroke(network, this.currentLinkId, this.currentLaneIndex, targetLane)) continue;
 
                 // ★★★ [終極修正] 一般換道避開槽化線 ★★★
                 let hitsPolygon = false;
@@ -10381,6 +10495,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
                 if (hitsPolygon) continue; // 發現槽化線，放棄這條車道
+
                 if (this.isMotorcycle && targetLane < this.currentLaneIndex) {
                     if (currentLeader && currentLeader.speed > 0.5) continue;
                 }
@@ -10676,6 +10791,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
             // --- C. [改善 #4] 通用路口軌跡衝突偵測 ---
+            /* ★★★ 將以下這幾行直接刪除 ★★★
             {
                 const intersectionGap = this.detectIntersectionConflict(allVehicles, network);
                 if (intersectionGap < gap) {
@@ -10683,6 +10799,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     leader = null;
                 }
             }
+            */
 
             // =================================================================
             // ★★★ [新增] 直前 OBB 物理防穿模雷達 (解決微小轉向卡點) ★★★
@@ -12348,6 +12465,11 @@ document.addEventListener('DOMContentLoaded', () => {
                             const midX = (leftPt.x + rightPt.x) / 2;
                             const midY = (leftPt.y + rightPt.y) / 2;
 
+                            // 【修正重點】動態測量實體寬度並累加
+                            const currentWidth = Math.hypot(leftPt.x - rightPt.x, leftPt.y - rightPt.y);
+                            if (!lane.widthSamples) lane.widthSamples = [];
+                            lane.widthSamples.push(currentWidth);
+
                             // 過濾過度密集的點
                             if (lane.path.length > 0) {
                                 const lastP = lane.path[lane.path.length - 1];
@@ -12356,6 +12478,15 @@ document.addEventListener('DOMContentLoaded', () => {
                             lane.path.push({ x: midX, y: midY });
                         });
                     } // for (s) 迴圈結束
+
+                    // 【修正重點】迴圈結束後，計算平均實體寬度，覆寫 XML 屬性
+                    orderedLanes.forEach(lane => {
+                        if (lane.widthSamples && lane.widthSamples.length > 0) {
+                            const avgW = lane.widthSamples.reduce((a, b) => a + b, 0) / lane.widthSamples.length;
+                            lane.width = avgW; // 強制將車道寬度更新為 Stroke 實際的物理距離
+                            delete lane.widthSamples; // 清理記憶體
+                        }
+                    });
 
                     // =================================================================
                     // ★★★ [新增] 軌跡平滑化濾波 (Path Smoothing) ★★★
@@ -13317,9 +13448,17 @@ document.addEventListener('DOMContentLoaded', () => {
             const linksArray = Object.values(links);
             for (let i = 0; i < linksArray.length; i++) {
                 const l1 = linksArray[i];
+
+                // 【修正重點 1】排除 Lane-based (Stroke-based) 道路，不參與中央分隔島計算
+                if (l1.geometryType === 'lane-based') continue;
+
                 if (!l1.leftEdgePoints || !l1.rightEdgePoints || l1.leftEdgePoints.length < 2) continue;
                 for (let j = i + 1; j < linksArray.length; j++) {
                     const l2 = linksArray[j];
+
+                    // 【修正重點 2】排除 Lane-based (Stroke-based) 道路
+                    if (l2.geometryType === 'lane-based') continue;
+
                     if (!l2.leftEdgePoints || !l2.rightEdgePoints || l2.leftEdgePoints.length < 2) continue;
 
                     // 1. 判斷是否為對向連接的道路 (拓樸相反)
