@@ -1229,6 +1229,9 @@ document.addEventListener('DOMContentLoaded', () => {
     function drawLink(link) {
         link.konvaGroup.destroyChildren();
 
+        // [新增] 取得透明度設定，預設為 1 (100% 不透明)
+        const opacity = link.roadOpacity !== undefined ? link.roadOpacity : 1;
+
         // ==========================================
         // [新增] Lane-Based 多型渲染邏輯
         // ==========================================
@@ -1249,7 +1252,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 },
                 fill: '#444',
                 listening: true,
-                id: link.id
+                id: link.id,
+                name: 'road-surface', // <--- [新增] 命名以便尋找
+                opacity: opacity      // <--- [新增] 套用透明度
             });
             link.konvaGroup.add(roadShape);
 
@@ -1259,7 +1264,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 // 如果是雙線 (如雙黃線、一實一虛)
                 if (style.dual) {
-                    // 計算偏移量 (Gap / 2)
                     const offset = style.gap / 2;
                     const ptsLeft = getOffsetPolyline(stroke.points, offset);
                     const ptsRight = getOffsetPolyline(stroke.points, -offset);
@@ -1281,7 +1285,6 @@ document.addEventListener('DOMContentLoaded', () => {
                         link.konvaGroup.add(lineRight);
                     }
                 } else {
-                    // 單線渲染
                     const flatPoints = stroke.points.flatMap(p => [p.x, p.y]);
                     const line = new Konva.Line({
                         points: flatPoints,
@@ -1292,7 +1295,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
 
-            return; // Lane-based 畫完直接返回，不執行下方舊邏輯
+            return; // Lane-based 畫完直接返回
         }
 
         // ==========================================
@@ -1342,6 +1345,8 @@ document.addEventListener('DOMContentLoaded', () => {
             },
             fill: '#666',
             listening: false,
+            name: 'road-surface', // <--- [新增] 命名以便尋找
+            opacity: opacity      // <--- [新增] 套用透明度
         });
         link.konvaGroup.add(roadShape);
 
@@ -1383,7 +1388,7 @@ document.addEventListener('DOMContentLoaded', () => {
             id: link.id,
             points: link.waypoints.flatMap(p => [p.x, p.y]),
             stroke: 'transparent',
-            strokeWidth: totalWidth + 8, // 使用新的總寬度
+            strokeWidth: totalWidth + 8,
             lineCap: 'round',
             lineJoin: 'round',
         });
@@ -6540,8 +6545,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         switch (obj.type) {
             // ... (請保留您原本的 Link, Node, Detector 等 case) ...
-            case 'Link':
-                // 定義分頁按鈕 HTML
+ case 'Link':
                 const getLinkTabClass = (tabName) => lastActiveLinkTab === tabName ? 'active' : '';
                 const getLinkContentClass = (tabName) => lastActiveLinkTab === tabName ? 'active' : '';
 
@@ -6556,7 +6560,6 @@ document.addEventListener('DOMContentLoaded', () => {
              </div>`;
 
                 // --- TAB 1: GENERAL ---
-                // [注意] 這裡是 content 字串的開始
                 content += `<div id="tab-link-general" class="prop-tab-content ${getLinkContentClass('tab-link-general')}">`;
 
                 // 1. 基本資訊 (Name/ID)
@@ -6570,6 +6573,17 @@ document.addEventListener('DOMContentLoaded', () => {
                              <input type="text" class="prop-input" value="${obj.id}" disabled>
                          </div>`;
 
+                // =====================================
+                // [新增] 路面透明度選項 (僅改變畫布顯示用)
+                // =====================================
+                content += `<div class="prop-row">
+                             <span class="prop-label" title="僅影響編輯器顯示，方便對齊底圖">Opacity</span>
+                             <div style="display:flex; align-items:center; gap:8px;">
+                                 <input type="range" id="prop-link-opacity" min="0" max="1" step="0.1" value="${obj.roadOpacity !== undefined ? obj.roadOpacity : 1}" style="flex:1; cursor:pointer;">
+                                 <span id="prop-link-opacity-val" style="font-size:0.75rem; width:20px; text-align:right;">${obj.roadOpacity !== undefined ? obj.roadOpacity : 1}</span>
+                             </div>
+                         </div>`;
+                // =====================================
                 // ============================================================
                 // ★★★ [修正重點] Two-way Settings 必須插在這裡 (TAB 內容內部) ★★★
                 // ============================================================
@@ -8524,7 +8538,32 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // --- LINK ---
         if (obj.type === 'Link') {
+            // [新增] 名稱變更事件 (確保名稱能被儲存)
+            const nameInput = document.getElementById('prop-link-name');
+            if (nameInput) {
+                nameInput.addEventListener('change', (e) => {
+                    obj.name = e.target.value;
+                    saveState();
+                });
+            }
 
+            // [新增] 路面透明度變更事件
+            const opacityInput = document.getElementById('prop-link-opacity');
+            const opacityVal = document.getElementById('prop-link-opacity-val');
+            if (opacityInput) {
+                opacityInput.addEventListener('input', (e) => {
+                    const val = parseFloat(e.target.value);
+                    obj.roadOpacity = val;
+                    if (opacityVal) opacityVal.textContent = val;
+                    
+                    // 只改變底層路面的透明度，讓車道標線依然清晰
+                    const roadShape = obj.konvaGroup.findOne('.road-surface');
+                    if (roadShape) {
+                        roadShape.opacity(val);
+                        layer.batchDraw();
+                    }
+                });
+            }
             // ============================================================
             // [新增] Lane-Based 標線編輯器事件綁定
             // ============================================================
@@ -9357,16 +9396,16 @@ document.addEventListener('DOMContentLoaded', () => {
                                 // [修正] Lane-Based 多型標線寬度精準計算
                                 // ==========================================
                                 const selectedLanes = obj.laneIndices.sort((a, b) => a - b);
-                                
+
                                 if (link.geometryType === 'lane-based' && link.strokes && link.strokes.length >= 2 && selectedLanes.length > 0) {
                                     // 取得標線在當前 position 的實際中心點
                                     const { point } = getPointAlongPolyline(link.waypoints, obj.position);
-                                    
+
                                     // 輔助函數：取得實際實體標線上的點 (重用繪圖邏輯)
                                     const getStrokePointForWidth = (targetLink, strokeIdx, refPt) => {
                                         let stroke = targetLink.strokes[strokeIdx];
                                         if (!stroke) stroke = (strokeIdx <= 0) ? targetLink.strokes[0] : targetLink.strokes[targetLink.strokes.length - 1];
-                                        
+
                                         let minDist = Infinity;
                                         let bestPt = refPt;
                                         for (let i = 0; i < stroke.points.length - 1; i++) {
@@ -9382,10 +9421,10 @@ document.addEventListener('DOMContentLoaded', () => {
                                     const maxIdx = selectedLanes[selectedLanes.length - 1];
                                     const pLeft = getStrokePointForWidth(link, minIdx, point);
                                     const pRight = getStrokePointForWidth(link, maxIdx + 1, point);
-                                    
+
                                     // 根據兩點座標計算實際幾何寬度
                                     obj.width = vecLen(getVector(pLeft, pRight));
-                                    
+
                                 } else {
                                     // 原本 Standard 模式計算 selectedLanes 的邏輯
                                     let totalW = 0;
