@@ -1,0 +1,800 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<tm:TrafficModel parserVersion="1.2" xmlns:tm="TrafficModelDefinitionFile0.1">
+  <tm:ModelParameters>
+    <tm:randomSeed>47459</tm:randomSeed>
+    <tm:immutableVehiclesPercent>70</tm:immutableVehiclesPercent>
+    <tm:NavigationMode>HYBRID</tm:NavigationMode>
+  </tm:ModelParameters>
+  <tm:GlobalVehicleProfiles>
+    <tm:VehicleProfile id="car">
+      <tm:RegularVehicle>
+        <tm:length>4.5</tm:length><tm:width>1.8</tm:width>
+        <tm:CompositeDriver><tm:Parameters>
+          <tm:maxSpeed>16.67</tm:maxSpeed>
+          <tm:maxAcceleration>3</tm:maxAcceleration>
+          <tm:comfortDeceleration>2.5</tm:comfortDeceleration>
+          <tm:minDistance>2.5</tm:minDistance>
+          <tm:desiredHeadwayTime>1.5</tm:desiredHeadwayTime>
+        </tm:Parameters></tm:CompositeDriver>
+      </tm:RegularVehicle>
+    </tm:VehicleProfile>
+    <tm:VehicleProfile id="motor">
+      <tm:RegularVehicle>
+        <tm:length>2</tm:length><tm:width>0.8</tm:width>
+        <tm:CompositeDriver><tm:Parameters>
+          <tm:maxSpeed>16.67</tm:maxSpeed>
+          <tm:maxAcceleration>3.5</tm:maxAcceleration>
+          <tm:comfortDeceleration>3</tm:comfortDeceleration>
+          <tm:minDistance>1</tm:minDistance>
+          <tm:desiredHeadwayTime>0.8</tm:desiredHeadwayTime>
+        </tm:Parameters></tm:CompositeDriver>
+      </tm:RegularVehicle>
+    </tm:VehicleProfile>
+    <tm:VehicleProfile id="Truck/Bus">
+      <tm:RegularVehicle>
+        <tm:length>12</tm:length><tm:width>2.6</tm:width>
+        <tm:CompositeDriver><tm:Parameters>
+          <tm:maxSpeed>16.67</tm:maxSpeed>
+          <tm:maxAcceleration>0.8</tm:maxAcceleration>
+          <tm:comfortDeceleration>1</tm:comfortDeceleration>
+          <tm:minDistance>3</tm:minDistance>
+          <tm:desiredHeadwayTime>3</tm:desiredHeadwayTime>
+        </tm:Parameters></tm:CompositeDriver>
+      </tm:RegularVehicle>
+    </tm:VehicleProfile>
+  </tm:GlobalVehicleProfiles>
+  <tm:RoadNetwork>
+    <tm:Links>
+      <tm:Link>
+        <tm:id>0</tm:id>
+        <tm:name>link_1</tm:name>
+        <tm:sourceNodeId>-1</tm:sourceNodeId>
+        <tm:destinationNodeId>1</tm:destinationNodeId>
+        <tm:length>241.0077</tm:length>
+        <tm:Segments>
+          <tm:TrapeziumSegment>
+             <tm:id>0</tm:id><tm:length>241.0077</tm:length><tm:prevSegmentId>-1</tm:prevSegmentId><tm:nextSegmentId>-1</tm:nextSegmentId><tm:startWaypointId>0</tm:startWaypointId><tm:endWaypointId>1</tm:endWaypointId>
+            <tm:Lanes>
+              <tm:Lane>
+                <tm:index>0</tm:index>
+                <tm:length>241.0077</tm:length>
+                <tm:width>3.50</tm:width>
+                <tm:prevLaneIndex>-1</tm:prevLaneIndex>
+                <tm:nextLaneIndex>-1</tm:nextLaneIndex>
+              </tm:Lane>
+              <tm:Lane>
+                <tm:index>1</tm:index>
+                <tm:length>241.0077</tm:length>
+                <tm:width>3.50</tm:width>
+                <tm:prevLaneIndex>-1</tm:prevLaneIndex>
+                <tm:nextLaneIndex>-1</tm:nextLaneIndex>
+              </tm:Lane>
+              <tm:Lane>
+                <tm:index>2</tm:index>
+                <tm:length>241.0077</tm:length>
+                <tm:width>3.50</tm:width>
+                <tm:prevLaneIndex>-1</tm:prevLaneIndex>
+                <tm:nextLaneIndex>-1</tm:nextLaneIndex>
+              </tm:Lane>
+            </tm:Lanes>
+            <tm:trapeziumShift>0</tm:trapeziumShift>
+            <tm:TrapeziumGeometry>
+              <tm:LeftSide><tm:Start><tm:x>275.9598</tm:x><tm:y>-201.2498</tm:y></tm:Start><tm:End><tm:x>516.9604</tm:x><tm:y>-203.0966</tm:y></tm:End></tm:LeftSide>
+              <tm:RightSide><tm:Start><tm:x>276.0402</tm:x><tm:y>-190.7502</tm:y></tm:Start><tm:End><tm:x>517.0408</tm:x><tm:y>-192.5969</tm:y></tm:End></tm:RightSide>
+            </tm:TrapeziumGeometry>
+          </tm:TrapeziumSegment>
+        </tm:Segments>
+        <tm:Waypoints>
+          <tm:Waypoint><tm:id>0</tm:id><tm:x>276.0000</tm:x><tm:y>-196.0000</tm:y></tm:Waypoint>
+          <tm:Waypoint><tm:id>1</tm:id><tm:x>517.0006</tm:x><tm:y>-197.8467</tm:y></tm:Waypoint>
+        </tm:Waypoints>
+        <tm:geometryType>lane-based</tm:geometryType>
+        <tm:EditorParametricConfig>
+          <tm:throughLanes>2</tm:throughLanes>
+          <tm:LeftPocket exists="false" lanes="1" length="30" taper="15" />
+          <tm:RightPocket exists="true" lanes="1" length="30" taper="15" />
+        </tm:EditorParametricConfig>
+        <tm:Strokes>
+          <tm:Stroke id="stroke_2" type="boundary">
+            <tm:Point><tm:x>276.0268</tm:x><tm:y>-192.5001</tm:y></tm:Point>
+            <tm:Point><tm:x>472.0291</tm:x><tm:y>-194.0020</tm:y></tm:Point>
+            <tm:Point><tm:x>487.0286</tm:x><tm:y>-194.1170</tm:y></tm:Point>
+            <tm:Point><tm:x>517.0274</tm:x><tm:y>-194.3469</tm:y></tm:Point>
+          </tm:Stroke>
+          <tm:Stroke id="stroke_3" type="white_dashed">
+            <tm:Point><tm:x>276.0000</tm:x><tm:y>-196.0000</tm:y></tm:Point>
+            <tm:Point><tm:x>472.0022</tm:x><tm:y>-197.5019</tm:y></tm:Point>
+            <tm:Point><tm:x>487.0018</tm:x><tm:y>-197.6169</tm:y></tm:Point>
+            <tm:Point><tm:x>517.0006</tm:x><tm:y>-197.8467</tm:y></tm:Point>
+          </tm:Stroke>
+          <tm:Stroke id="stroke_4" type="white_dashed">
+            <tm:Point><tm:x>275.9732</tm:x><tm:y>-199.4999</tm:y></tm:Point>
+            <tm:Point><tm:x>471.9754</tm:x><tm:y>-201.0018</tm:y></tm:Point>
+            <tm:Point><tm:x>486.9750</tm:x><tm:y>-201.1168</tm:y></tm:Point>
+            <tm:Point><tm:x>516.9738</tm:x><tm:y>-201.3466</tm:y></tm:Point>
+          </tm:Stroke>
+          <tm:Stroke id="stroke_5" type="boundary">
+            <tm:Point><tm:x>275.9732</tm:x><tm:y>-199.4999</tm:y></tm:Point>
+            <tm:Point><tm:x>471.9754</tm:x><tm:y>-201.0019</tm:y></tm:Point>
+            <tm:Point><tm:x>486.9482</tm:x><tm:y>-204.6167</tm:y></tm:Point>
+            <tm:Point><tm:x>516.9469</tm:x><tm:y>-204.8465</tm:y></tm:Point>
+          </tm:Stroke>
+        </tm:Strokes>
+        <tm:PolygonLanes>
+          <tm:PolygonLane index="0">
+            <tm:LeftBoundary strokeId="stroke_2" />
+            <tm:RightBoundary strokeId="stroke_3" />
+          </tm:PolygonLane>
+          <tm:PolygonLane index="1">
+            <tm:LeftBoundary strokeId="stroke_3" />
+            <tm:RightBoundary strokeId="stroke_4" />
+          </tm:PolygonLane>
+          <tm:PolygonLane index="2">
+            <tm:LeftBoundary strokeId="stroke_4" />
+            <tm:RightBoundary strokeId="stroke_5" />
+          </tm:PolygonLane>
+        </tm:PolygonLanes>
+      </tm:Link>
+      <tm:Link>
+        <tm:id>1</tm:id>
+        <tm:name>link_6</tm:name>
+        <tm:sourceNodeId>0</tm:sourceNodeId>
+        <tm:destinationNodeId>-1</tm:destinationNodeId>
+        <tm:length>259.1563</tm:length>
+        <tm:Segments>
+          <tm:TrapeziumSegment>
+             <tm:id>0</tm:id><tm:length>259.1563</tm:length><tm:prevSegmentId>-1</tm:prevSegmentId><tm:nextSegmentId>-1</tm:nextSegmentId><tm:startWaypointId>0</tm:startWaypointId><tm:endWaypointId>1</tm:endWaypointId>
+            <tm:Lanes>
+              <tm:Lane>
+                <tm:index>0</tm:index>
+                <tm:length>259.1563</tm:length>
+                <tm:width>3.50</tm:width>
+                <tm:prevLaneIndex>-1</tm:prevLaneIndex>
+                <tm:nextLaneIndex>-1</tm:nextLaneIndex>
+              </tm:Lane>
+              <tm:Lane>
+                <tm:index>1</tm:index>
+                <tm:length>259.1563</tm:length>
+                <tm:width>3.50</tm:width>
+                <tm:prevLaneIndex>-1</tm:prevLaneIndex>
+                <tm:nextLaneIndex>-1</tm:nextLaneIndex>
+              </tm:Lane>
+            </tm:Lanes>
+            <tm:trapeziumShift>0</tm:trapeziumShift>
+            <tm:TrapeziumGeometry>
+              <tm:LeftSide><tm:Start><tm:x>569.8785</tm:x><tm:y>-201.4979</tm:y></tm:Start><tm:End><tm:x>828.8785</tm:x><tm:y>-210.4979</tm:y></tm:End></tm:LeftSide>
+              <tm:RightSide><tm:Start><tm:x>570.1215</tm:x><tm:y>-194.5021</tm:y></tm:Start><tm:End><tm:x>829.1215</tm:x><tm:y>-203.5021</tm:y></tm:End></tm:RightSide>
+            </tm:TrapeziumGeometry>
+          </tm:TrapeziumSegment>
+        </tm:Segments>
+        <tm:Waypoints>
+          <tm:Waypoint><tm:id>0</tm:id><tm:x>570.0000</tm:x><tm:y>-198.0000</tm:y></tm:Waypoint>
+          <tm:Waypoint><tm:id>1</tm:id><tm:x>829.0000</tm:x><tm:y>-207.0000</tm:y></tm:Waypoint>
+        </tm:Waypoints>
+        <tm:geometryType>lane-based</tm:geometryType>
+        <tm:EditorParametricConfig>
+          <tm:throughLanes>2</tm:throughLanes>
+          <tm:LeftPocket exists="false" lanes="1" length="30" taper="15" />
+          <tm:RightPocket exists="false" lanes="1" length="30" taper="15" />
+        </tm:EditorParametricConfig>
+        <tm:Strokes>
+          <tm:Stroke id="stroke_7" type="boundary">
+            <tm:Point><tm:x>570.1215</tm:x><tm:y>-194.5021</tm:y></tm:Point>
+            <tm:Point><tm:x>829.1212</tm:x><tm:y>-203.5021</tm:y></tm:Point>
+          </tm:Stroke>
+          <tm:Stroke id="stroke_8" type="white_dashed">
+            <tm:Point><tm:x>570.0000</tm:x><tm:y>-198.0000</tm:y></tm:Point>
+            <tm:Point><tm:x>828.9997</tm:x><tm:y>-207.0000</tm:y></tm:Point>
+          </tm:Stroke>
+          <tm:Stroke id="stroke_9" type="boundary">
+            <tm:Point><tm:x>569.8785</tm:x><tm:y>-201.4979</tm:y></tm:Point>
+            <tm:Point><tm:x>828.8781</tm:x><tm:y>-210.4979</tm:y></tm:Point>
+          </tm:Stroke>
+        </tm:Strokes>
+        <tm:PolygonLanes>
+          <tm:PolygonLane index="0">
+            <tm:LeftBoundary strokeId="stroke_7" />
+            <tm:RightBoundary strokeId="stroke_8" />
+          </tm:PolygonLane>
+          <tm:PolygonLane index="1">
+            <tm:LeftBoundary strokeId="stroke_8" />
+            <tm:RightBoundary strokeId="stroke_9" />
+          </tm:PolygonLane>
+        </tm:PolygonLanes>
+      </tm:Link>
+      <tm:Link>
+        <tm:id>2</tm:id>
+        <tm:name>link_10</tm:name>
+        <tm:sourceNodeId>-1</tm:sourceNodeId>
+        <tm:destinationNodeId>0</tm:destinationNodeId>
+        <tm:length>137.0328</tm:length>
+        <tm:Segments>
+          <tm:TrapeziumSegment>
+             <tm:id>0</tm:id><tm:length>137.0328</tm:length><tm:prevSegmentId>-1</tm:prevSegmentId><tm:nextSegmentId>-1</tm:nextSegmentId><tm:startWaypointId>0</tm:startWaypointId><tm:endWaypointId>1</tm:endWaypointId>
+            <tm:Lanes>
+              <tm:Lane>
+                <tm:index>0</tm:index>
+                <tm:length>137.0328</tm:length>
+                <tm:width>3.50</tm:width>
+                <tm:prevLaneIndex>-1</tm:prevLaneIndex>
+                <tm:nextLaneIndex>-1</tm:nextLaneIndex>
+              </tm:Lane>
+              <tm:Lane>
+                <tm:index>1</tm:index>
+                <tm:length>137.0328</tm:length>
+                <tm:width>3.50</tm:width>
+                <tm:prevLaneIndex>-1</tm:prevLaneIndex>
+                <tm:nextLaneIndex>-1</tm:nextLaneIndex>
+              </tm:Lane>
+            </tm:Lanes>
+            <tm:trapeziumShift>0</tm:trapeziumShift>
+            <tm:TrapeziumGeometry>
+              <tm:LeftSide><tm:Start><tm:x>548.5008</tm:x><tm:y>-50.9234</tm:y></tm:Start><tm:End><tm:x>545.5008</tm:x><tm:y>-187.9234</tm:y></tm:End></tm:LeftSide>
+              <tm:RightSide><tm:Start><tm:x>555.4992</tm:x><tm:y>-51.0766</tm:y></tm:Start><tm:End><tm:x>552.4992</tm:x><tm:y>-188.0766</tm:y></tm:End></tm:RightSide>
+            </tm:TrapeziumGeometry>
+          </tm:TrapeziumSegment>
+        </tm:Segments>
+        <tm:Waypoints>
+          <tm:Waypoint><tm:id>0</tm:id><tm:x>552.0000</tm:x><tm:y>-51.0000</tm:y></tm:Waypoint>
+          <tm:Waypoint><tm:id>1</tm:id><tm:x>549.0000</tm:x><tm:y>-188.0000</tm:y></tm:Waypoint>
+        </tm:Waypoints>
+        <tm:geometryType>lane-based</tm:geometryType>
+        <tm:EditorParametricConfig>
+          <tm:throughLanes>2</tm:throughLanes>
+          <tm:LeftPocket exists="false" lanes="1" length="30" taper="15" />
+          <tm:RightPocket exists="false" lanes="1" length="30" taper="15" />
+        </tm:EditorParametricConfig>
+        <tm:Strokes>
+          <tm:Stroke id="stroke_11" type="boundary">
+            <tm:Point><tm:x>555.4992</tm:x><tm:y>-51.0766</tm:y></tm:Point>
+            <tm:Point><tm:x>552.4992</tm:x><tm:y>-188.0766</tm:y></tm:Point>
+          </tm:Stroke>
+          <tm:Stroke id="stroke_12" type="white_dashed">
+            <tm:Point><tm:x>552.0000</tm:x><tm:y>-51.0000</tm:y></tm:Point>
+            <tm:Point><tm:x>549.0000</tm:x><tm:y>-188.0000</tm:y></tm:Point>
+          </tm:Stroke>
+          <tm:Stroke id="stroke_13" type="boundary">
+            <tm:Point><tm:x>548.5008</tm:x><tm:y>-50.9234</tm:y></tm:Point>
+            <tm:Point><tm:x>545.5008</tm:x><tm:y>-187.9234</tm:y></tm:Point>
+          </tm:Stroke>
+        </tm:Strokes>
+        <tm:PolygonLanes>
+          <tm:PolygonLane index="0">
+            <tm:LeftBoundary strokeId="stroke_11" />
+            <tm:RightBoundary strokeId="stroke_12" />
+          </tm:PolygonLane>
+          <tm:PolygonLane index="1">
+            <tm:LeftBoundary strokeId="stroke_12" />
+            <tm:RightBoundary strokeId="stroke_13" />
+          </tm:PolygonLane>
+        </tm:PolygonLanes>
+      </tm:Link>
+      <tm:Link>
+        <tm:id>3</tm:id>
+        <tm:name>link_14</tm:name>
+        <tm:sourceNodeId>0</tm:sourceNodeId>
+        <tm:destinationNodeId>2</tm:destinationNodeId>
+        <tm:length>20.0000</tm:length>
+        <tm:Segments>
+          <tm:TrapeziumSegment>
+             <tm:id>0</tm:id><tm:length>20.0000</tm:length><tm:prevSegmentId>-1</tm:prevSegmentId><tm:nextSegmentId>-1</tm:nextSegmentId><tm:startWaypointId>0</tm:startWaypointId><tm:endWaypointId>1</tm:endWaypointId>
+            <tm:Lanes>
+              <tm:Lane>
+                <tm:index>0</tm:index>
+                <tm:length>20.0000</tm:length>
+                <tm:width>3.50</tm:width>
+                <tm:prevLaneIndex>-1</tm:prevLaneIndex>
+                <tm:nextLaneIndex>-1</tm:nextLaneIndex>
+              </tm:Lane>
+              <tm:Lane>
+                <tm:index>1</tm:index>
+                <tm:length>20.0000</tm:length>
+                <tm:width>3.50</tm:width>
+                <tm:prevLaneIndex>-1</tm:prevLaneIndex>
+                <tm:nextLaneIndex>-1</tm:nextLaneIndex>
+              </tm:Lane>
+            </tm:Lanes>
+            <tm:trapeziumShift>0</tm:trapeziumShift>
+            <tm:TrapeziumGeometry>
+              <tm:LeftSide><tm:Start><tm:x>548.5001</tm:x><tm:y>-211.9785</tm:y></tm:Start><tm:End><tm:x>548.3774</tm:x><tm:y>-231.9782</tm:y></tm:End></tm:LeftSide>
+              <tm:RightSide><tm:Start><tm:x>555.4999</tm:x><tm:y>-212.0215</tm:y></tm:Start><tm:End><tm:x>555.3772</tm:x><tm:y>-232.0211</tm:y></tm:End></tm:RightSide>
+            </tm:TrapeziumGeometry>
+          </tm:TrapeziumSegment>
+        </tm:Segments>
+        <tm:Waypoints>
+          <tm:Waypoint><tm:id>0</tm:id><tm:x>552.0000</tm:x><tm:y>-212.0000</tm:y></tm:Waypoint>
+          <tm:Waypoint><tm:id>1</tm:id><tm:x>551.8773</tm:x><tm:y>-231.9996</tm:y></tm:Waypoint>
+        </tm:Waypoints>
+        <tm:geometryType>lane-based</tm:geometryType>
+        <tm:EditorParametricConfig>
+          <tm:throughLanes>2</tm:throughLanes>
+          <tm:LeftPocket exists="false" lanes="1" length="30" taper="15" />
+          <tm:RightPocket exists="false" lanes="1" length="30" taper="15" />
+        </tm:EditorParametricConfig>
+        <tm:Strokes>
+          <tm:Stroke id="stroke_15" type="boundary">
+            <tm:Point><tm:x>555.4999</tm:x><tm:y>-212.0215</tm:y></tm:Point>
+            <tm:Point><tm:x>555.3772</tm:x><tm:y>-232.0211</tm:y></tm:Point>
+          </tm:Stroke>
+          <tm:Stroke id="stroke_16" type="white_dashed">
+            <tm:Point><tm:x>552.0000</tm:x><tm:y>-212.0000</tm:y></tm:Point>
+            <tm:Point><tm:x>551.8773</tm:x><tm:y>-231.9996</tm:y></tm:Point>
+          </tm:Stroke>
+          <tm:Stroke id="stroke_17" type="boundary">
+            <tm:Point><tm:x>548.5001</tm:x><tm:y>-211.9785</tm:y></tm:Point>
+            <tm:Point><tm:x>548.3774</tm:x><tm:y>-231.9782</tm:y></tm:Point>
+          </tm:Stroke>
+        </tm:Strokes>
+        <tm:PolygonLanes>
+          <tm:PolygonLane index="0">
+            <tm:LeftBoundary strokeId="stroke_15" />
+            <tm:RightBoundary strokeId="stroke_16" />
+          </tm:PolygonLane>
+          <tm:PolygonLane index="1">
+            <tm:LeftBoundary strokeId="stroke_16" />
+            <tm:RightBoundary strokeId="stroke_17" />
+          </tm:PolygonLane>
+        </tm:PolygonLanes>
+      </tm:Link>
+      <tm:Link>
+        <tm:id>4</tm:id>
+        <tm:name>link_1 (Cont.)</tm:name>
+        <tm:sourceNodeId>1</tm:sourceNodeId>
+        <tm:destinationNodeId>0</tm:destinationNodeId>
+        <tm:length>20.0000</tm:length>
+        <tm:Segments>
+          <tm:TrapeziumSegment>
+             <tm:id>0</tm:id><tm:length>20.0000</tm:length><tm:prevSegmentId>-1</tm:prevSegmentId><tm:nextSegmentId>-1</tm:nextSegmentId><tm:startWaypointId>0</tm:startWaypointId><tm:endWaypointId>1</tm:endWaypointId>
+            <tm:Lanes>
+              <tm:Lane>
+                <tm:index>0</tm:index>
+                <tm:length>20.0000</tm:length>
+                <tm:width>3.50</tm:width>
+                <tm:prevLaneIndex>-1</tm:prevLaneIndex>
+                <tm:nextLaneIndex>-1</tm:nextLaneIndex>
+              </tm:Lane>
+              <tm:Lane>
+                <tm:index>1</tm:index>
+                <tm:length>20.0000</tm:length>
+                <tm:width>3.50</tm:width>
+                <tm:prevLaneIndex>-1</tm:prevLaneIndex>
+                <tm:nextLaneIndex>-1</tm:nextLaneIndex>
+              </tm:Lane>
+              <tm:Lane>
+                <tm:index>2</tm:index>
+                <tm:length>20.0000</tm:length>
+                <tm:width>3.50</tm:width>
+                <tm:prevLaneIndex>-1</tm:prevLaneIndex>
+                <tm:nextLaneIndex>-1</tm:nextLaneIndex>
+              </tm:Lane>
+            </tm:Lanes>
+            <tm:trapeziumShift>0</tm:trapeziumShift>
+            <tm:TrapeziumGeometry>
+              <tm:LeftSide><tm:Start><tm:x>516.9604</tm:x><tm:y>-203.0966</tm:y></tm:Start><tm:End><tm:x>536.9598</tm:x><tm:y>-203.2498</tm:y></tm:End></tm:LeftSide>
+              <tm:RightSide><tm:Start><tm:x>517.0408</tm:x><tm:y>-192.5969</tm:y></tm:Start><tm:End><tm:x>537.0402</tm:x><tm:y>-192.7502</tm:y></tm:End></tm:RightSide>
+            </tm:TrapeziumGeometry>
+          </tm:TrapeziumSegment>
+        </tm:Segments>
+        <tm:Waypoints>
+          <tm:Waypoint><tm:id>0</tm:id><tm:x>517.0006</tm:x><tm:y>-197.8467</tm:y></tm:Waypoint>
+          <tm:Waypoint><tm:id>1</tm:id><tm:x>537.0000</tm:x><tm:y>-198.0000</tm:y></tm:Waypoint>
+        </tm:Waypoints>
+        <tm:geometryType>lane-based</tm:geometryType>
+        <tm:EditorParametricConfig>
+          <tm:throughLanes>2</tm:throughLanes>
+          <tm:LeftPocket exists="false" lanes="1" length="30" taper="15" />
+          <tm:RightPocket exists="true" lanes="1" length="30" taper="15" />
+        </tm:EditorParametricConfig>
+        <tm:Strokes>
+          <tm:Stroke id="stroke_29" type="boundary">
+            <tm:Point><tm:x>517.0274</tm:x><tm:y>-194.3469</tm:y></tm:Point>
+            <tm:Point><tm:x>537.0268</tm:x><tm:y>-194.5001</tm:y></tm:Point>
+          </tm:Stroke>
+          <tm:Stroke id="stroke_30" type="white_dashed">
+            <tm:Point><tm:x>517.0006</tm:x><tm:y>-197.8467</tm:y></tm:Point>
+            <tm:Point><tm:x>537.0000</tm:x><tm:y>-198.0000</tm:y></tm:Point>
+          </tm:Stroke>
+          <tm:Stroke id="stroke_31" type="white_dashed">
+            <tm:Point><tm:x>516.9738</tm:x><tm:y>-201.3466</tm:y></tm:Point>
+            <tm:Point><tm:x>536.9732</tm:x><tm:y>-201.4999</tm:y></tm:Point>
+          </tm:Stroke>
+          <tm:Stroke id="stroke_32" type="boundary">
+            <tm:Point><tm:x>516.9469</tm:x><tm:y>-204.8465</tm:y></tm:Point>
+            <tm:Point><tm:x>536.9464</tm:x><tm:y>-204.9998</tm:y></tm:Point>
+          </tm:Stroke>
+        </tm:Strokes>
+        <tm:PolygonLanes>
+          <tm:PolygonLane index="0">
+            <tm:LeftBoundary strokeId="stroke_29" />
+            <tm:RightBoundary strokeId="stroke_30" />
+          </tm:PolygonLane>
+          <tm:PolygonLane index="1">
+            <tm:LeftBoundary strokeId="stroke_30" />
+            <tm:RightBoundary strokeId="stroke_31" />
+          </tm:PolygonLane>
+          <tm:PolygonLane index="2">
+            <tm:LeftBoundary strokeId="stroke_31" />
+            <tm:RightBoundary strokeId="stroke_32" />
+          </tm:PolygonLane>
+        </tm:PolygonLanes>
+      </tm:Link>
+      <tm:Link>
+        <tm:id>5</tm:id>
+        <tm:name>link_14 (Cont.)</tm:name>
+        <tm:sourceNodeId>2</tm:sourceNodeId>
+        <tm:destinationNodeId>-1</tm:destinationNodeId>
+        <tm:length>143.0031</tm:length>
+        <tm:Segments>
+          <tm:TrapeziumSegment>
+             <tm:id>0</tm:id><tm:length>143.0031</tm:length><tm:prevSegmentId>-1</tm:prevSegmentId><tm:nextSegmentId>-1</tm:nextSegmentId><tm:startWaypointId>0</tm:startWaypointId><tm:endWaypointId>1</tm:endWaypointId>
+            <tm:Lanes>
+              <tm:Lane>
+                <tm:index>0</tm:index>
+                <tm:length>143.0031</tm:length>
+                <tm:width>3.50</tm:width>
+                <tm:prevLaneIndex>-1</tm:prevLaneIndex>
+                <tm:nextLaneIndex>-1</tm:nextLaneIndex>
+              </tm:Lane>
+              <tm:Lane>
+                <tm:index>1</tm:index>
+                <tm:length>143.0031</tm:length>
+                <tm:width>3.50</tm:width>
+                <tm:prevLaneIndex>-1</tm:prevLaneIndex>
+                <tm:nextLaneIndex>-1</tm:nextLaneIndex>
+              </tm:Lane>
+            </tm:Lanes>
+            <tm:trapeziumShift>0</tm:trapeziumShift>
+            <tm:TrapeziumGeometry>
+              <tm:LeftSide><tm:Start><tm:x>548.3774</tm:x><tm:y>-231.9782</tm:y></tm:Start><tm:End><tm:x>547.5001</tm:x><tm:y>-374.9785</tm:y></tm:End></tm:LeftSide>
+              <tm:RightSide><tm:Start><tm:x>555.3772</tm:x><tm:y>-232.0211</tm:y></tm:Start><tm:End><tm:x>554.4999</tm:x><tm:y>-375.0215</tm:y></tm:End></tm:RightSide>
+            </tm:TrapeziumGeometry>
+          </tm:TrapeziumSegment>
+        </tm:Segments>
+        <tm:Waypoints>
+          <tm:Waypoint><tm:id>0</tm:id><tm:x>551.8773</tm:x><tm:y>-231.9996</tm:y></tm:Waypoint>
+          <tm:Waypoint><tm:id>1</tm:id><tm:x>551.0000</tm:x><tm:y>-375.0000</tm:y></tm:Waypoint>
+        </tm:Waypoints>
+        <tm:geometryType>lane-based</tm:geometryType>
+        <tm:EditorParametricConfig>
+          <tm:throughLanes>2</tm:throughLanes>
+          <tm:LeftPocket exists="false" lanes="1" length="30" taper="15" />
+          <tm:RightPocket exists="false" lanes="1" length="30" taper="15" />
+        </tm:EditorParametricConfig>
+        <tm:Strokes>
+          <tm:Stroke id="stroke_38" type="boundary">
+            <tm:Point><tm:x>555.3772</tm:x><tm:y>-232.0211</tm:y></tm:Point>
+            <tm:Point><tm:x>554.4999</tm:x><tm:y>-375.0214</tm:y></tm:Point>
+          </tm:Stroke>
+          <tm:Stroke id="stroke_39" type="white_dashed">
+            <tm:Point><tm:x>551.8773</tm:x><tm:y>-231.9996</tm:y></tm:Point>
+            <tm:Point><tm:x>551.0000</tm:x><tm:y>-374.9999</tm:y></tm:Point>
+          </tm:Stroke>
+          <tm:Stroke id="stroke_40" type="boundary">
+            <tm:Point><tm:x>548.3774</tm:x><tm:y>-231.9782</tm:y></tm:Point>
+            <tm:Point><tm:x>547.5001</tm:x><tm:y>-374.9785</tm:y></tm:Point>
+          </tm:Stroke>
+        </tm:Strokes>
+        <tm:PolygonLanes>
+          <tm:PolygonLane index="0">
+            <tm:LeftBoundary strokeId="stroke_38" />
+            <tm:RightBoundary strokeId="stroke_39" />
+          </tm:PolygonLane>
+          <tm:PolygonLane index="1">
+            <tm:LeftBoundary strokeId="stroke_39" />
+            <tm:RightBoundary strokeId="stroke_40" />
+          </tm:PolygonLane>
+        </tm:PolygonLanes>
+      </tm:Link>
+      <tm:Link>
+        <tm:id>6</tm:id>
+        <tm:name>SlipLane_link_1_to_link_14</tm:name>
+        <tm:sourceNodeId>1</tm:sourceNodeId>
+        <tm:destinationNodeId>2</tm:destinationNodeId>
+        <tm:length>49.4916</tm:length>
+        <tm:Segments>
+          <tm:TrapeziumSegment>
+             <tm:id>0</tm:id><tm:length>49.4916</tm:length><tm:prevSegmentId>-1</tm:prevSegmentId><tm:nextSegmentId>-1</tm:nextSegmentId><tm:startWaypointId>0</tm:startWaypointId><tm:endWaypointId>8</tm:endWaypointId>
+            <tm:Lanes>
+              <tm:Lane>
+                <tm:index>0</tm:index>
+                <tm:length>49.4916</tm:length>
+                <tm:width>3.50</tm:width>
+                <tm:prevLaneIndex>-1</tm:prevLaneIndex>
+                <tm:nextLaneIndex>-1</tm:nextLaneIndex>
+              </tm:Lane>
+            </tm:Lanes>
+            <tm:trapeziumShift>0</tm:trapeziumShift>
+            <tm:TrapeziumGeometry>
+              <tm:LeftSide><tm:Start><tm:x>517.3472</tm:x><tm:y>-204.8468</tm:y></tm:Start><tm:End><tm:x>548.3849</tm:x><tm:y>-231.6139</tm:y></tm:End></tm:LeftSide>
+              <tm:RightSide><tm:Start><tm:x>517.5735</tm:x><tm:y>-201.3541</tm:y></tm:Start><tm:End><tm:x>551.8759</tm:x><tm:y>-231.3638</tm:y></tm:End></tm:RightSide>
+            </tm:TrapeziumGeometry>
+          </tm:TrapeziumSegment>
+        </tm:Segments>
+        <tm:Waypoints>
+          <tm:Waypoint><tm:id>0</tm:id><tm:x>517.4603</tm:x><tm:y>-203.1004</tm:y></tm:Waypoint>
+          <tm:Waypoint><tm:id>1</tm:id><tm:x>525.1551</tm:x><tm:y>-203.5990</tm:y></tm:Waypoint>
+          <tm:Waypoint><tm:id>2</tm:id><tm:x>531.8182</tm:x><tm:y>-204.9691</tm:y></tm:Waypoint>
+          <tm:Waypoint><tm:id>3</tm:id><tm:x>537.4496</tm:x><tm:y>-207.2105</tm:y></tm:Waypoint>
+          <tm:Waypoint><tm:id>4</tm:id><tm:x>542.0492</tm:x><tm:y>-210.3234</tm:y></tm:Waypoint>
+          <tm:Waypoint><tm:id>5</tm:id><tm:x>545.6171</tm:x><tm:y>-214.3076</tm:y></tm:Waypoint>
+          <tm:Waypoint><tm:id>6</tm:id><tm:x>548.1533</tm:x><tm:y>-219.1633</tm:y></tm:Waypoint>
+          <tm:Waypoint><tm:id>7</tm:id><tm:x>549.6577</tm:x><tm:y>-224.8904</tm:y></tm:Waypoint>
+          <tm:Waypoint><tm:id>8</tm:id><tm:x>550.1304</tm:x><tm:y>-231.4889</tm:y></tm:Waypoint>
+        </tm:Waypoints>
+        <tm:geometryType>lane-based</tm:geometryType>
+        <tm:Strokes>
+          <tm:Stroke id="stroke_46" type="boundary">
+            <tm:Point><tm:x>517.5735</tm:x><tm:y>-201.3541</tm:y></tm:Point>
+            <tm:Point><tm:x>525.3885</tm:x><tm:y>-201.8647</tm:y></tm:Point>
+            <tm:Point><tm:x>532.3200</tm:x><tm:y>-203.2926</tm:y></tm:Point>
+            <tm:Point><tm:x>538.2684</tm:x><tm:y>-205.6639</tm:y></tm:Point>
+            <tm:Point><tm:x>543.2001</tm:x><tm:y>-209.0051</tm:y></tm:Point>
+            <tm:Point><tm:x>547.0556</tm:x><tm:y>-213.3111</tm:y></tm:Point>
+            <tm:Point><tm:x>549.7854</tm:x><tm:y>-218.5319</tm:y></tm:Point>
+            <tm:Point><tm:x>551.3842</tm:x><tm:y>-224.6043</tm:y></tm:Point>
+            <tm:Point><tm:x>551.8759</tm:x><tm:y>-231.3638</tm:y></tm:Point>
+          </tm:Stroke>
+          <tm:Stroke id="stroke_47" type="boundary">
+            <tm:Point><tm:x>517.3472</tm:x><tm:y>-204.8468</tm:y></tm:Point>
+            <tm:Point><tm:x>524.9218</tm:x><tm:y>-205.3334</tm:y></tm:Point>
+            <tm:Point><tm:x>531.3165</tm:x><tm:y>-206.6456</tm:y></tm:Point>
+            <tm:Point><tm:x>536.6308</tm:x><tm:y>-208.7572</tm:y></tm:Point>
+            <tm:Point><tm:x>540.8983</tm:x><tm:y>-211.6417</tm:y></tm:Point>
+            <tm:Point><tm:x>544.1785</tm:x><tm:y>-215.3042</tm:y></tm:Point>
+            <tm:Point><tm:x>546.5211</tm:x><tm:y>-219.7947</tm:y></tm:Point>
+            <tm:Point><tm:x>547.9312</tm:x><tm:y>-225.1765</tm:y></tm:Point>
+            <tm:Point><tm:x>548.3849</tm:x><tm:y>-231.6139</tm:y></tm:Point>
+          </tm:Stroke>
+        </tm:Strokes>
+        <tm:PolygonLanes>
+          <tm:PolygonLane index="0">
+            <tm:LeftBoundary strokeId="stroke_46" />
+            <tm:RightBoundary strokeId="stroke_47" />
+          </tm:PolygonLane>
+        </tm:PolygonLanes>
+      </tm:Link>
+    </tm:Links>
+    <tm:Nodes>
+      <tm:RegularNode><tm:id>0</tm:id><tm:name></tm:name>
+        <tm:pedestrianVolume>0</tm:pedestrianVolume>
+        <tm:crossOnceProb>100</tm:crossOnceProb>
+        <tm:crossTwiceProb>0</tm:crossTwiceProb>
+        <tm:TurningRatios>
+          <tm:IncomingLink id="4">
+            <tm:TurnTo linkId="1" probability="1.0000" />
+            <tm:TurnTo linkId="3" probability="0.0000" />
+          </tm:IncomingLink>
+          <tm:IncomingLink id="2">
+            <tm:TurnTo linkId="1" probability="0.5000" />
+            <tm:TurnTo linkId="3" probability="0.5000" />
+          </tm:IncomingLink>
+        </tm:TurningRatios>
+        <tm:TransitionRules>
+          <tm:TransitionRule><tm:id>0</tm:id><tm:length>33.0793</tm:length><tm:width>3.50</tm:width><tm:sourceLinkId>4</tm:sourceLinkId><tm:sourceLaneIndex>0</tm:sourceLaneIndex><tm:destinationLinkId>1</tm:destinationLinkId><tm:destinationLaneIndex>0</tm:destinationLaneIndex>
+            <tm:EditorGroupId>editor_group_4</tm:EditorGroupId>
+            <tm:BezierCurveGeometry><tm:ReferencePoints>
+              <tm:Point><tm:x>537.0134</tm:x><tm:y>-196.2501</tm:y></tm:Point>
+              <tm:Point><tm:x>550.2320</tm:x><tm:y>-196.3513</tm:y></tm:Point>
+              <tm:Point><tm:x>556.8498</tm:x><tm:y>-195.7920</tm:y></tm:Point>
+              <tm:Point><tm:x>570.0608</tm:x><tm:y>-196.2511</tm:y></tm:Point>
+            </tm:ReferencePoints></tm:BezierCurveGeometry>
+          </tm:TransitionRule>
+          <tm:TransitionRule><tm:id>1</tm:id><tm:length>32.9847</tm:length><tm:width>3.50</tm:width><tm:sourceLinkId>4</tm:sourceLinkId><tm:sourceLaneIndex>1</tm:sourceLaneIndex><tm:destinationLinkId>1</tm:destinationLinkId><tm:destinationLaneIndex>1</tm:destinationLaneIndex>
+            <tm:EditorGroupId>editor_group_4</tm:EditorGroupId>
+            <tm:BezierCurveGeometry><tm:ReferencePoints>
+              <tm:Point><tm:x>536.9866</tm:x><tm:y>-199.7499</tm:y></tm:Point>
+              <tm:Point><tm:x>550.1673</tm:x><tm:y>-199.8509</tm:y></tm:Point>
+              <tm:Point><tm:x>556.7661</tm:x><tm:y>-199.2912</tm:y></tm:Point>
+              <tm:Point><tm:x>569.9392</tm:x><tm:y>-199.7489</tm:y></tm:Point>
+            </tm:ReferencePoints></tm:BezierCurveGeometry>
+          </tm:TransitionRule>
+          <tm:TransitionRule><tm:id>2</tm:id><tm:length>27.9040</tm:length><tm:width>3.50</tm:width><tm:sourceLinkId>2</tm:sourceLinkId><tm:sourceLaneIndex>0</tm:sourceLaneIndex><tm:destinationLinkId>1</tm:destinationLinkId><tm:destinationLaneIndex>0</tm:destinationLaneIndex>
+            <tm:EditorGroupId>editor_group_3</tm:EditorGroupId>
+            <tm:BezierCurveGeometry><tm:ReferencePoints>
+              <tm:Point><tm:x>550.7496</tm:x><tm:y>-188.0383</tm:y></tm:Point>
+              <tm:Point><tm:x>550.5658</tm:x><tm:y>-196.4303</tm:y></tm:Point>
+              <tm:Point><tm:x>561.6718</tm:x><tm:y>-195.9595</tm:y></tm:Point>
+              <tm:Point><tm:x>570.0608</tm:x><tm:y>-196.2511</tm:y></tm:Point>
+            </tm:ReferencePoints></tm:BezierCurveGeometry>
+          </tm:TransitionRule>
+          <tm:TransitionRule><tm:id>3</tm:id><tm:length>33.2034</tm:length><tm:width>3.50</tm:width><tm:sourceLinkId>2</tm:sourceLinkId><tm:sourceLaneIndex>1</tm:sourceLaneIndex><tm:destinationLinkId>1</tm:destinationLinkId><tm:destinationLaneIndex>1</tm:destinationLaneIndex>
+            <tm:EditorGroupId>editor_group_3</tm:EditorGroupId>
+            <tm:BezierCurveGeometry><tm:ReferencePoints>
+              <tm:Point><tm:x>547.2504</tm:x><tm:y>-187.9617</tm:y></tm:Point>
+              <tm:Point><tm:x>547.0265</tm:x><tm:y>-198.1864</tm:y></tm:Point>
+              <tm:Point><tm:x>559.7182</tm:x><tm:y>-199.3938</tm:y></tm:Point>
+              <tm:Point><tm:x>569.9392</tm:x><tm:y>-199.7489</tm:y></tm:Point>
+            </tm:ReferencePoints></tm:BezierCurveGeometry>
+          </tm:TransitionRule>
+          <tm:TransitionRule><tm:id>4</tm:id><tm:length>25.0108</tm:length><tm:width>3.50</tm:width><tm:sourceLinkId>2</tm:sourceLinkId><tm:sourceLaneIndex>0</tm:sourceLaneIndex><tm:destinationLinkId>3</tm:destinationLinkId><tm:destinationLaneIndex>0</tm:destinationLaneIndex>
+            <tm:EditorGroupId>editor_group_2</tm:EditorGroupId>
+            <tm:BezierCurveGeometry><tm:ReferencePoints>
+              <tm:Point><tm:x>550.7496</tm:x><tm:y>-188.0383</tm:y></tm:Point>
+              <tm:Point><tm:x>550.5380</tm:x><tm:y>-197.6998</tm:y></tm:Point>
+              <tm:Point><tm:x>553.8093</tm:x><tm:y>-202.3471</tm:y></tm:Point>
+              <tm:Point><tm:x>553.7500</tm:x><tm:y>-212.0107</tm:y></tm:Point>
+            </tm:ReferencePoints></tm:BezierCurveGeometry>
+          </tm:TransitionRule>
+          <tm:TransitionRule><tm:id>5</tm:id><tm:length>25.0638</tm:length><tm:width>3.50</tm:width><tm:sourceLinkId>2</tm:sourceLinkId><tm:sourceLaneIndex>1</tm:sourceLaneIndex><tm:destinationLinkId>3</tm:destinationLinkId><tm:destinationLaneIndex>1</tm:destinationLaneIndex>
+            <tm:EditorGroupId>editor_group_2</tm:EditorGroupId>
+            <tm:BezierCurveGeometry><tm:ReferencePoints>
+              <tm:Point><tm:x>547.2504</tm:x><tm:y>-187.9617</tm:y></tm:Point>
+              <tm:Point><tm:x>547.0384</tm:x><tm:y>-197.6450</tm:y></tm:Point>
+              <tm:Point><tm:x>550.3095</tm:x><tm:y>-202.3038</tm:y></tm:Point>
+              <tm:Point><tm:x>550.2500</tm:x><tm:y>-211.9893</tm:y></tm:Point>
+            </tm:ReferencePoints></tm:BezierCurveGeometry>
+          </tm:TransitionRule>
+        </tm:TransitionRules>
+        <tm:PolygonGeometry>
+          <tm:Point><tm:x>537.0268</tm:x><tm:y>-194.5001</tm:y></tm:Point>
+          <tm:Point><tm:x>545.5008</tm:x><tm:y>-187.9234</tm:y></tm:Point>
+          <tm:Point><tm:x>552.4992</tm:x><tm:y>-188.0766</tm:y></tm:Point>
+          <tm:Point><tm:x>570.1215</tm:x><tm:y>-194.5021</tm:y></tm:Point>
+          <tm:Point><tm:x>569.8785</tm:x><tm:y>-201.4979</tm:y></tm:Point>
+          <tm:Point><tm:x>555.4999</tm:x><tm:y>-212.0215</tm:y></tm:Point>
+          <tm:Point><tm:x>548.5001</tm:x><tm:y>-211.9785</tm:y></tm:Point>
+          <tm:Point><tm:x>536.9464</tm:x><tm:y>-204.9998</tm:y></tm:Point>
+        </tm:PolygonGeometry>
+      </tm:RegularNode>
+      <tm:RegularNode><tm:id>1</tm:id><tm:name></tm:name>
+        <tm:pedestrianVolume>0</tm:pedestrianVolume>
+        <tm:crossOnceProb>100</tm:crossOnceProb>
+        <tm:crossTwiceProb>0</tm:crossTwiceProb>
+        <tm:TurningRatios>
+          <tm:IncomingLink id="0">
+            <tm:TurnTo linkId="4" probability="0.5000" />
+            <tm:TurnTo linkId="6" probability="0.5000" />
+          </tm:IncomingLink>
+        </tm:TurningRatios>
+        <tm:TransitionRules>
+          <tm:TransitionRule><tm:id>6</tm:id><tm:length>0.0000</tm:length><tm:width>3.50</tm:width><tm:sourceLinkId>0</tm:sourceLinkId><tm:sourceLaneIndex>0</tm:sourceLaneIndex><tm:destinationLinkId>4</tm:destinationLinkId><tm:destinationLaneIndex>0</tm:destinationLaneIndex>
+            <tm:EditorGroupId>editor_group_1</tm:EditorGroupId>
+            <tm:BezierCurveGeometry><tm:ReferencePoints>
+              <tm:Point><tm:x>517.0140</tm:x><tm:y>-196.0968</tm:y></tm:Point>
+              <tm:Point><tm:x>517.0140</tm:x><tm:y>-196.0968</tm:y></tm:Point>
+              <tm:Point><tm:x>517.0140</tm:x><tm:y>-196.0968</tm:y></tm:Point>
+              <tm:Point><tm:x>517.0140</tm:x><tm:y>-196.0968</tm:y></tm:Point>
+            </tm:ReferencePoints></tm:BezierCurveGeometry>
+          </tm:TransitionRule>
+          <tm:TransitionRule><tm:id>7</tm:id><tm:length>0.0000</tm:length><tm:width>3.50</tm:width><tm:sourceLinkId>0</tm:sourceLinkId><tm:sourceLaneIndex>1</tm:sourceLaneIndex><tm:destinationLinkId>4</tm:destinationLinkId><tm:destinationLaneIndex>1</tm:destinationLaneIndex>
+            <tm:EditorGroupId>editor_group_1</tm:EditorGroupId>
+            <tm:BezierCurveGeometry><tm:ReferencePoints>
+              <tm:Point><tm:x>516.9872</tm:x><tm:y>-199.5967</tm:y></tm:Point>
+              <tm:Point><tm:x>516.9872</tm:x><tm:y>-199.5967</tm:y></tm:Point>
+              <tm:Point><tm:x>516.9872</tm:x><tm:y>-199.5967</tm:y></tm:Point>
+              <tm:Point><tm:x>516.9872</tm:x><tm:y>-199.5967</tm:y></tm:Point>
+            </tm:ReferencePoints></tm:BezierCurveGeometry>
+          </tm:TransitionRule>
+          <tm:TransitionRule><tm:id>8</tm:id><tm:length>0.0000</tm:length><tm:width>3.50</tm:width><tm:sourceLinkId>0</tm:sourceLinkId><tm:sourceLaneIndex>2</tm:sourceLaneIndex><tm:destinationLinkId>4</tm:destinationLinkId><tm:destinationLaneIndex>2</tm:destinationLaneIndex>
+            <tm:EditorGroupId>editor_group_1</tm:EditorGroupId>
+            <tm:BezierCurveGeometry><tm:ReferencePoints>
+              <tm:Point><tm:x>516.9604</tm:x><tm:y>-203.0966</tm:y></tm:Point>
+              <tm:Point><tm:x>516.9604</tm:x><tm:y>-203.0966</tm:y></tm:Point>
+              <tm:Point><tm:x>516.9604</tm:x><tm:y>-203.0966</tm:y></tm:Point>
+              <tm:Point><tm:x>516.9604</tm:x><tm:y>-203.0966</tm:y></tm:Point>
+            </tm:ReferencePoints></tm:BezierCurveGeometry>
+          </tm:TransitionRule>
+          <tm:TransitionRule><tm:id>11</tm:id><tm:length>0.5010</tm:length><tm:width>3.50</tm:width><tm:sourceLinkId>0</tm:sourceLinkId><tm:sourceLaneIndex>2</tm:sourceLaneIndex><tm:destinationLinkId>6</tm:destinationLinkId><tm:destinationLaneIndex>0</tm:destinationLaneIndex>
+            <tm:BezierCurveGeometry><tm:ReferencePoints>
+              <tm:Point><tm:x>516.9604</tm:x><tm:y>-203.0966</tm:y></tm:Point>
+              <tm:Point><tm:x>517.1604</tm:x><tm:y>-203.0981</tm:y></tm:Point>
+              <tm:Point><tm:x>517.2608</tm:x><tm:y>-203.0875</tm:y></tm:Point>
+              <tm:Point><tm:x>517.4603</tm:x><tm:y>-203.1004</tm:y></tm:Point>
+            </tm:ReferencePoints></tm:BezierCurveGeometry>
+          </tm:TransitionRule>
+        </tm:TransitionRules>
+        <tm:PolygonGeometry>
+          <tm:Point><tm:x>517.0274</tm:x><tm:y>-194.3469</tm:y></tm:Point>
+          <tm:Point><tm:x>517.0274</tm:x><tm:y>-194.3469</tm:y></tm:Point>
+          <tm:Point><tm:x>517.5735</tm:x><tm:y>-201.3541</tm:y></tm:Point>
+          <tm:Point><tm:x>517.3472</tm:x><tm:y>-204.8468</tm:y></tm:Point>
+          <tm:Point><tm:x>516.9469</tm:x><tm:y>-204.8465</tm:y></tm:Point>
+          <tm:Point><tm:x>516.9469</tm:x><tm:y>-204.8465</tm:y></tm:Point>
+        </tm:PolygonGeometry>
+      </tm:RegularNode>
+      <tm:RegularNode><tm:id>2</tm:id><tm:name></tm:name>
+        <tm:pedestrianVolume>0</tm:pedestrianVolume>
+        <tm:crossOnceProb>100</tm:crossOnceProb>
+        <tm:crossTwiceProb>0</tm:crossTwiceProb>
+        <tm:TurningRatios>
+          <tm:IncomingLink id="3">
+            <tm:TurnTo linkId="5" probability="1.0000" />
+          </tm:IncomingLink>
+          <tm:IncomingLink id="6">
+            <tm:TurnTo linkId="5" probability="1.0000" />
+          </tm:IncomingLink>
+        </tm:TurningRatios>
+        <tm:TransitionRules>
+          <tm:TransitionRule><tm:id>9</tm:id><tm:length>0.0000</tm:length><tm:width>3.50</tm:width><tm:sourceLinkId>3</tm:sourceLinkId><tm:sourceLaneIndex>0</tm:sourceLaneIndex><tm:destinationLinkId>5</tm:destinationLinkId><tm:destinationLaneIndex>0</tm:destinationLaneIndex>
+            <tm:EditorGroupId>editor_group_0</tm:EditorGroupId>
+            <tm:BezierCurveGeometry><tm:ReferencePoints>
+              <tm:Point><tm:x>553.6273</tm:x><tm:y>-232.0104</tm:y></tm:Point>
+              <tm:Point><tm:x>553.6273</tm:x><tm:y>-232.0104</tm:y></tm:Point>
+              <tm:Point><tm:x>553.6273</tm:x><tm:y>-232.0104</tm:y></tm:Point>
+              <tm:Point><tm:x>553.6273</tm:x><tm:y>-232.0104</tm:y></tm:Point>
+            </tm:ReferencePoints></tm:BezierCurveGeometry>
+          </tm:TransitionRule>
+          <tm:TransitionRule><tm:id>10</tm:id><tm:length>0.0000</tm:length><tm:width>3.50</tm:width><tm:sourceLinkId>3</tm:sourceLinkId><tm:sourceLaneIndex>1</tm:sourceLaneIndex><tm:destinationLinkId>5</tm:destinationLinkId><tm:destinationLaneIndex>1</tm:destinationLaneIndex>
+            <tm:EditorGroupId>editor_group_0</tm:EditorGroupId>
+            <tm:BezierCurveGeometry><tm:ReferencePoints>
+              <tm:Point><tm:x>550.1273</tm:x><tm:y>-231.9889</tm:y></tm:Point>
+              <tm:Point><tm:x>550.1273</tm:x><tm:y>-231.9889</tm:y></tm:Point>
+              <tm:Point><tm:x>550.1273</tm:x><tm:y>-231.9889</tm:y></tm:Point>
+              <tm:Point><tm:x>550.1273</tm:x><tm:y>-231.9889</tm:y></tm:Point>
+            </tm:ReferencePoints></tm:BezierCurveGeometry>
+          </tm:TransitionRule>
+          <tm:TransitionRule><tm:id>12</tm:id><tm:length>0.5018</tm:length><tm:width>3.50</tm:width><tm:sourceLinkId>6</tm:sourceLinkId><tm:sourceLaneIndex>0</tm:sourceLaneIndex><tm:destinationLinkId>5</tm:destinationLinkId><tm:destinationLaneIndex>1</tm:destinationLaneIndex>
+            <tm:BezierCurveGeometry><tm:ReferencePoints>
+              <tm:Point><tm:x>550.1304</tm:x><tm:y>-231.4889</tm:y></tm:Point>
+              <tm:Point><tm:x>550.1447</tm:x><tm:y>-231.6884</tm:y></tm:Point>
+              <tm:Point><tm:x>550.1286</tm:x><tm:y>-231.7889</tm:y></tm:Point>
+              <tm:Point><tm:x>550.1273</tm:x><tm:y>-231.9889</tm:y></tm:Point>
+            </tm:ReferencePoints></tm:BezierCurveGeometry>
+          </tm:TransitionRule>
+        </tm:TransitionRules>
+        <tm:PolygonGeometry>
+          <tm:Point><tm:x>548.3849</tm:x><tm:y>-231.6139</tm:y></tm:Point>
+          <tm:Point><tm:x>551.8759</tm:x><tm:y>-231.3638</tm:y></tm:Point>
+          <tm:Point><tm:x>555.3772</tm:x><tm:y>-232.0211</tm:y></tm:Point>
+          <tm:Point><tm:x>555.3772</tm:x><tm:y>-232.0211</tm:y></tm:Point>
+          <tm:Point><tm:x>548.3774</tm:x><tm:y>-231.9782</tm:y></tm:Point>
+          <tm:Point><tm:x>548.3774</tm:x><tm:y>-231.9782</tm:y></tm:Point>
+        </tm:PolygonGeometry>
+      </tm:RegularNode>
+    </tm:Nodes>
+    <tm:RoadMarkings>
+      <tm:RoadMarking>
+        <tm:id>mark_50</tm:id>
+        <tm:type>channelization</tm:type>
+        <tm:isFree>true</tm:isFree>
+        <tm:color>green</tm:color>
+        <tm:Boundary>
+          <tm:Point><tm:x>517.5735</tm:x><tm:y>-201.3541</tm:y></tm:Point>
+          <tm:Point><tm:x>548.0031</tm:x><tm:y>-204.8046</tm:y></tm:Point>
+          <tm:Point><tm:x>551.8759</tm:x><tm:y>-231.3638</tm:y></tm:Point>
+          <tm:Point><tm:x>551.3842</tm:x><tm:y>-224.6043</tm:y></tm:Point>
+          <tm:Point><tm:x>549.7854</tm:x><tm:y>-218.5319</tm:y></tm:Point>
+          <tm:Point><tm:x>547.0556</tm:x><tm:y>-213.3111</tm:y></tm:Point>
+          <tm:Point><tm:x>543.2001</tm:x><tm:y>-209.0051</tm:y></tm:Point>
+          <tm:Point><tm:x>538.2684</tm:x><tm:y>-205.6639</tm:y></tm:Point>
+          <tm:Point><tm:x>532.3200</tm:x><tm:y>-203.2926</tm:y></tm:Point>
+          <tm:Point><tm:x>525.3885</tm:x><tm:y>-201.8647</tm:y></tm:Point>
+        </tm:Boundary>
+      </tm:RoadMarking>
+    </tm:RoadMarkings>
+  </tm:RoadNetwork>
+  <tm:Agents>
+    <tm:TrafficLightNetworks>
+    </tm:TrafficLightNetworks>
+    <tm:Origins>
+    </tm:Origins>
+  </tm:Agents>
+  <tm:Meters>
+    <tm:LinkAverageTravelSpeedMeter>
+      <tm:id>0</tm:id>
+      <tm:name>det_51</tm:name>
+      <tm:DataCollectionModes />
+      <tm:linkId>0</tm:linkId>
+      <tm:segmentId>0</tm:segmentId>
+      <tm:position>29.7243</tm:position>
+      <tm:observedFlow>900</tm:observedFlow>
+      <tm:isSource>true</tm:isSource>
+      <tm:SpawnProfiles>
+        <tm:ProfileEntry><tm:profileId>car</tm:profileId><tm:weight>1</tm:weight></tm:ProfileEntry>
+      </tm:SpawnProfiles>
+    </tm:LinkAverageTravelSpeedMeter>
+    <tm:LinkAverageTravelSpeedMeter>
+      <tm:id>1</tm:id>
+      <tm:name>det_52</tm:name>
+      <tm:DataCollectionModes />
+      <tm:linkId>2</tm:linkId>
+      <tm:segmentId>0</tm:segmentId>
+      <tm:position>8.0099</tm:position>
+      <tm:observedFlow>600</tm:observedFlow>
+      <tm:isSource>true</tm:isSource>
+      <tm:SpawnProfiles>
+        <tm:ProfileEntry><tm:profileId>car</tm:profileId><tm:weight>1</tm:weight></tm:ProfileEntry>
+      </tm:SpawnProfiles>
+    </tm:LinkAverageTravelSpeedMeter>
+  </tm:Meters>
+</tm:TrafficModel>
