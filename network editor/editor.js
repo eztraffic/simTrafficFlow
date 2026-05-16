@@ -44,7 +44,7 @@ document.addEventListener('DOMContentLoaded', () => {
         drivingSide: 'right',  // 'right' (RHT) | 'left' (LHT)
         lanesPerDir: 2,        // 單向車道數
         medianWidth: 2.0,      // [新增] 分隔島寬度 (預設 2.0 米)
-        mode: 'standard'       // 'standard' (既有中心線) 或 'lane-based' (多邊形車道)
+        mode: 'parametric'       // 'standard' (既有中心線) 或 'lane-based' (多邊形車道)
     };
 
     // --- [新增] Lane-based 標線語意字典 (依據真實公尺比例調整) ---
@@ -224,26 +224,42 @@ document.addEventListener('DOMContentLoaded', () => {
     // 我們將 numLanes 參數改為 lanesOrNumLanes
     function createLink(points, lanesOrNumLanes = 2) {
         const id = window.generateId('link');
-        let lanes;
-
-        // 判斷傳入的是數字還是陣列
-        if (Array.isArray(lanesOrNumLanes)) {
-            lanes = lanesOrNumLanes.map(width => ({ width: width }));
-        } else {
-            lanes = Array.from({ length: lanesOrNumLanes }, () => ({ width: LANE_WIDTH }));
-        }
-
         const link = {
-            id,
-            name: id, // <--- [新增] 初始化名稱，預設為 ID
-            type: 'Link',
-            waypoints: points,
-            lanes,
-            startNodeId: null,
-            endNodeId: null,
+            id, name: id, type: 'Link',
+            waypoints: points, lanes: [],
+            startNodeId: null, endNodeId: null,
             konvaGroup: new Konva.Group({ id, draggable: false }),
             konvaHandles: [],
         };
+
+        // Determine initial lanes
+        let initialLanes = [];
+        if (Array.isArray(lanesOrNumLanes)) {
+            initialLanes = lanesOrNumLanes.map(width => ({ width: width, allowedVehicleProfiles: [] }));
+        } else {
+            initialLanes = Array.from({ length: lanesOrNumLanes }, () => ({ width: LANE_WIDTH, allowedVehicleProfiles: [] }));
+        }
+
+        // [新增] 依據目前的建立模式，賦予不同的幾何設定
+        if (linkCreationSettings.mode === 'parametric') {
+            link.geometryType = 'parametric';
+            link.lanes = initialLanes; // 必須先賦予 lanes，引擎才能正確讀取寬度
+            link.parametricConfig = {
+                throughLanes: initialLanes.length,
+                leftPocket: { exists: false, lanes: 1, length: 30, taper: 15 },
+                rightPocket: { exists: false, lanes: 1, length: 30, taper: 15 },
+                _prevLL: 0,
+                _prevTL: initialLanes.length,
+                _prevRL: 0
+            };
+            generateParametricStrokes(link); // 呼叫數學引擎產生實體點
+        } else if (linkCreationSettings.mode === 'lane-based') {
+            link.geometryType = 'lane-based';
+            link.lanes = initialLanes;
+        } else {
+            link.geometryType = 'standard';
+            link.lanes = initialLanes;
+        }
 
         network.links[id] = link;
         layer.add(link.konvaGroup);
@@ -747,6 +763,168 @@ document.addEventListener('DOMContentLoaded', () => {
         return newPoints;
     }
 
+    // ==========================================
+    // [新增] Parametric Intersection Mode 數學引擎
+    // ==========================================
+    window.generateParametricStrokes = function (link) {
+        const config = link.parametricConfig;
+        if (!config) return;
+
+        const LL = config.leftPocket.exists ? config.leftPocket.lanes : 0;
+        const TL = config.throughLanes || 1;
+        const RL = config.rightPocket.exists ? config.rightPocket.lanes : 0;
+        const totalStrokes = LL + TL + RL + 1;
+        const totalLanes = LL + TL + RL;
+
+        // --- ★★★ 核心修正：車道映射 (Lane Mapping) ★★★ ---
+        // 當使用者切換附加車道時，保留原本直行車道的「寬度」與「車種限制」
+        const prevLL = config._prevLL !== undefined ? config._prevLL : 0;
+        const prevTL = config._prevTL !== undefined ? config._prevTL : (link.lanes ? link.lanes.length : 1);
+        const prevRL = config._prevRL !== undefined ? config._prevRL : 0;
+
+        const newLanes = [];
+
+        // 1. 處理左轉附加車道
+        for (let i = 0; i < LL; i++) {
+            if (i < prevLL && link.lanes[i]) newLanes.push(link.lanes[i]);
+            else newLanes.push({ width: LANE_WIDTH, allowedVehicleProfiles: [] });
+        }
+        // 2. 處理直行車道
+        for (let i = 0; i < TL; i++) {
+            if (i < prevTL && link.lanes[prevLL + i]) newLanes.push(link.lanes[prevLL + i]);
+            else newLanes.push({ width: LANE_WIDTH, allowedVehicleProfiles: [] });
+        }
+        // 3. 處理右轉附加車道
+        for (let i = 0; i < RL; i++) {
+            if (i < prevRL && link.lanes[prevLL + prevTL + i]) newLanes.push(link.lanes[prevLL + prevTL + i]);
+            else newLanes.push({ width: LANE_WIDTH, allowedVehicleProfiles: [] });
+        }
+
+        // 更新歷史紀錄
+        config._prevLL = LL;
+        config._prevTL = TL;
+        config._prevRL = RL;
+
+        link.lanes = newLanes; // 覆寫回 link 以利下方取用寬度
+        // ----------------------------------------------------
+
+        const waypoints = link.waypoints;
+        if (waypoints.length < 2) return;
+
+        const totalLen = getPolylineLength(waypoints);
+
+        let importantDistances = [0, totalLen];
+        if (LL > 0) {
+            importantDistances.push(totalLen - config.leftPocket.length);
+            importantDistances.push(totalLen - (config.leftPocket.length + config.leftPocket.taper));
+        }
+        if (RL > 0) {
+            importantDistances.push(totalLen - config.rightPocket.length);
+            importantDistances.push(totalLen - (config.rightPocket.length + config.rightPocket.taper));
+        }
+
+        let curL = 0;
+        for (let i = 0; i < waypoints.length - 1; i++) {
+            importantDistances.push(curL);
+            curL += vecLen(getVector(waypoints[i], waypoints[i + 1]));
+        }
+
+        const roundedTotalLen = Math.round(totalLen * 1000) / 1000;
+        importantDistances = [...new Set(importantDistances.map(d => Math.round(d * 1000) / 1000))]
+            .filter(d => d >= -0.001 && d <= roundedTotalLen + 0.001)
+            .sort((a, b) => a - b);
+
+const getParametricStrokeType = (idx, LL, TL, RL) => {
+            const total = LL + TL + RL;
+            if (idx === 0 || idx === total) return 'boundary'; // 最外側左右邊界
+            // ★★★ [修正重點]：將所有內部車道線 (包含轉向與直行) 預設為白色單虛線 ★★★
+            return 'white_dashed'; 
+        };
+
+        const newStrokes = Array.from({ length: totalStrokes }, (_, i) => ({
+            id: (link.strokes && link.strokes[i]) ? link.strokes[i].id : (window.generateId ? window.generateId('stroke') : `stroke_${++idCounter}`),
+            type: getParametricStrokeType(i, LL, TL, RL),
+            points: []
+        }));
+
+        const getNormalAtD = (d) => {
+            let cl = 0;
+            for (let i = 0; i < waypoints.length - 1; i++) {
+                const p1 = waypoints[i];
+                const p2 = waypoints[i + 1];
+                const segL = vecLen(getVector(p1, p2));
+                if (Math.abs(d - cl) < 0.001) return (i === 0) ? getNormal(normalize(getVector(p1, p2))) : getMiterNormal(waypoints[i - 1], p1, p2);
+                if (Math.abs(d - (cl + segL)) < 0.001 && i === waypoints.length - 2) return getNormal(normalize(getVector(p1, p2)));
+                if (d > cl && d < cl + segL) return getNormal(normalize(getVector(p1, p2)));
+                cl += segL;
+            }
+            return getNormal(normalize(getVector(waypoints[waypoints.length - 2], waypoints[waypoints.length - 1])));
+        };
+
+        // --- ★★★ 核心修正：個別車道寬度偏移量計算 ★★★ ---
+        let throughWidth = 0;
+        for (let i = LL; i < LL + TL; i++) throughWidth += link.lanes[i].width;
+
+        const throughLeftEdge = -throughWidth / 2;
+        const throughRightEdge = throughWidth / 2;
+
+        // 計算基準狀態下，每一條標線的偏移量
+        const baseOffsets = [];
+        let totalLeftPocketWidth = 0;
+        for (let i = 0; i < LL; i++) totalLeftPocketWidth += link.lanes[i].width;
+
+        let currentOffset = throughLeftEdge - totalLeftPocketWidth;
+        baseOffsets[0] = currentOffset; // 最左側外緣
+
+        for (let i = 0; i < totalLanes; i++) {
+            currentOffset += link.lanes[i].width;
+            baseOffsets[i + 1] = currentOffset;
+        }
+
+        importantDistances.forEach(d => {
+            const { point } = getPointAlongPolyline(waypoints, d);
+            const normal = getNormalAtD(d);
+            const distFromEnd = totalLen - d;
+
+            let leftExpRatio = 0;
+            if (LL > 0) {
+                const len = config.leftPocket.length;
+                const tap = config.leftPocket.taper;
+                if (distFromEnd <= len + 0.001) leftExpRatio = 1;
+                else if (distFromEnd <= len + tap) leftExpRatio = 1 - ((distFromEnd - len) / tap);
+            }
+
+            let rightExpRatio = 0;
+            if (RL > 0) {
+                const len = config.rightPocket.length;
+                const tap = config.rightPocket.taper;
+                if (distFromEnd <= len + 0.001) rightExpRatio = 1;
+                else if (distFromEnd <= len + tap) rightExpRatio = 1 - ((distFromEnd - len) / tap);
+            }
+
+            for (let idx = 0; idx < totalStrokes; idx++) {
+                let offset = 0;
+                if (idx <= LL) {
+                    offset = throughLeftEdge + (baseOffsets[idx] - throughLeftEdge) * leftExpRatio;
+                } else if (idx <= LL + TL) {
+                    offset = baseOffsets[idx];
+                } else {
+                    offset = throughRightEdge + (baseOffsets[idx] - throughRightEdge) * rightExpRatio;
+                }
+
+                newStrokes[idx].points.push(add(point, scale(normal, offset)));
+            }
+        });
+
+        link.strokes = newStrokes;
+
+        for (let i = 0; i < totalLanes; i++) {
+            link.lanes[i].leftStrokeId = newStrokes[i].id;
+            link.lanes[i].rightStrokeId = newStrokes[i + 1].id;
+        }
+    };
+
+
     function getVector(p1, p2) { return { x: p2.x - p1.x, y: p2.y - p1.y }; }
     function vecLen(v) { return Math.sqrt(v.x * v.x + v.y * v.y); }
     function normalize(v) { const l = vecLen(v); return l > 0 ? { x: v.x / l, y: v.y / l } : { x: 0, y: 0 }; }
@@ -883,13 +1061,18 @@ document.addEventListener('DOMContentLoaded', () => {
         for (let i = 0; i < startTouching.length - 1; i++) {
             let p1 = startTouching[i].point;
             let p2 = startTouching[i + 1].point;
-            startPorts.push({ laneIndex: startTouching[i].idx, point: { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 } });
+            // [修正] 如果車道寬度小於 0.5 公尺 (漸變消失區)，則不產生 Port
+            if (vecLen(getVector(p1, p2)) > 0.5) {
+                startPorts.push({ laneIndex: startTouching[i].idx, point: { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 } });
+            }
         }
 
         for (let i = 0; i < endTouching.length - 1; i++) {
             let p1 = endTouching[i].point;
             let p2 = endTouching[i + 1].point;
-            endPorts.push({ laneIndex: endTouching[i].idx, point: { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 } });
+            if (vecLen(getVector(p1, p2)) > 0.5) {
+                endPorts.push({ laneIndex: endTouching[i].idx, point: { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 } });
+            }
         }
 
         return { startPorts, endPorts };
@@ -899,7 +1082,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!link || !link.lanes || link.waypoints.length < 2 || laneIndex < 0) return [];
 
         // --- [新增] Lane-Based 多型路徑計算 ---
-        if (link.geometryType === 'lane-based' && link.strokes && link.strokes.length > 1) {
+        if ((link.geometryType === 'lane-based' || link.geometryType === 'parametric') && link.strokes && link.strokes.length > 1) {
             const lane = link.lanes[laneIndex];
 
             // ★★★ [核心修正] 利用 ID 尋找真實標線 ★★★
@@ -1235,7 +1418,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // ==========================================
         // [新增] Lane-Based 多型渲染邏輯
         // ==========================================
-        if (link.geometryType === 'lane-based' && link.strokes) {
+        if ((link.geometryType === 'lane-based' || link.geometryType === 'parametric') && link.strokes) {
             // 1. 畫底層灰黑色路面
             const leftPoints = link.strokes[0].points;
             const rightPoints = link.strokes[link.strokes.length - 1].points;
@@ -1262,11 +1445,13 @@ document.addEventListener('DOMContentLoaded', () => {
             link.strokes.forEach(stroke => {
                 const style = STROKE_TYPES[stroke.type] || STROKE_TYPES['boundary'];
 
-                // 如果是雙線 (如雙黃線、一實一虛)
-                if (style.dual) {
+                                if (style.dual) {
                     const offset = style.gap / 2;
-                    const ptsLeft = getOffsetPolyline(stroke.points, offset);
-                    const ptsRight = getOffsetPolyline(stroke.points, -offset);
+                    
+                    // ★★★ [修正重點] Konva 座標系的 Y 軸向下，平移的法向量預設指向車流行進方向的「右側」 ★★★
+                    // 因此，物理世界車道的「左側 (Left)」應為 -offset，「右側 (Right)」應為 +offset
+                    const ptsLeft = getOffsetPolyline(stroke.points, -offset);
+                    const ptsRight = getOffsetPolyline(stroke.points, offset);
 
                     if (ptsLeft.length > 0) {
                         const lineLeft = new Konva.Line({
@@ -1689,7 +1874,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 // ==========================================
                 // [多型邏輯 A]：Lane-Based 模式 (取真實邊線)
                 // ==========================================
-                if (link.geometryType === 'lane-based' && link.strokes && link.strokes.length >= 2) {
+                if ((link.geometryType === 'lane-based' || link.geometryType === 'parametric') && link.strokes && link.strokes.length >= 2) {
                     const leftStroke = link.strokes[0];
                     const rightStroke = link.strokes[link.strokes.length - 1];
 
@@ -2226,7 +2411,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // ==========================================
             // [新增] Lane-based 路段的動態拓撲 Port
             // ==========================================
-            if (link.geometryType === 'lane-based' && link.strokes && link.strokes.length > 1) {
+            if ((link.geometryType === 'lane-based' || link.geometryType === 'parametric') && link.strokes && link.strokes.length > 1) {
                 const ports = getLaneBasedPorts(link);
 
                 ports.startPorts.forEach(sp => {
@@ -2830,8 +3015,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 // 模式 1 & 2：原本的 add-link 與 measure 邏輯
                 // ==========================================
                 else if (activeTool === 'add-link') {
-                    // (這裡保持您原本的 activeTool === 'add-link' 的邏輯...)
-                    if (linkCreationSettings.mode === 'standard' || !linkCreationSettings.mode) {
+                    // --- [修正重點]：將 parametric 模式與 standard 模式合併處理建立邏輯 ---
+                    if (linkCreationSettings.mode === 'standard' || linkCreationSettings.mode === 'parametric' || !linkCreationSettings.mode) {
                         if (finalPoints.length > 1) {
                             if (linkCreationSettings.isTwoWay) {
                                 const lanes = linkCreationSettings.lanesPerDir;
@@ -3323,6 +3508,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                         if (newPoint && segmentIndex > -1) {
                             link.waypoints.splice(segmentIndex + 1, 0, newPoint);
+                            if (link.geometryType === 'parametric') generateParametricStrokes(link);
                             drawLink(link);
                             updateConnectionEndpoints(link.id);
                             updateAllDetectorsOnLink(link.id);
@@ -3804,8 +3990,8 @@ document.addEventListener('DOMContentLoaded', () => {
             // ... (原本 add-link 的程式碼保留不動) ...
             if (!isDrawableCanvas(e.target)) return;
 
-            // --- 區分：標準模式 ---
-            if (linkCreationSettings.mode === 'standard' || !linkCreationSettings.mode) {
+            // --- [修正重點]：將 parametric 模式與 standard 模式合併處理草圖線條 ---
+            if (linkCreationSettings.mode === 'standard' || linkCreationSettings.mode === 'parametric' || !linkCreationSettings.mode) {
                 if (!tempShape) {
                     tempShape = new Konva.Line({ points: [pos.x, pos.y, pos.x, pos.y], stroke: 'cyan', strokeWidth: 2, lineCap: 'round', lineJoin: 'round', listening: false });
                     layer.add(tempShape);
@@ -5405,8 +5591,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 targetLink.waypoints[meta.waypointIndex] = { x: movedHandle.x(), y: movedHandle.y() };
 
+                // [新增] 如果是參數化路段，移動中心點後，即時觸發演算法重算所有標線
+                if (targetLink.geometryType === 'parametric') {
+                    generateParametricStrokes(targetLink);
+                }
+
                 drawLink(targetLink);
-                updateDependencies(targetLink); // 使用新封裝的同步函數
+                updateDependencies(targetLink); // Ports 與 Beziers 會如橡皮筋般自動彈回定位
 
                 if (selectedObject && selectedObject.id === targetLink.id) {
                     updatePropertiesPanel(targetLink);
@@ -6098,8 +6289,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (activeTool === 'add-link' && !obj) {
             const twoWayDisplay = linkCreationSettings.isTwoWay ? 'block' : 'none';
             const laneBasedDisplay = linkCreationSettings.mode === 'lane-based' ? 'block' : 'none';
-            const standardDisplay = linkCreationSettings.mode === 'standard' ? 'block' : 'none';
-
+            const standardDisplay = (linkCreationSettings.mode === 'standard' || linkCreationSettings.mode === 'parametric') ? 'block' : 'none';
             // 產生標線選擇器的 HTML
             let strokeOptionsHtml = '';
             for (const [key, prop] of Object.entries(STROKE_TYPES)) {
@@ -6131,6 +6321,13 @@ document.addEventListener('DOMContentLoaded', () => {
         <div class="prop-section-header">Link Creation Mode</div>
         <div class="prop-group">
             <div style="display:flex; flex-direction:column; gap:10px; margin-top:5px;">
+                <label style="cursor:pointer; display:flex; align-items:flex-start; gap:5px;">
+                    <input type="radio" name="linkMode" value="parametric" ${linkCreationSettings.mode === 'parametric' ? 'checked' : ''}>
+                    <div>
+                        <strong style="color:var(--text-main);"><i class="fa-solid fa-sliders"></i> Parametric (Synchro-Style)</strong>
+                        <div style="font-size:0.75rem; color:#64748b;">Auto-generate turn pockets and tapers. (自動生成轉向附加車道)</div>
+                    </div>
+                </label>
                 <label style="cursor:pointer; display:flex; align-items:flex-start; gap:5px;">
                     <input type="radio" name="linkMode" value="standard" ${linkCreationSettings.mode === 'standard' ? 'checked' : ''}>
                     <div>
@@ -6545,7 +6742,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         switch (obj.type) {
             // ... (請保留您原本的 Link, Node, Detector 等 case) ...
- case 'Link':
+            case 'Link':
                 const getLinkTabClass = (tabName) => lastActiveLinkTab === tabName ? 'active' : '';
                 const getLinkContentClass = (tabName) => lastActiveLinkTab === tabName ? 'active' : '';
 
@@ -6715,8 +6912,51 @@ document.addEventListener('DOMContentLoaded', () => {
                     </div>`;
                 }
                 // ============================================================
-                // 2. 幾何資訊 (Geometry)
-                content += `<div class="prop-section-header">Geometry</div>`;
+                // [新增] Parametric 參數化專屬編輯器
+                // ============================================================
+                if (obj.geometryType === 'parametric' && obj.parametricConfig) {
+                    const c = obj.parametricConfig;
+                    content += `<div class="prop-section-header" style="color:#8b5cf6; margin-top:10px;">
+                                 <i class="fa-solid fa-sliders"></i> Parametric Settings
+                               </div>`;
+
+                    content += `<div class="prop-row">
+                                 <span class="prop-label">Through Lanes</span>
+                                 <input type="number" id="prop-para-through" class="prop-input" value="${c.throughLanes}" min="1">
+                               </div>`;
+
+                    // 左轉附加車道
+                    content += `<div style="background:#f8fafc; border:1px solid #e2e8f0; padding:8px; margin-top:8px; border-radius:4px;">
+                                    <label style="display:flex; align-items:center; gap:6px; font-weight:bold; color:#475569; cursor:pointer;">
+                                        <input type="checkbox" id="prop-para-lp-exists" ${c.leftPocket.exists ? 'checked' : ''}> Left Turn Pocket (左轉道)
+                                    </label>
+                                    <div id="prop-para-lp-config" style="display:${c.leftPocket.exists ? 'block' : 'none'}; margin-top:8px;">
+                                        <div class="prop-row"><span class="prop-label">Lanes</span><input type="number" id="prop-para-lp-lanes" class="prop-input" value="${c.leftPocket.lanes}" min="1"></div>
+                                        <div class="prop-row"><span class="prop-label">Length (m)</span><input type="number" id="prop-para-lp-len" class="prop-input" value="${c.leftPocket.length}" min="5" step="0.5"></div>
+                                        <div class="prop-row"><span class="prop-label">Taper (m)</span><input type="number" id="prop-para-lp-tap" class="prop-input" value="${c.leftPocket.taper}" min="5" step="0.5"></div>
+                                    </div>
+                                </div>`;
+
+                    // 右轉附加車道
+                    content += `<div style="background:#f8fafc; border:1px solid #e2e8f0; padding:8px; margin-top:8px; border-radius:4px;">
+                                    <label style="display:flex; align-items:center; gap:6px; font-weight:bold; color:#475569; cursor:pointer;">
+                                        <input type="checkbox" id="prop-para-rp-exists" ${c.rightPocket.exists ? 'checked' : ''}> Right Turn Pocket (右轉道)
+                                    </label>
+                                    <div id="prop-para-rp-config" style="display:${c.rightPocket.exists ? 'block' : 'none'}; margin-top:8px;">
+                                        <div class="prop-row"><span class="prop-label">Lanes</span><input type="number" id="prop-para-rp-lanes" class="prop-input" value="${c.rightPocket.lanes}" min="1"></div>
+                                        <div class="prop-row"><span class="prop-label">Length (m)</span><input type="number" id="prop-para-rp-len" class="prop-input" value="${c.rightPocket.length}" min="5" step="0.5"></div>
+                                        <div class="prop-row"><span class="prop-label">Taper (m)</span><input type="number" id="prop-para-rp-tap" class="prop-input" value="${c.rightPocket.taper}" min="5" step="0.5"></div>
+                                    </div>
+                                </div>`;
+
+                    content += `<button id="btn-bake-to-mesh" class="btn-action" style="width:100%; margin-top:12px; background:#f59e0b;">
+                                  <i class="fa-solid fa-hammer"></i> Convert to Freeform (手動微調)
+                                </button>`;
+                    content += `<div class="prop-hint" style="color:#f59e0b;"><i class="fa-solid fa-triangle-exclamation"></i> 轉換後將失去參數連動能力，但可自由拖曳每一個標線頂點。</div>`;
+                }
+
+                // ============================================================
+                // 2. 幾何資訊 (Geometry)                content += `<div class="prop-section-header">Geometry</div>`;
                 content += `<div class="prop-row">
                              <span class="prop-label">Length</span>
                              <span class="prop-value-text">${getPolylineLength(obj.waypoints).toFixed(2)} m</span>
@@ -6731,13 +6971,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 // ============================================================
                 content += `<div class="prop-section-header">Lanes Configuration</div>`;
 
-                // 判斷是否為 lane-based 並預先取得 Ports 以供狀態分析
-                const isLaneBased = (obj.geometryType === 'lane-based');
-                const portsInfo = isLaneBased ? getLaneBasedPorts(obj) : null;
+                // ★★★ [修正重點]：確保 Parametric 模式也被當成 isLaneBased 看待，以正確凍結個別車寬輸入框 ★★★
+                const isLaneBasedFreeform = (obj.geometryType === 'lane-based'); // 只鎖定真正的 Freeform 手繪模式
+                const portsInfo = (obj.geometryType === 'lane-based' || obj.geometryType === 'parametric') ? getLaneBasedPorts(obj) : null;
 
                 content += `<div class="prop-row">
                              <span class="prop-label">Count</span>
-                             <input type="number" id="prop-lanes" class="prop-input" value="${obj.lanes.length}" min="1" max="10" ${isLaneBased ? 'disabled title="Lane-based 路段的車道數由標線數量自動決定"' : ''}>
+                             <input type="number" id="prop-lanes" class="prop-input" value="${obj.lanes.length}" min="1" max="10" ${isLaneBasedFreeform ? 'disabled title="Lane-based 路段的車道數由標線數量自動決定"' : (obj.geometryType === 'parametric' ? 'disabled title="請由上方 Parametric Settings 調整數量"' : '')}>
                          </div>`;
 
                 // 確保預設車種存在
@@ -6749,17 +6989,19 @@ document.addEventListener('DOMContentLoaded', () => {
                 const availableProfiles = Object.keys(network.vehicleProfiles);
 
                 content += `<label class="prop-label" style="font-size:0.75rem; margin-top:8px; display:block;">Individual Lanes Setup</label>`;
-                if (isLaneBased) {
+
+                // 只要是 Parametric 或 Lane-based，都顯示預覽提示
+                if (portsInfo) {
                     content += `<div class="prop-hint" style="margin-bottom:8px;"><i class="fa-solid fa-mouse-pointer"></i> 游標移至下方車道卡片，可在畫布上預覽該車道的實體範圍。</div>`;
                 }
+
                 content += `<div class="prop-grid-container" id="lane-widths-container" style="display:flex; flex-direction:column; gap:8px;">`;
 
                 obj.lanes.forEach((lane, index) => {
-                    // [新增] 動態車道狀態判定與標籤生成
                     let laneDesc = `L${index + 1}`;
                     let statusBadge = '';
 
-                    if (isLaneBased && portsInfo) {
+                    if (portsInfo) {
                         const hasStart = portsInfo.startPorts.some(p => p.laneIndex === index);
                         const hasEnd = portsInfo.endPorts.some(p => p.laneIndex === index);
 
@@ -6784,14 +7026,14 @@ document.addEventListener('DOMContentLoaded', () => {
                                         <span style="font-weight:bold; color:#475569; font-size:0.8rem; display:flex; align-items:center;">${laneDesc} ${statusBadge}</span>
                                         <div style="display:flex; align-items:center; gap:4px;">
                                             <span style="font-size:0.7rem; color:#64748b;">Width(m)</span>
-                                            <input type="number" id="prop-lane-width-${index}" class="prop-grid-input prop-lane-width" data-index="${index}" value="${lane.width.toFixed(2)}" step="0.1" min="1" style="width:55px;" ${isLaneBased ? 'disabled title="Lane-based 的寬度由標線自動計算"' : ''}>
+                                            <!-- 注意這裡的 disabled 判斷，只有 isLaneBasedFreeform 才會鎖定，Parametric 是允許編輯的 -->
+                                            <input type="number" id="prop-lane-width-${index}" class="prop-grid-input prop-lane-width" data-index="${index}" value="${lane.width.toFixed(2)}" step="0.1" min="1" style="width:55px;" ${isLaneBasedFreeform ? 'disabled title="Lane-based 的寬度由實體標線自動計算"' : ''}>
                                         </div>
                                     </div>
                                     <div style="font-size:0.7rem; color:#64748b; margin-bottom:4px;">Allowed Vehicles (Uncheck to restrict)</div>
                                     <div style="display:flex; flex-wrap:wrap; gap:6px;">`;
 
                     availableProfiles.forEach(profId => {
-                        // 若 allowedVehicleProfiles 不存在或為空陣列，代表全部允許 (預設勾選)
                         const isChecked = (!lane.allowedVehicleProfiles || lane.allowedVehicleProfiles.length === 0 || lane.allowedVehicleProfiles.includes(profId)) ? 'checked' : '';
                         content += `<label style="font-size:0.75rem; display:flex; align-items:center; gap:2px; cursor:pointer;">
                                         <input type="checkbox" class="prop-lane-vehicle-cb" data-lane="${index}" value="${profId}" ${isChecked}> ${profId}
@@ -7810,6 +8052,24 @@ document.addEventListener('DOMContentLoaded', () => {
     // 完整替換此函數
     // 完整替換 attachPropertiesEventListeners 函數
     function attachPropertiesEventListeners(obj) {
+        // [新增] 車道寬度變更事件
+        document.querySelectorAll('.prop-lane-width').forEach(input => {
+            input.addEventListener('change', (e) => {
+                const idx = parseInt(e.target.dataset.index, 10);
+                let val = parseFloat(e.target.value);
+                if (isNaN(val) || val < 0.5) val = 0.5;
+                obj.lanes[idx].width = val;
+
+                if (obj.geometryType === 'parametric') {
+                    generateParametricStrokes(obj);
+                }
+
+                drawLink(obj);
+                updateDependencies(obj);
+                layer.batchDraw();
+                saveState();
+            });
+        });
         if (!obj) return;
 
         // --- 通用：分頁切換邏輯 (支援 Node 與 Link) ---
@@ -8538,6 +8798,86 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // --- LINK ---
         if (obj.type === 'Link') {
+
+            // [新增] 雙向道路分隔島寬度變更事件
+            const medianInput = document.getElementById('prop-edit-median');
+            if (medianInput) {
+                medianInput.addEventListener('change', (e) => {
+                    let val = parseFloat(e.target.value);
+                    if (isNaN(val) || val < 0) val = 0;
+                    e.target.value = val; // 寫回 UI 防呆結果
+
+                    updatePairedLinksGeometry(obj, val);
+                    saveState();
+                });
+            }
+            // ============================================================
+            // Parametric 面板事件綁定
+            // ============================================================
+            if (obj.geometryType === 'parametric' && obj.parametricConfig) {
+                const c = obj.parametricConfig;
+                const updateParametric = () => {
+                    generateParametricStrokes(obj);
+
+                    const maxLaneIdx = obj.lanes.length - 1;
+                    Object.values(network.connections).forEach(conn => {
+                        if (conn.sourceLinkId === obj.id && conn.sourceLaneIndex > maxLaneIdx) deleteConnection(conn.id);
+                        if (conn.destLinkId === obj.id && conn.destLaneIndex > maxLaneIdx) deleteConnection(conn.id);
+                    });
+
+                    drawLink(obj);
+                    updateDependencies(obj);
+                    layer.batchDraw();
+                    saveState();
+                    updatePropertiesPanel(obj);
+                };
+
+                const bindInt = (id, objRef, key) => {
+                    const el = document.getElementById(id);
+                    if (el) el.addEventListener('change', e => {
+                        objRef[key] = Math.max(1, parseInt(e.target.value, 10) || 1);
+                        updateParametric();
+                    });
+                };
+                const bindFloat = (id, objRef, key) => {
+                    const el = document.getElementById(id);
+                    if (el) el.addEventListener('change', e => {
+                        objRef[key] = Math.max(0.1, parseFloat(e.target.value) || 0.1);
+                        updateParametric();
+                    });
+                };
+
+                bindInt('prop-para-through', c, 'throughLanes');
+                bindInt('prop-para-lp-lanes', c.leftPocket, 'lanes');
+                bindFloat('prop-para-lp-len', c.leftPocket, 'length');
+                bindFloat('prop-para-lp-tap', c.leftPocket, 'taper');
+
+                bindInt('prop-para-rp-lanes', c.rightPocket, 'lanes');
+                bindFloat('prop-para-rp-len', c.rightPocket, 'length');
+                bindFloat('prop-para-rp-tap', c.rightPocket, 'taper');
+
+                document.getElementById('prop-para-lp-exists')?.addEventListener('change', e => {
+                    c.leftPocket.exists = e.target.checked;
+                    updateParametric();
+                });
+
+                document.getElementById('prop-para-rp-exists')?.addEventListener('change', e => {
+                    c.rightPocket.exists = e.target.checked;
+                    updateParametric();
+                });
+
+                document.getElementById('btn-bake-to-mesh')?.addEventListener('click', () => {
+                    if (confirm("轉換為手繪標線模式？轉換後將無法再使用拉桿快速調整。")) {
+                        obj.geometryType = 'lane-based';
+                        delete obj.parametricConfig;
+                        drawLink(obj);
+                        drawWaypointHandles(obj);
+                        updatePropertiesPanel(obj);
+                        saveState();
+                    }
+                });
+            }
+
             // [新增] 名稱變更事件 (確保名稱能被儲存)
             const nameInput = document.getElementById('prop-link-name');
             if (nameInput) {
@@ -8555,7 +8895,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     const val = parseFloat(e.target.value);
                     obj.roadOpacity = val;
                     if (opacityVal) opacityVal.textContent = val;
-                    
+
                     // 只改變底層路面的透明度，讓車道標線依然清晰
                     const roadShape = obj.konvaGroup.findOne('.road-surface');
                     if (roadShape) {
@@ -8762,19 +9102,24 @@ document.addEventListener('DOMContentLoaded', () => {
             });
 
             // ============================================================
-            // [精準輪廓版] 邏輯車道 Hover 實體多邊形高亮事件
+            // [精準輪廓版] 邏輯車道 Hover 實體多邊形高亮事件 (支援全模式)
             // ============================================================
-            if (obj.geometryType === 'lane-based') {
-                const clearLaneHighlight = () => {
-                    layer.find('.lane-polygon-highlight').forEach(s => s.destroy());
-                    layer.batchDraw();
-                };
+            const clearLaneHighlight = () => {
+                layer.find('.lane-polygon-highlight').forEach(s => s.destroy());
+                layer.batchDraw();
+            };
 
-                document.querySelectorAll('.lane-config-card').forEach(card => {
-                    card.addEventListener('mouseenter', (e) => {
-                        const laneIdx = parseInt(e.currentTarget.dataset.laneIndex, 10);
-                        const lane = obj.lanes[laneIdx];
-                        // 🟢 修正 4：避免 undefined 匹配到 undefined 的致命錯誤
+            document.querySelectorAll('.lane-config-card').forEach(card => {
+                card.addEventListener('mouseenter', (e) => {
+                    const laneIdx = parseInt(e.currentTarget.dataset.laneIndex, 10);
+                    const lane = obj.lanes[laneIdx];
+                    if (!lane) return;
+
+                    let finalL = [];
+                    let finalR = [];
+
+                    // --- 模式 A: Lane-Based 或 Parametric (基於實體標線投影切割) ---
+                    if ((obj.geometryType === 'lane-based' || obj.geometryType === 'parametric') && obj.strokes && obj.strokes.length >= 2) {
                         let leftStroke = undefined;
                         let rightStroke = undefined;
 
@@ -8793,7 +9138,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         let leftPts = [...leftStroke.points];
                         let rightPts = [...rightStroke.points];
 
-                        // 2. 幾何方向對齊：確保兩條線段前進方向一致 (防多邊形自我交叉成麻花)
+                        // 幾何方向對齊：確保兩條線段前進方向一致
                         const dNorm = Math.hypot(leftPts[0].x - rightPts[0].x, leftPts[0].y - rightPts[0].y) +
                             Math.hypot(leftPts[leftPts.length - 1].x - rightPts[rightPts.length - 1].x, leftPts[leftPts.length - 1].y - rightPts[rightPts.length - 1].y);
                         const dRev = Math.hypot(leftPts[0].x - rightPts[rightPts.length - 1].x, leftPts[0].y - rightPts[rightPts.length - 1].y) +
@@ -8803,7 +9148,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             rightPts.reverse(); // 方向顛倒，強制轉正
                         }
 
-                        // 3. 多邊形重疊區域計算 (沿著路徑長度 S 軸投影)
+                        // 多邊形重疊區域計算 (沿著路徑長度 S 軸投影)
                         const getPolyLength = (pts) => {
                             let l = 0;
                             for (let i = 0; i < pts.length - 1; i++) l += Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y);
@@ -8849,7 +9194,6 @@ document.addEventListener('DOMContentLoaded', () => {
                         const lenL = getPolyLength(leftPts);
                         const lenR = getPolyLength(rightPts);
 
-                        // L 的兩端映射到 R，R 的兩端映射到 L，求最安全的重疊交集區間
                         const projR0_on_L = projectToPolylineS(rightPts[0], leftPts);
                         const projREnd_on_L = projectToPolylineS(rightPts[rightPts.length - 1], leftPts);
                         const startL = Math.max(0, Math.min(projR0_on_L, projREnd_on_L));
@@ -8863,8 +9207,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         // 如果重疊長度過短 (< 0.1m)，視為無效車道
                         if (endL - startL < 0.1 || endR - startR < 0.1) return;
 
-                        // 4. 重建精確裁切後的邊界點列
-                        const finalL = [getPointAtS(leftPts, startL)];
+                        // 重建精確裁切後的邊界點列
+                        finalL.push(getPointAtS(leftPts, startL));
                         let curL = 0;
                         for (let i = 0; i < leftPts.length - 1; i++) {
                             curL += Math.hypot(leftPts[i + 1].x - leftPts[i].x, leftPts[i + 1].y - leftPts[i].y);
@@ -8872,51 +9216,67 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
                         finalL.push(getPointAtS(leftPts, endL));
 
-                        const finalR = [getPointAtS(rightPts, startR)];
+                        finalR.push(getPointAtS(rightPts, startR));
                         let curR = 0;
                         for (let i = 0; i < rightPts.length - 1; i++) {
                             curR += Math.hypot(rightPts[i + 1].x - rightPts[i].x, rightPts[i + 1].y - rightPts[i].y);
                             if (curR > startR + 0.05 && curR < endR - 0.05) finalR.push(rightPts[i + 1]);
                         }
                         finalR.push(getPointAtS(rightPts, endR));
+                    }
+                    // --- 模式 B: Standard (基於中心線等距平移) ---
+                    else {
+                        const totalWidth = getLinkTotalWidth(obj);
+                        let startOffset = -totalWidth / 2;
+                        for (let i = 0; i < laneIdx; i++) {
+                            startOffset += obj.lanes[i].width;
+                        }
+                        let endOffset = startOffset + lane.width;
 
-                        // 5. 繪製 Konva 閉合多邊形
-                        const highlightShape = new Konva.Shape({
-                            sceneFunc: (ctx, shape) => {
-                                ctx.beginPath();
-                                ctx.moveTo(finalL[0].x, finalL[0].y);
-                                // 順著左邊界往下畫
-                                for (let i = 1; i < finalL.length; i++) ctx.lineTo(finalL[i].x, finalL[i].y);
-                                // 右側邊界必須「反向」接回，形成完美閉合迴圈
-                                for (let i = finalR.length - 1; i >= 0; i--) ctx.lineTo(finalR[i].x, finalR[i].y);
-                                ctx.closePath();
-                                ctx.fillShape(shape);
-                                ctx.strokeShape(shape);
-                            },
-                            fill: 'rgba(59, 130, 246, 0.4)', // 半透明藍色
-                            stroke: '#2563eb', // 深藍色邊框
-                            strokeWidth: 2,
-                            name: 'lane-polygon-highlight',
-                            listening: false // 不攔截滑鼠點擊
-                        });
+                        // 利用現有函數平移出左右邊界
+                        finalL = getOffsetPolyline(obj.waypoints, startOffset);
+                        finalR = getOffsetPolyline(obj.waypoints, endOffset);
+                    }
 
-                        clearLaneHighlight();
-                        layer.add(highlightShape);
-                        highlightShape.moveToTop();
-                        layer.batchDraw();
+                    // 防呆：確保算出了足夠的頂點
+                    if (finalL.length < 2 || finalR.length < 2) return;
 
-                        // 面板卡片的視覺回饋
-                        e.currentTarget.style.borderColor = '#3b82f6';
-                        e.currentTarget.style.boxShadow = '0 0 0 1px #3b82f6';
+                    // 繪製 Konva 閉合多邊形
+                    const highlightShape = new Konva.Shape({
+                        sceneFunc: (ctx, shape) => {
+                            ctx.beginPath();
+                            ctx.moveTo(finalL[0].x, finalL[0].y);
+                            // 順著左邊界往下畫
+                            for (let i = 1; i < finalL.length; i++) ctx.lineTo(finalL[i].x, finalL[i].y);
+                            // 右側邊界必須「反向」接回，形成完美閉合迴圈
+                            for (let i = finalR.length - 1; i >= 0; i--) ctx.lineTo(finalR[i].x, finalR[i].y);
+                            ctx.closePath();
+                            ctx.fillShape(shape);
+                            ctx.strokeShape(shape);
+                        },
+                        fill: 'rgba(59, 130, 246, 0.4)', // 半透明藍色
+                        stroke: '#2563eb', // 深藍色邊框
+                        strokeWidth: 2,
+                        name: 'lane-polygon-highlight',
+                        listening: false // 不攔截滑鼠點擊
                     });
 
-                    card.addEventListener('mouseleave', (e) => {
-                        clearLaneHighlight();
-                        e.currentTarget.style.borderColor = '#e2e8f0';
-                        e.currentTarget.style.boxShadow = 'none';
-                    });
+                    clearLaneHighlight();
+                    layer.add(highlightShape);
+                    highlightShape.moveToTop();
+                    layer.batchDraw();
+
+                    // 面板卡片的視覺回饋
+                    e.currentTarget.style.borderColor = '#3b82f6';
+                    e.currentTarget.style.boxShadow = '0 0 0 1px #3b82f6';
                 });
-            }
+
+                card.addEventListener('mouseleave', (e) => {
+                    clearLaneHighlight();
+                    e.currentTarget.style.borderColor = '#e2e8f0';
+                    e.currentTarget.style.boxShadow = 'none';
+                });
+            });
             // ============================================================
         }
 
@@ -11637,24 +11997,51 @@ document.addEventListener('DOMContentLoaded', () => {
             xmlLinkIdMap.set(xmlId, newLink.id);
 
             // ==========================================
-            // [修正] 讀取並覆寫 Lane-based 幾何特徵
-            // 為了相容剛才不小心包在 Waypoints 裡的舊存檔，我們同時搜尋 linkEl 與 wpContainer
+            // [修正] 讀取並覆寫 Lane-based / Parametric 幾何特徵
             // ==========================================
             let geoTypeEl = getChildrenByLocalName(linkEl, "geometryType")[0];
             let strokesContainer = getChildrenByLocalName(linkEl, "Strokes")[0];
+            let parametricConfigEl = getChildrenByLocalName(linkEl, "EditorParametricConfig")[0];
 
             if (!geoTypeEl && wpContainer) {
                 geoTypeEl = getChildrenByLocalName(wpContainer, "geometryType")[0];
                 strokesContainer = getChildrenByLocalName(wpContainer, "Strokes")[0];
+                parametricConfigEl = getChildrenByLocalName(wpContainer, "EditorParametricConfig")[0];
             }
 
             if (geoTypeEl && geoTypeEl.textContent === 'lane-based') {
                 newLink.geometryType = 'lane-based';
 
+                // ★★★ [修復] 如果 XML 包含專屬標籤，自動恢復為 Parametric 模式，並啟用拉桿 UI ★★★
+                if (parametricConfigEl) {
+                    newLink.geometryType = 'parametric';
+                    const lpEl = getChildrenByLocalName(parametricConfigEl, "LeftPocket")[0];
+                    const rpEl = getChildrenByLocalName(parametricConfigEl, "RightPocket")[0];
+                    newLink.parametricConfig = {
+                        throughLanes: parseInt(getChildValue(parametricConfigEl, "throughLanes"), 10) || 1,
+                        leftPocket: {
+                            exists: lpEl ? lpEl.getAttribute("exists") === "true" : false,
+                            lanes: lpEl ? parseInt(lpEl.getAttribute("lanes"), 10) : 1,
+                            length: lpEl ? parseFloat(lpEl.getAttribute("length")) : 30,
+                            taper: lpEl ? parseFloat(lpEl.getAttribute("taper")) : 15
+                        },
+                        rightPocket: {
+                            exists: rpEl ? rpEl.getAttribute("exists") === "true" : false,
+                            lanes: rpEl ? parseInt(rpEl.getAttribute("lanes"), 10) : 1,
+                            length: rpEl ? parseFloat(rpEl.getAttribute("length")) : 30,
+                            taper: rpEl ? parseFloat(rpEl.getAttribute("taper")) : 15
+                        }
+                    };
+                    // ★ 確保匯入時初始化映射基準，否則調整車道會崩潰
+                    newLink.parametricConfig._prevLL = newLink.parametricConfig.leftPocket.exists ? newLink.parametricConfig.leftPocket.lanes : 0;
+                    newLink.parametricConfig._prevTL = newLink.parametricConfig.throughLanes;
+                    newLink.parametricConfig._prevRL = newLink.parametricConfig.rightPocket.exists ? newLink.parametricConfig.rightPocket.lanes : 0;
+                }
+
                 if (strokesContainer) {
                     newLink.strokes = [];
                     getChildrenByLocalName(strokesContainer, "Stroke").forEach(strokeNode => {
-                        const sId = strokeNode.getAttribute("id"); // 🟢 修正 1：讀取 Stroke ID
+                        const sId = strokeNode.getAttribute("id");
                         const sType = strokeNode.getAttribute("type");
                         const pts = [];
                         getChildrenByLocalName(strokeNode, "Point").forEach(pNode => {
@@ -11663,11 +12050,10 @@ document.addEventListener('DOMContentLoaded', () => {
                                 y: parseFloat(getChildValue(pNode, "y")) * C_SYSTEM_Y_INVERT
                             });
                         });
-                        newLink.strokes.push({ id: sId, type: sType, points: pts }); // 🟢 修正 2：存入 id
+                        newLink.strokes.push({ id: sId, type: sType, points: pts });
                     });
                 }
 
-                // 🟢 修正 3：新增讀取 PolygonLanes 以恢復車道與實體標線的綁定關係
                 let polyLanesContainer = getChildrenByLocalName(linkEl, "PolygonLanes")[0];
                 if (!polyLanesContainer && wpContainer) {
                     polyLanesContainer = getChildrenByLocalName(wpContainer, "PolygonLanes")[0];
@@ -11679,17 +12065,15 @@ document.addEventListener('DOMContentLoaded', () => {
                         const leftNode = getChildrenByLocalName(pLaneNode, "LeftBoundary")[0];
                         const rightNode = getChildrenByLocalName(pLaneNode, "RightBoundary")[0];
 
-                        if (newLink.lanes[idx]) {
-                            if (leftNode) newLink.lanes[idx].leftStrokeId = leftNode.getAttribute("strokeId");
-                            if (rightNode) newLink.lanes[idx].rightStrokeId = rightNode.getAttribute("strokeId");
-                        }
+                        // 安全機制：確保車道存在
+                        if (!newLink.lanes[idx]) newLink.lanes[idx] = { width: LANE_WIDTH, allowedVehicleProfiles: [] };
+                        if (leftNode) newLink.lanes[idx].leftStrokeId = leftNode.getAttribute("strokeId");
+                        if (rightNode) newLink.lanes[idx].rightStrokeId = rightNode.getAttribute("strokeId");
                     });
                 }
 
-                // 【關鍵】強制重新重繪成 Lane-based
                 drawLink(newLink);
             }
-
             // [新增] 將剛才讀取到的車種限制掛載到建立好的車道物件上
             newLink.lanes.forEach((lane, idx) => {
                 if (importedLanes[idx] && importedLanes[idx].allowedVehicleProfiles.length > 0) {
@@ -12859,12 +13243,24 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
 
-            // [新增] 匯出 Lane-Based 特徵與真實標線
-            if (link.geometryType === 'lane-based') {
+            if (link.geometryType === 'lane-based' || link.geometryType === 'parametric') {
+                // 模擬器只認識 lane-based
                 xml += `        <tm:geometryType>lane-based</tm:geometryType>\n`;
+
+                // ★★★ [修復] 將 Parametric 拉桿設定存為編輯器專屬標籤，以利下次讀取時恢復 UI ★★★
+                if (link.geometryType === 'parametric' && link.parametricConfig) {
+                    const c = link.parametricConfig;
+                    xml += `        <tm:EditorParametricConfig>\n`;
+                    xml += `          <tm:throughLanes>${c.throughLanes}</tm:throughLanes>\n`;
+                    xml += `          <tm:LeftPocket exists="${c.leftPocket.exists}" lanes="${c.leftPocket.lanes}" length="${c.leftPocket.length}" taper="${c.leftPocket.taper}" />\n`;
+                    xml += `          <tm:RightPocket exists="${c.rightPocket.exists}" lanes="${c.rightPocket.lanes}" length="${c.rightPocket.length}" taper="${c.rightPocket.taper}" />\n`;
+                    xml += `        </tm:EditorParametricConfig>\n`;
+                }
+
                 xml += `        <tm:Strokes>\n`;
-                link.strokes.forEach((stroke, sIdx) => {
-                    xml += `          <tm:Stroke id="${sIdx}" type="${stroke.type}">\n`;
+                link.strokes.forEach((stroke) => {
+                    // ★★★ [修復] 匯出真實的 stroke.id，解決模擬器讀取不到標線的崩潰問題 ★★★
+                    xml += `          <tm:Stroke id="${stroke.id}" type="${stroke.type}">\n`;
                     stroke.points.forEach(p => {
                         xml += `            <tm:Point><tm:x>${p.x.toFixed(4)}</tm:x><tm:y>${(p.y * C_SYSTEM_Y_INVERT).toFixed(4)}</tm:y></tm:Point>\n`;
                     });
@@ -12872,12 +13268,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
                 xml += `        </tm:Strokes>\n`;
 
-                // 匯出給微觀模型使用的 PolygonLanes (車道面)
                 xml += `        <tm:PolygonLanes>\n`;
                 link.lanes.forEach((lane, i) => {
-                    // ★★★ [核心修正] 使用實際綁定的 ID，若無則降級使用 index ★★★
-                    const leftId = lane.leftStrokeId !== undefined ? lane.leftStrokeId : i;
-                    const rightId = lane.rightStrokeId !== undefined ? lane.rightStrokeId : (i + 1);
+                    // 防呆：確保一定抓得到 strokeId
+                    const leftId = lane.leftStrokeId !== undefined ? lane.leftStrokeId : (link.strokes[i] ? link.strokes[i].id : i);
+                    const rightId = lane.rightStrokeId !== undefined ? lane.rightStrokeId : (link.strokes[i + 1] ? link.strokes[i + 1].id : i + 1);
 
                     xml += `          <tm:PolygonLane index="${i}">\n`;
                     xml += `            <tm:LeftBoundary strokeId="${leftId}" />\n`;
@@ -13801,24 +14196,16 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // 3. 計算新的偏移量
-        // 假設兩條路寬度可能不同，我們取各自的寬度
         const widthA = getLinkTotalWidth(linkA);
         const widthB = getLinkTotalWidth(linkB);
-
-        // 我們需要判斷 Link A 是在中心線的左邊還是右邊
-        // 簡單方法：取第一個點的法向量，看 A 在中心的哪一側
-        // 但更穩健的方法是讀取我們 creation 時可能有存的 side，或者直接用向量判斷。
-        // 這裡使用動態判斷：計算 A 到 Center 的向量，與 Center 的法向量做點積
 
         // 取得中心線第一個路段的法向量 (指向右側)
         if (centerLinePoints.length < 2) return;
         const vecCenter = normalize(getVector(centerLinePoints[0], centerLinePoints[1]));
         const normalCenter = getNormal(vecCenter); // 指向右側
 
-        // 向量 Center -> A
+        // 向量 Center -> A，用內積判斷 A 在左邊還是右邊
         const vecToA = getVector(centerLinePoints[0], pointsA[0]);
-
-        // 點積 > 0 表示 A 在右側， < 0 表示 A 在左側
         const dotProd = vecToA.x * normalCenter.x + vecToA.y * normalCenter.y;
         const isARight = dotProd > 0;
 
@@ -13829,26 +14216,44 @@ document.addEventListener('DOMContentLoaded', () => {
         let offsetA = isARight ? distA : -distA;
         let offsetB = isARight ? -distB : distB; // B 在 A 的對面
 
-        // 4. 生成新座標
+        // 4. 生成新中心線座標
+        const oldPointsA = [...linkA.waypoints];
+        const oldPointsB = [...linkB.waypoints];
+
         const newPointsA = getOffsetPolyline(centerLinePoints, offsetA);
         let newPointsB = getOffsetPolyline(centerLinePoints, offsetB);
+        newPointsB.reverse(); // B 的座標需要再次反轉回反向
 
-        // B 的座標需要再次反轉回反向
-        newPointsB.reverse();
-
-        // 5. 套用更新
+        // 5. 套用更新 Waypoints
         linkA.waypoints = newPointsA;
         linkB.waypoints = newPointsB;
-
-        // 6. 更新雙方的 metadata
         linkA.pairInfo.medianWidth = newMedianWidth;
         linkB.pairInfo.medianWidth = newMedianWidth;
 
-        // 7. 重繪與連動更新
+        // ★★★ [修復重點]：根據不同的幾何模式，連動更新實體標線 ★★★
+        const updateStrokes = (link, oldWp, newWp) => {
+            if (link.geometryType === 'parametric') {
+                // 如果是 Parametric 模式，直接呼叫數學引擎重算標線
+                generateParametricStrokes(link);
+            } else if (link.geometryType === 'lane-based' && link.strokes) {
+                // 如果是純手繪 Lane-based 模式，將所有自訂標線依照中心線的位移量進行平移
+                const deltaStart = getVector(oldWp[0], newWp[0]);
+                link.strokes.forEach(stroke => {
+                    stroke.points = stroke.points.map(p => add(p, deltaStart));
+                });
+                // 重新校正虛擬中心線
+                updateLaneBasedGeometry(link);
+            }
+        };
+
+        updateStrokes(linkA, oldPointsA, newPointsA);
+        updateStrokes(linkB, oldPointsB, newPointsB);
+
+        // 6. 重繪與連動更新
         drawLink(linkA);
         drawLink(linkB);
 
-        // 更新連接線、偵測器、控制點等
+        // 更新連接線、偵測器、路標位置
         [linkA, linkB].forEach(l => {
             updateConnectionEndpoints(l.id);
             updateAllDetectorsOnLink(l.id);
