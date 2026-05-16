@@ -776,37 +776,31 @@ document.addEventListener('DOMContentLoaded', () => {
         const totalStrokes = LL + TL + RL + 1;
         const totalLanes = LL + TL + RL;
 
-        // --- ★★★ 核心修正：車道映射 (Lane Mapping) ★★★ ---
-        // 當使用者切換附加車道時，保留原本直行車道的「寬度」與「車種限制」
+        // --- 車道映射 (Lane Mapping) ---
         const prevLL = config._prevLL !== undefined ? config._prevLL : 0;
         const prevTL = config._prevTL !== undefined ? config._prevTL : (link.lanes ? link.lanes.length : 1);
         const prevRL = config._prevRL !== undefined ? config._prevRL : 0;
 
         const newLanes = [];
 
-        // 1. 處理左轉附加車道
         for (let i = 0; i < LL; i++) {
             if (i < prevLL && link.lanes[i]) newLanes.push(link.lanes[i]);
             else newLanes.push({ width: LANE_WIDTH, allowedVehicleProfiles: [] });
         }
-        // 2. 處理直行車道
         for (let i = 0; i < TL; i++) {
             if (i < prevTL && link.lanes[prevLL + i]) newLanes.push(link.lanes[prevLL + i]);
             else newLanes.push({ width: LANE_WIDTH, allowedVehicleProfiles: [] });
         }
-        // 3. 處理右轉附加車道
         for (let i = 0; i < RL; i++) {
             if (i < prevRL && link.lanes[prevLL + prevTL + i]) newLanes.push(link.lanes[prevLL + prevTL + i]);
             else newLanes.push({ width: LANE_WIDTH, allowedVehicleProfiles: [] });
         }
 
-        // 更新歷史紀錄
         config._prevLL = LL;
         config._prevTL = TL;
         config._prevRL = RL;
 
-        link.lanes = newLanes; // 覆寫回 link 以利下方取用寬度
-        // ----------------------------------------------------
+        link.lanes = newLanes;
 
         const waypoints = link.waypoints;
         if (waypoints.length < 2) return;
@@ -834,11 +828,10 @@ document.addEventListener('DOMContentLoaded', () => {
             .filter(d => d >= -0.001 && d <= roundedTotalLen + 0.001)
             .sort((a, b) => a - b);
 
-const getParametricStrokeType = (idx, LL, TL, RL) => {
+        const getParametricStrokeType = (idx, LL, TL, RL) => {
             const total = LL + TL + RL;
             if (idx === 0 || idx === total) return 'boundary'; // 最外側左右邊界
-            // ★★★ [修正重點]：將所有內部車道線 (包含轉向與直行) 預設為白色單虛線 ★★★
-            return 'white_dashed'; 
+            return 'white_dashed';
         };
 
         const newStrokes = Array.from({ length: totalStrokes }, (_, i) => ({
@@ -861,14 +854,12 @@ const getParametricStrokeType = (idx, LL, TL, RL) => {
             return getNormal(normalize(getVector(waypoints[waypoints.length - 2], waypoints[waypoints.length - 1])));
         };
 
-        // --- ★★★ 核心修正：個別車道寬度偏移量計算 ★★★ ---
         let throughWidth = 0;
         for (let i = LL; i < LL + TL; i++) throughWidth += link.lanes[i].width;
 
         const throughLeftEdge = -throughWidth / 2;
         const throughRightEdge = throughWidth / 2;
 
-        // 計算基準狀態下，每一條標線的偏移量
         const baseOffsets = [];
         let totalLeftPocketWidth = 0;
         for (let i = 0; i < LL; i++) totalLeftPocketWidth += link.lanes[i].width;
@@ -1017,7 +1008,7 @@ const getParametricStrokeType = (idx, LL, TL, RL) => {
 
     // --- [新增] 動態拓撲分析：計算實質接觸邊界的連接埠 ---
     function getLaneBasedPorts(link) {
-        if (!link || !link.strokes || link.strokes.length < 2) return { startPorts: [], endPorts: [] };
+        if (!link || !link.strokes || link.strokes.length < 2 || !link.lanes) return { startPorts: [], endPorts: [] };
 
         const leftBound = link.strokes[0].points;
         const rightBound = link.strokes[link.strokes.length - 1].points;
@@ -1031,49 +1022,35 @@ const getParametricStrokeType = (idx, LL, TL, RL) => {
         const endPorts = [];
         const EPSILON = 2.0; // 接觸判定容差
 
-        const startTouching = [];
-        const endTouching = [];
+        // 遍歷實體車道 (而非遍歷標線)，精準找出接觸門的 Port
+        link.lanes.forEach((lane, laneIdx) => {
+            let leftStroke = link.strokes.find(s => s.id == lane.leftStrokeId);
+            let rightStroke = link.strokes.find(s => s.id == lane.rightStrokeId);
 
-        // 掃描所有標線，判斷是否切斷起訖門 (Gates)
-        link.strokes.forEach((stroke, idx) => {
-            const ptFirst = stroke.points[0];
-            const ptLast = stroke.points[stroke.points.length - 1];
+            // 舊資料防呆：找不到 ID 則回歸預設 Index
+            if (!leftStroke) leftStroke = link.strokes[laneIdx];
+            if (!rightStroke) rightStroke = link.strokes[laneIdx + 1] || link.strokes[link.strokes.length - 1];
+            if (!leftStroke || !rightStroke) return;
 
-            // 判斷起點門 (Start Gate)
-            let distToStart1 = vecLen(getVector(ptFirst, projectPointOnSegment(ptFirst, pNW, pNE)));
-            let distToStart2 = vecLen(getVector(ptLast, projectPointOnSegment(ptLast, pNW, pNE)));
-            if (distToStart1 < EPSILON || distToStart2 < EPSILON) {
-                startTouching.push({ idx: idx, point: distToStart1 < EPSILON ? ptFirst : ptLast });
+            const ptLFirst = leftStroke.points[0];
+            const ptLLast = leftStroke.points[leftStroke.points.length - 1];
+            const ptRFirst = rightStroke.points[0];
+            const ptRLast = rightStroke.points[rightStroke.points.length - 1];
+
+            // 判斷該車道的起點門 (Start Gate)
+            let dLStart = vecLen(getVector(ptLFirst, projectPointOnSegment(ptLFirst, pNW, pNE)));
+            let dRStart = vecLen(getVector(ptRFirst, projectPointOnSegment(ptRFirst, pNW, pNE)));
+            if (dLStart < EPSILON && dRStart < EPSILON && vecLen(getVector(ptLFirst, ptRFirst)) > 0.5) {
+                startPorts.push({ laneIndex: laneIdx, point: { x: (ptLFirst.x + ptRFirst.x) / 2, y: (ptLFirst.y + ptRFirst.y) / 2 } });
             }
 
-            // 判斷終點門 (End Gate)
-            let distToEnd1 = vecLen(getVector(ptFirst, projectPointOnSegment(ptFirst, pSW, pSE)));
-            let distToEnd2 = vecLen(getVector(ptLast, projectPointOnSegment(ptLast, pSW, pSE)));
-            if (distToEnd1 < EPSILON || distToEnd2 < EPSILON) {
-                endTouching.push({ idx: idx, point: distToEnd1 < EPSILON ? ptFirst : ptLast });
+            // 判斷該車道的終點門 (End Gate)
+            let dLEnd = vecLen(getVector(ptLLast, projectPointOnSegment(ptLLast, pSW, pSE)));
+            let dREnd = vecLen(getVector(ptRLast, projectPointOnSegment(ptRLast, pSW, pSE)));
+            if (dLEnd < EPSILON && dREnd < EPSILON && vecLen(getVector(ptLLast, ptRLast)) > 0.5) {
+                endPorts.push({ laneIndex: laneIdx, point: { x: (ptLLast.x + ptRLast.x) / 2, y: (ptLLast.y + ptRLast.y) / 2 } });
             }
         });
-
-        startTouching.sort((a, b) => a.idx - b.idx);
-        endTouching.sort((a, b) => a.idx - b.idx);
-
-        // 依據觸碰到的標線，計算實體車道空間的中心點
-        for (let i = 0; i < startTouching.length - 1; i++) {
-            let p1 = startTouching[i].point;
-            let p2 = startTouching[i + 1].point;
-            // [修正] 如果車道寬度小於 0.5 公尺 (漸變消失區)，則不產生 Port
-            if (vecLen(getVector(p1, p2)) > 0.5) {
-                startPorts.push({ laneIndex: startTouching[i].idx, point: { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 } });
-            }
-        }
-
-        for (let i = 0; i < endTouching.length - 1; i++) {
-            let p1 = endTouching[i].point;
-            let p2 = endTouching[i + 1].point;
-            if (vecLen(getVector(p1, p2)) > 0.5) {
-                endPorts.push({ laneIndex: endTouching[i].idx, point: { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 } });
-            }
-        }
 
         return { startPorts, endPorts };
     }
@@ -1445,9 +1422,9 @@ const getParametricStrokeType = (idx, LL, TL, RL) => {
             link.strokes.forEach(stroke => {
                 const style = STROKE_TYPES[stroke.type] || STROKE_TYPES['boundary'];
 
-                                if (style.dual) {
+                if (style.dual) {
                     const offset = style.gap / 2;
-                    
+
                     // ★★★ [修正重點] Konva 座標系的 Y 軸向下，平移的法向量預設指向車流行進方向的「右側」 ★★★
                     // 因此，物理世界車道的「左側 (Left)」應為 -offset，「右側 (Right)」應為 +offset
                     const ptsLeft = getOffsetPolyline(stroke.points, -offset);
@@ -5966,16 +5943,27 @@ const getParametricStrokeType = (idx, LL, TL, RL) => {
             marking.konvaGroup.position({ x: marking.x, y: marking.y });
 
             const color = marking.color || 'white';
-            const strokeColor = color === 'yellow' ? '#facc15' : 'white';
-            const fillColor = color === 'yellow' ? 'rgba(250, 204, 21, 0.2)' : 'rgba(255, 255, 255, 0.2)';
+
+            // --- [修改] 支援綠色三角島視覺 ---
+            let strokeColor = 'white';
+            let fillColor = 'rgba(255, 255, 255, 0.2)';
+            if (color === 'yellow') {
+                strokeColor = '#facc15';
+                fillColor = 'rgba(250, 204, 21, 0.2)';
+            } else if (color === 'green') {
+                strokeColor = '#22c55e';
+                fillColor = 'rgba(34, 197, 94, 0.6)'; // 不透明度調高
+            }
 
             const polygon = new Konva.Line({
                 points: localPoints, stroke: strokeColor, strokeWidth: 0.5,
                 closed: true, fill: fillColor, listening: true, name: 'marking-shape'
             });
+            // ---------------------------------
+
             marking.konvaGroup.add(polygon);
             marking.konvaGroup.rotation(marking.rotation);
-            return; // 畫完直接返回
+            return;
         }
 
         const LINE_COLOR = 'white';
@@ -6939,15 +6927,15 @@ const getParametricStrokeType = (idx, LL, TL, RL) => {
 
                     // 右轉附加車道
                     content += `<div style="background:#f8fafc; border:1px solid #e2e8f0; padding:8px; margin-top:8px; border-radius:4px;">
-                                    <label style="display:flex; align-items:center; gap:6px; font-weight:bold; color:#475569; cursor:pointer;">
-                                        <input type="checkbox" id="prop-para-rp-exists" ${c.rightPocket.exists ? 'checked' : ''}> Right Turn Pocket (右轉道)
-                                    </label>
-                                    <div id="prop-para-rp-config" style="display:${c.rightPocket.exists ? 'block' : 'none'}; margin-top:8px;">
-                                        <div class="prop-row"><span class="prop-label">Lanes</span><input type="number" id="prop-para-rp-lanes" class="prop-input" value="${c.rightPocket.lanes}" min="1"></div>
-                                        <div class="prop-row"><span class="prop-label">Length (m)</span><input type="number" id="prop-para-rp-len" class="prop-input" value="${c.rightPocket.length}" min="5" step="0.5"></div>
-                                        <div class="prop-row"><span class="prop-label">Taper (m)</span><input type="number" id="prop-para-rp-tap" class="prop-input" value="${c.rightPocket.taper}" min="5" step="0.5"></div>
-                                    </div>
-                                </div>`;
+                                <label style="display:flex; align-items:center; gap:6px; font-weight:bold; color:#475569; cursor:pointer;">
+                                    <input type="checkbox" id="prop-para-rp-exists" ${c.rightPocket.exists ? 'checked' : ''}> Right Turn Pocket (右轉道)
+                                </label>
+                                <div id="prop-para-rp-config" style="display:${c.rightPocket.exists ? 'block' : 'none'}; margin-top:8px;">
+                                    <div class="prop-row"><span class="prop-label">Lanes</span><input type="number" id="prop-para-rp-lanes" class="prop-input" value="${c.rightPocket.lanes}" min="1"></div>
+                                    <div class="prop-row"><span class="prop-label">Length (m)</span><input type="number" id="prop-para-rp-len" class="prop-input" value="${c.rightPocket.length}" min="5" step="0.5"></div>
+                                    <div class="prop-row"><span class="prop-label">Taper (m)</span><input type="number" id="prop-para-rp-tap" class="prop-input" value="${c.rightPocket.taper}" min="5" step="0.5"></div>
+                                </div>
+                            </div>`;
 
                     content += `<button id="btn-bake-to-mesh" class="btn-action" style="width:100%; margin-top:12px; background:#f59e0b;">
                                   <i class="fa-solid fa-hammer"></i> Convert to Freeform (手動微調)
@@ -7213,8 +7201,23 @@ const getParametricStrokeType = (idx, LL, TL, RL) => {
                         });
                         signalSelectHtml += `</select>`;
 
-                        // 3. 渲染卡片
-                        // [修正重點] 加入 class "connection-group-card" 和 data-source/data-dest
+                        // --- [新增] 判斷是否為右轉，以顯示產生引道按鈕 ---
+                        let slipBtnHtml = '';
+                        const srcLink = network.links[group.sourceLinkId];
+                        const dstLink = network.links[group.destLinkId];
+                        if (srcLink && dstLink) {
+                            const turnDir = getTurnDirection(srcLink, dstLink);
+                            // 只要是右轉，就顯示這個按鈕
+                            if (turnDir === 'right') {
+                                slipBtnHtml = `
+                                <button class="btn-mini btn-macro-slip" title="Generate Slip Lane" data-source="${group.sourceLinkId}" data-dest="${group.destLinkId}" style="background:#10b981; border:1px solid #059669; color:white;">
+                                    <i class="fa-solid fa-code-branch"></i> 引道
+                                </button>`;
+                            }
+                        }
+                        // ------------------------------------------------
+
+                        // 3. 渲染卡片 (注意我把 ${slipBtnHtml} 插進去 Buttons 區塊了)
                         content += `<div class="prop-card connection-group-card" 
                                      data-source="${group.sourceLinkId}" 
                                      data-dest="${group.destLinkId}"
@@ -7229,6 +7232,7 @@ const getParametricStrokeType = (idx, LL, TL, RL) => {
                                         
                                         <!-- Buttons -->
                                         <div style="display:flex; gap:6px;">
+                                            ${slipBtnHtml} <!-- 在這裡插入 -->
                                             <button class="btn-mini group-edit-btn" title="Edit Lanes" data-source="${group.sourceLinkId}" data-dest="${group.destLinkId}" style="background:#f1f5f9; border:1px solid #e2e8f0; color:var(--text-muted);">
                                                 <i class="fa-solid fa-pen"></i>
                                             </button>
@@ -7889,6 +7893,7 @@ const getParametricStrokeType = (idx, LL, TL, RL) => {
                                 <select id="prop-mark-color" class="prop-select">
                                     <option value="white" ${obj.color === 'white' ? 'selected' : ''}>White</option>
                                     <option value="yellow" ${obj.color === 'yellow' ? 'selected' : ''}>Yellow</option>
+                                    <option value="green" ${obj.color === 'green' ? 'selected' : ''}>Green (Island)</option>
                                 </select></div>`;
                 }
 
@@ -8538,6 +8543,27 @@ const getParametricStrokeType = (idx, LL, TL, RL) => {
                 });
             });
 
+            // [新增監聽] Slip Lane 引道巨集生成按鈕
+            document.querySelectorAll('.btn-macro-slip').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const sourceId = btn.dataset.source;
+                    const destId = btn.dataset.dest;
+
+                    let targetGroupObj = null;
+                    layer.find('.group-connection-visual').forEach(shape => {
+                        const meta = shape.getAttr('meta');
+                        if (meta && meta.sourceLinkId === sourceId && meta.destLinkId === destId) {
+                            targetGroupObj = { id: shape.id(), ...meta, konvaLine: shape };
+                        }
+                    });
+
+                    if (confirm("是否自動建立右轉槽化引道？(這將會分割原始路段並重組拓撲)")) {
+                        window.generateSlipLaneMacro(sourceId, destId, targetGroupObj);
+                    }
+                });
+            });
+
             // =======================================================
             // [新增] Flow Tab 的高亮互動 (Hover Highlight)
             // =======================================================
@@ -8865,7 +8891,6 @@ const getParametricStrokeType = (idx, LL, TL, RL) => {
                     c.rightPocket.exists = e.target.checked;
                     updateParametric();
                 });
-
                 document.getElementById('btn-bake-to-mesh')?.addEventListener('click', () => {
                     if (confirm("轉換為手繪標線模式？轉換後將無法再使用拉桿快速調整。")) {
                         obj.geometryType = 'lane-based';
@@ -9635,12 +9660,13 @@ const getParametricStrokeType = (idx, LL, TL, RL) => {
             if (colorSel) colorSel.addEventListener('change', (e) => {
                 obj.color = e.target.value;
 
-                // 【修正重點】不要呼叫 drawRoadMarking 導致圖形被銷毀
-                // 只要單純地改變現有多邊形的顏色屬性即可
                 const polygon = obj.konvaGroup.findOne('.marking-shape');
                 if (polygon) {
-                    polygon.stroke(obj.color === 'yellow' ? '#facc15' : 'white');
-                    polygon.fill(obj.color === 'yellow' ? 'rgba(250, 204, 21, 0.2)' : 'rgba(255, 255, 255, 0.2)');
+                    let sc = 'white', fc = 'rgba(255, 255, 255, 0.2)';
+                    if (obj.color === 'yellow') { sc = '#facc15'; fc = 'rgba(250, 204, 21, 0.2)'; }
+                    if (obj.color === 'green') { sc = '#22c55e'; fc = 'rgba(34, 197, 94, 0.6)'; }
+                    polygon.stroke(sc);
+                    polygon.fill(fc);
                 } else {
                     drawRoadMarking(obj);
                 }
@@ -15073,6 +15099,242 @@ const getParametricStrokeType = (idx, LL, TL, RL) => {
     // [新增] AI Agent 專用 API (Agent API)
     // 透過 CDP 的 Runtime.evaluate 呼叫這些函數，可繞過滑鼠事件，直接建立與修改路網
     // =========================================================================
+
+    // =========================================================================
+    // [新增] 槽化引道巨集生成器 (Slip Lane Generator) 模組
+    // =========================================================================
+
+    // 輔助函數：計算兩條無限長直線的交點
+    function getLineIntersection(p1, v1, p2, v2) {
+        const cross = v1.x * v2.y - v1.y * v2.x;
+        if (Math.abs(cross) < 1e-6) return null; // 兩線平行
+        const dx = p2.x - p1.x;
+        const dy = p2.y - p1.y;
+        const t1 = (dx * v2.y - dy * v2.x) / cross;
+        return {
+            x: p1.x + t1 * v1.x,
+            y: p1.y + t1 * v1.y
+        };
+    }
+
+    // 輔助函數：精準切割路段並維持拓撲
+    function splitLinkAtDistance(link, splitDist) {
+        const len = getPolylineLength(link.waypoints);
+        if (splitDist <= 5 || splitDist >= len - 5) return { upstream: link, downstream: link, splitNode: null };
+
+        const ptData = getPointAlongPolyline(link.waypoints, splitDist);
+        const point = ptData.point;
+
+        let segIndex = 0, curL = 0;
+        for (let i = 0; i < link.waypoints.length - 1; i++) {
+            const d = vecLen(getVector(link.waypoints[i], link.waypoints[i + 1]));
+            if (curL + d >= splitDist - 0.01) { segIndex = i; break; }
+            curL += d;
+        }
+
+        const splitNode = createNode(point.x, point.y);
+        const wpUpstream = [...link.waypoints.slice(0, segIndex + 1), point];
+        const wpDownstream = [point, ...link.waypoints.slice(segIndex + 1)];
+
+        const originalEndNode = link.endNodeId;
+        const originalId = link.id;
+
+        // 1. 建立下游新路段
+        const downstreamLink = createLink(wpDownstream, link.lanes.length);
+        downstreamLink.name = link.name ? link.name + " (Cont.)" : "";
+        downstreamLink.geometryType = link.geometryType;
+        downstreamLink.lanes = JSON.parse(JSON.stringify(link.lanes));
+        if (link.parametricConfig) downstreamLink.parametricConfig = JSON.parse(JSON.stringify(link.parametricConfig));
+
+        downstreamLink.startNodeId = splitNode.id;
+        downstreamLink.endNodeId = originalEndNode;
+        splitNode.outgoingLinkIds.add(downstreamLink.id);
+        if (originalEndNode && network.nodes[originalEndNode]) {
+            network.nodes[originalEndNode].incomingLinkIds.delete(originalId);
+            network.nodes[originalEndNode].incomingLinkIds.add(downstreamLink.id);
+        }
+
+        // 2. 修改原始路段 (變成上游)
+        link.waypoints = wpUpstream;
+        link.endNodeId = splitNode.id;
+        splitNode.incomingLinkIds.add(link.id);
+
+        // 3. 轉移離開該路段的連線與資產
+        Object.values(network.connections).forEach(conn => {
+            if (conn.sourceLinkId === originalId) conn.sourceLinkId = downstreamLink.id;
+        });
+        layer.find('.group-connection-visual').forEach(g => {
+            const meta = g.getAttr('meta');
+            if (meta && meta.sourceLinkId === originalId) {
+                meta.sourceLinkId = downstreamLink.id;
+                g.setAttr('meta', meta);
+            }
+        });
+
+        // 4. 連接直行車道
+        const straightConnIds = [];
+        for (let i = 0; i < link.lanes.length; i++) {
+            const c = handleConnection(
+                { linkId: link.id, laneIndex: i, portType: 'end' },
+                { linkId: downstreamLink.id, laneIndex: i, portType: 'start' }
+            );
+            if (c) { c.konvaBezier.visible(false); straightConnIds.push(c.id); }
+        }
+        if (straightConnIds.length > 0) {
+            drawConnectionGroupVisual(link, downstreamLink, straightConnIds, splitNode.id);
+        }
+
+        // 5. 更新標線幾何 (強制避免 Lane-based 模式破圖)
+        if (link.geometryType === 'parametric') generateParametricStrokes(link);
+        if (downstreamLink.geometryType === 'parametric') generateParametricStrokes(downstreamLink);
+        else if (link.geometryType === 'lane-based') {
+            link.geometryType = 'standard';
+            downstreamLink.geometryType = 'standard';
+        }
+
+        drawLink(link); drawLink(downstreamLink);
+        updateDependencies(link); updateDependencies(downstreamLink);
+
+        return { upstream: link, downstream: downstreamLink, splitNode };
+    }
+
+    // 主函數：巨集生成器
+    window.generateSlipLaneMacro = function (srcLinkId, dstLinkId, groupObj) {
+        const originalSrc = network.links[srcLinkId];
+        const originalDst = network.links[dstLinkId];
+        if (!originalSrc || !originalDst) return;
+
+        const SLIP_DIST = 20; // 引道長度，20公尺
+        const srcLen = getPolylineLength(originalSrc.waypoints);
+        const dstLen = getPolylineLength(originalDst.waypoints);
+
+        if (srcLen <= SLIP_DIST + 5 || dstLen <= SLIP_DIST + 5) {
+            alert("路段長度不足，無法生成右轉引道 (需至少大於 25m)。");
+            return;
+        }
+
+        // 1. 拓撲分割
+        const srcSplit = splitLinkAtDistance(originalSrc, srcLen - SLIP_DIST);
+        const dstSplit = splitLinkAtDistance(originalDst, SLIP_DIST);
+
+        const nodeA = srcSplit.splitNode;
+        const nodeB = dstSplit.splitNode;
+        const srcUp = srcSplit.upstream;
+        const srcDown = srcSplit.downstream; // 進入路口的直線
+        const dstUp = dstSplit.upstream;     // 離開路口的直線
+        const dstDown = dstSplit.downstream;
+
+        // 2. 幾何運算：取得精確的車道中心點
+        const srcLaneIdx = srcUp.lanes.length - 1; // 抓最右側車道
+        const dstLaneIdx = dstDown.lanes.length - 1;
+
+        const srcLanePath = getLanePath(srcUp, srcLaneIdx);
+        const dstLanePath = getLanePath(dstDown, dstLaneIdx);
+
+        if (srcLanePath.length < 2 || dstLanePath.length < 2) return;
+
+        const pRawStart = srcLanePath[srcLanePath.length - 1];
+        const pRawEnd = dstLanePath[0];
+
+        const vSrc = normalize(getVector(srcLanePath[Math.max(0, srcLanePath.length - 2)], pRawStart));
+        const vDst = normalize(getVector(pRawEnd, dstLanePath[Math.min(dstLanePath.length - 1, 1)]));
+
+        // 核心修復：微微偏移，創造實質連接線長度，解決「模擬器卡車」Bug
+        const pStart = add(pRawStart, scale(vSrc, 0.5));
+        const pEnd = add(pRawEnd, scale(vDst, -0.5));
+
+        // 尋找交點作為貝茲曲線控制點
+        let cp = getLineIntersection(pStart, vSrc, pEnd, vDst);
+        if (!cp) {
+            cp = { x: (pStart.x + pEnd.x) / 2, y: (pStart.y + pEnd.y) / 2 };
+        } else {
+            // 防呆：如果控制點跑太遠(角度接近平行)，限制其距離
+            const d1 = vecLen(getVector(pStart, cp));
+            const d2 = vecLen(getVector(pEnd, cp));
+            if (d1 > SLIP_DIST * 2 || d2 > SLIP_DIST * 2) {
+                cp = { x: (pStart.x + pEnd.x) / 2, y: (pStart.y + pEnd.y) / 2 };
+            }
+        }
+
+        // 3. 產生彎曲路段 (Slip Link) 
+        const curvePoints = [];
+        const NUM_PTS = 8;
+        for (let i = 0; i <= NUM_PTS; i++) {
+            const t = i / NUM_PTS;
+            const x = (1 - t) * (1 - t) * pStart.x + 2 * (1 - t) * t * cp.x + t * t * pEnd.x;
+            const y = (1 - t) * (1 - t) * pStart.y + 2 * (1 - t) * t * cp.y + t * t * pEnd.y;
+            curvePoints.push({ x, y });
+        }
+
+        const slipLink = createLink(curvePoints, 1);
+        slipLink.name = `SlipLane_${srcLinkId}_to_${dstLinkId}`;
+
+        // 核心修復：強制轉換為 lane-based 繪製完美的邊界，避免尖角破圖
+        slipLink.geometryType = 'lane-based';
+        const slipLeftEdge = getOffsetPolyline(curvePoints, -LANE_WIDTH / 2);
+        const slipRightEdge = getOffsetPolyline(curvePoints, LANE_WIDTH / 2);
+
+        slipLink.strokes = [
+            { id: window.generateId('stroke'), type: 'boundary', points: slipLeftEdge },
+            { id: window.generateId('stroke'), type: 'boundary', points: slipRightEdge }
+        ];
+        slipLink.lanes[0].leftStrokeId = slipLink.strokes[0].id;
+        slipLink.lanes[0].rightStrokeId = slipLink.strokes[1].id;
+
+        // 4. 重組連線拓撲
+        if (groupObj) deleteConnectionGroup(groupObj);
+
+        // 建立 srcUp -> slipLink 的連線
+        const conn1 = handleConnection(
+            { linkId: srcUp.id, laneIndex: srcLaneIdx, portType: 'end' },
+            { linkId: slipLink.id, laneIndex: 0, portType: 'start' }
+        );
+        // 建立 slipLink -> dstDown 的連線
+        const conn2 = handleConnection(
+            { linkId: slipLink.id, laneIndex: 0, portType: 'end' },
+            { linkId: dstDown.id, laneIndex: dstLaneIdx, portType: 'start' }
+        );
+
+        if (conn1) conn1.konvaBezier.visible(true);
+        if (conn2) conn2.konvaBezier.visible(true);
+
+        // 5. 生成綠色三角島 (Pork Chop Island) 
+        // 核心修復：完美貼合邊緣演算法
+        const srcDownRightEdge = getOffsetPolyline(srcDown.waypoints, getLinkTotalWidth(srcDown) / 2);
+        const dstUpRightEdge = getOffsetPolyline(dstUp.waypoints, getLinkTotalWidth(dstUp) / 2);
+
+        const vSrcEdge = normalize(getVector(srcDownRightEdge[0], srcDownRightEdge[srcDownRightEdge.length - 1]));
+        const vDstEdge = normalize(getVector(dstUpRightEdge[0], dstUpRightEdge[dstUpRightEdge.length - 1]));
+
+        const P_split = slipLeftEdge[0];
+        const P_merge = slipLeftEdge[slipLeftEdge.length - 1];
+
+        const cornerPt = getLineIntersection(P_split, vSrcEdge, P_merge, vDstEdge);
+
+        const islandPts = [P_split];
+        if (cornerPt) islandPts.push(cornerPt);
+        islandPts.push(P_merge);
+
+        // 將曲線左側邊界反向加入，形成封閉多邊形
+        for (let i = slipLeftEdge.length - 2; i >= 1; i--) {
+            islandPts.push(slipLeftEdge[i]);
+        }
+
+        const marking = createRoadMarking('channelization', null, islandPts.flatMap(p => [p.x, p.y]));
+        marking.color = 'green';
+        const polygon = marking.konvaGroup.findOne('.marking-shape');
+        if (polygon) {
+            polygon.stroke('#22c55e');
+            polygon.fill('rgba(34, 197, 94, 0.6)');
+        }
+
+        drawLink(slipLink);
+        saveState();
+        layer.batchDraw();
+
+        deselectAll();
+    };
+
     window.AgentAPI = {
 
         /**
