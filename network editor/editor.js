@@ -524,7 +524,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 // 顯示屬於這個 Link 的單車道細線
                 if (conn.sourceLinkId === obj.id || conn.destLinkId === obj.id) {
                     if (conn.konvaBezier) {
-                        conn.konvaBezier.visible(true); 
+                        conn.konvaBezier.visible(true);
                     }
                 }
             });
@@ -533,7 +533,7 @@ document.addEventListener('DOMContentLoaded', () => {
             layer.find('.group-connection-visual').forEach(groupVis => {
                 const meta = groupVis.getAttr('meta');
                 if (meta && meta.nodeId && (meta.nodeId === obj.startNodeId || meta.nodeId === obj.endNodeId)) {
-                    groupVis.visible(false); 
+                    groupVis.visible(false);
                 }
             });
             // --------------------------------------------------------
@@ -696,7 +696,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 Object.values(network.connections).forEach(conn => {
                     if (conn.sourceLinkId === obj.id || conn.destLinkId === obj.id) {
                         if (conn.konvaBezier) {
-                            conn.konvaBezier.visible(false); 
+                            conn.konvaBezier.visible(false);
                         }
                     }
                 });
@@ -704,7 +704,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 layer.find('.group-connection-visual').forEach(groupVis => {
                     const meta = groupVis.getAttr('meta');
                     if (meta && meta.nodeId && (meta.nodeId === obj.startNodeId || meta.nodeId === obj.endNodeId)) {
-                        groupVis.visible(true); 
+                        groupVis.visible(true);
                     }
                 });
                 // --------------------------------------------------------
@@ -2215,8 +2215,8 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
 
-        // 2. 清理
-        layer.find('.lane-port').forEach(port => port.destroy());
+        // 2. 清理 (確保同時清除單車道紅藍點，以及群組的深紅點)
+        layer.find('.lane-port, .group-connect-port').forEach(port => port.destroy());
         if (tempShape) { tempShape.destroy(); tempShape = null; }
         if (tempMeasureText) { tempMeasureText.destroy(); tempMeasureText = null; }
 
@@ -2482,7 +2482,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!link.waypoints || link.waypoints.length < 2) continue;
 
             // ==========================================
-            // [新增] Lane-based 路段的動態拓撲 Port
+            // Lane-based 路段的動態拓撲 Port
             // ==========================================
             if ((link.geometryType === 'lane-based' || link.geometryType === 'parametric') && link.strokes && link.strokes.length > 1) {
                 const ports = getLaneBasedPorts(link);
@@ -2490,7 +2490,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 ports.startPorts.forEach(sp => {
                     const startPort = new Konva.Circle({
                         x: sp.point.x, y: sp.point.y, radius: PORT_RADIUS, fill: 'blue',
-                        stroke: 'white', strokeWidth: 2 / portScale, draggable: true, name: 'lane-port',
+                        draggable: true, name: 'lane-port', hitStrokeWidth: 15,
                         scaleX: portScale, scaleY: portScale,
                     });
                     startPort.setAttr('meta', { linkId: link.id, laneIndex: sp.laneIndex, portType: 'start' });
@@ -2500,7 +2500,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 ports.endPorts.forEach(ep => {
                     const endPort = new Konva.Circle({
                         x: ep.point.x, y: ep.point.y, radius: PORT_RADIUS, fill: 'red',
-                        stroke: 'white', strokeWidth: 2 / portScale, draggable: true, name: 'lane-port',
+                        draggable: true, name: 'lane-port', hitStrokeWidth: 15,
                         scaleX: portScale, scaleY: portScale,
                     });
                     endPort.setAttr('meta', { linkId: link.id, laneIndex: ep.laneIndex, portType: 'end' });
@@ -2521,29 +2521,31 @@ document.addEventListener('DOMContentLoaded', () => {
 
                     const startPort = new Konva.Circle({
                         x: startPos.x, y: startPos.y, radius: PORT_RADIUS, fill: 'blue',
-                        stroke: 'white', strokeWidth: 2 / portScale, draggable: true, name: 'lane-port', scaleX: portScale, scaleY: portScale,
+                        draggable: true, name: 'lane-port', hitStrokeWidth: 15,
+                        scaleX: portScale, scaleY: portScale,
                     });
                     startPort.setAttr('meta', { linkId: link.id, laneIndex: i, portType: 'start' });
                     layer.add(startPort);
 
                     const endPort = new Konva.Circle({
                         x: endPos.x, y: endPos.y, radius: PORT_RADIUS, fill: 'red',
-                        stroke: 'white', strokeWidth: 2 / portScale, draggable: true, name: 'lane-port', scaleX: portScale, scaleY: portScale,
+                        draggable: true, name: 'lane-port', hitStrokeWidth: 15,
+                        scaleX: portScale, scaleY: portScale,
                     });
                     endPort.setAttr('meta', { linkId: link.id, laneIndex: i, portType: 'end' });
                     layer.add(endPort);
                 }
             }
 
-            // --- 繪製「群組連接」箭頭 (保留不變) ---
+            // --- 繪製「群組連接」箭頭 (保留無框純文字) ---
             if (ENABLE_GROUP_CONNECT) {
                 const linkLength = getPolylineLength(link.waypoints);
                 const upstreamDist = Math.max(0, linkLength - 15);
                 const { point: upstreamPoint, vec: upstreamVec } = getPointAlongPolyline(link.waypoints, upstreamDist);
 
                 const groupPort = new Konva.Text({
-                    x: upstreamPoint.x, y: upstreamPoint.y, text: '●', fontSize: 20, fill: '#8B0000', stroke: 'white',
-                    strokeWidth: 1 / portScale, align: 'center', verticalAlign: 'middle',
+                    x: upstreamPoint.x, y: upstreamPoint.y, text: '●', fontSize: 20, fill: '#8B0000',
+                    align: 'center', verticalAlign: 'middle', hitStrokeWidth: 15,
                     rotation: Konva.Util.radToDeg(Math.atan2(upstreamVec.y, upstreamVec.x)) - 90,
                     name: 'group-connect-port', draggable: true, scaleX: portScale, scaleY: portScale
                 });
@@ -2642,7 +2644,6 @@ document.addEventListener('DOMContentLoaded', () => {
             layer.find('.lane-port, .group-connect-port, .control-point, .waypoint-handle, .measurement-handle, .tfl-icon-wrapper, .node-setting-icon-wrapper, .node-vertex-handle, .bg-setting-icon-wrapper').forEach(p => {
                 p.scale({ x: newPortScale, y: newPortScale });
             });
-            layer.find('.lane-port').forEach(p => p.strokeWidth(2 / newScale));
 
             layer.find('.lane-indicator').forEach(indicator => {
                 indicator.scale({ x: newPortScale, y: newPortScale });
@@ -5346,7 +5347,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const p1 = sourceLanePath.slice(-1)[0];
             const p4 = destLanePath[0];
-            
+
             // [修正] 計算完整的切線向量與貝茲控制點
             const v1 = normalize(getVector(sourceLanePath[sourceLanePath.length - 2], p1));
             const v4 = normalize(getVector(p4, destLanePath[1]));
@@ -9243,7 +9244,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
                         // 高亮：變成鮮明的亮橘黃色並加粗
                         conn.konvaBezier.stroke('#fbbf24'); // 鮮明橘黃色 (Amber)
-                        conn.konvaBezier.strokeWidth(3);
+                        conn.konvaBezier.strokeWidth(1);
                         conn.konvaBezier.moveToTop(); // 移到最上層，避免被其他線遮住
                         layer.batchDraw();
                     }
@@ -12606,7 +12607,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const sourceLink = network.links[firstConn.sourceLinkId];
             const destLink = network.links[firstConn.destLinkId];
             const nodeId = firstConn.nodeId;
-            
+
             if (!sourceLink || !destLink) return;
 
             // [修正] 放棄舊版直線邏輯，直接呼叫新版繪圖函數，自動產生平滑群組軌跡
