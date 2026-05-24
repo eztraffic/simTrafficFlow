@@ -62,7 +62,49 @@ document.addEventListener('DOMContentLoaded', () => {
         'white_solid_dashed': { color: '#ffffff', dual: true, leftDash: [], rightDash: [4, 6], width: 0.8, gap: 0.2, label: 'White Solid/Dash (左實右虛)' },
         'white_dashed_solid': { color: '#ffffff', dual: true, leftDash: [4, 6], rightDash: [], width: 0.8, gap: 0.2, label: 'White Dash/Solid (左虛右實)' }
     };
+    // --- [修改] 專業級軌跡語意配色字典 (改為低調統一的風格) ---
+    const TRAJECTORY_COLORS = {
+        'straight': 'rgba(59, 130, 246, 0.85)', // 亮藍色
+        'right': 'rgba(16, 185, 129, 0.85)', // 翠綠色
+        'left': 'rgba(245, 158, 11, 0.85)', // 橘黃色
+        'u-turn': 'rgba(139, 92, 246, 0.85)', // 紫色
+        'default': 'rgba(0, 210, 255, 0.85)'   // 青色
+    };
 
+    // --- [新增] 計算貝茲曲線 4 個控制點 ---
+    function calculateBezierPoints(pStart, vStart, pEnd, vEnd, turnDir, totalWidth) {
+        const dist = vecLen(getVector(pStart, pEnd));
+
+        // 控制點延伸距離 (預設為端點直線距離的 40%)
+        let ctrlDist1 = dist * 0.4;
+        let ctrlDist2 = dist * 0.4;
+
+        // 如果是迴轉 (U-Turn)，端點距離很近，必須強制向外擴張以形成水滴狀迴圈
+        if (turnDir === 'u-turn') {
+            const minBulge = Math.max(dist * 2, totalWidth * 1.5, 20);
+            ctrlDist1 = minBulge;
+            ctrlDist2 = minBulge;
+        }
+
+        const cp1 = add(pStart, scale(vStart, ctrlDist1));
+        const cp2 = add(pEnd, scale(vEnd, -ctrlDist2)); // 終點向量需反轉延伸
+
+        return [pStart, cp1, cp2, pEnd];
+    }
+
+    // --- [新增] 獲取貝茲曲線中點 (t=0.5) 的座標與切線角度 (供畫箭頭使用) ---
+    function getBezierMidpointAndAngle(p0, p1, p2, p3) {
+        // 座標計算 (Cubic Bezier at t=0.5)
+        const x = 0.125 * p0.x + 0.375 * p1.x + 0.375 * p2.x + 0.125 * p3.x;
+        const y = 0.125 * p0.y + 0.375 * p1.y + 0.375 * p2.y + 0.125 * p3.y;
+
+        // 切線向量計算 (Derivative at t=0.5)
+        const vx = 0.75 * (p1.x - p0.x) + 1.5 * (p2.x - p1.x) + 0.75 * (p3.x - p2.x);
+        const vy = 0.75 * (p1.y - p0.y) + 1.5 * (p2.y - p1.y) + 0.75 * (p3.y - p2.y);
+
+        const angle = Math.atan2(vy, vx) * (180 / Math.PI);
+        return { x, y, angle };
+    }
     // --- [新增] Lane-based 草稿狀態 ---
     let draftCurrentStrokeType = 'boundary';
     let draftLaneStrokes = []; // 儲存使用者畫的每一條線 { type: string, konvaLine: Object }
@@ -297,6 +339,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function createConnection(sourceLink, sourceLaneIndex, destLink, destLaneIndex, node, points, color = 'rgba(0, 255, 0, 0.7)') {
         const id = window.generateId('conn');
+
+        // 計算貝茲曲線點位
+        const turnDir = getTurnDirection(sourceLink, destLink);
+        let bezierPts = points;
+        if (points.length === 2) {
+            const vStart = normalize(getVector(sourceLink.waypoints[sourceLink.waypoints.length - 2], points[0]));
+            const vEnd = normalize(getVector(points[1], destLink.waypoints[1]));
+            bezierPts = calculateBezierPoints(points[0], vStart, points[1], vEnd, turnDir, getLinkTotalWidth(sourceLink));
+        }
+
         const conn = {
             id,
             type: 'Connection',
@@ -305,23 +357,23 @@ document.addEventListener('DOMContentLoaded', () => {
             destLinkId: destLink.id,
             destLaneIndex,
             nodeId: node.id,
-            bezierPoints: points, // Note: This now stores just [startPoint, endPoint]
+            bezierPoints: bezierPts, // 儲存 4 個控制點
             konvaControls: [],
             konvaBezier: new Konva.Line({
                 id,
-                points: points.flatMap(p => [p.x, p.y]),
+                points: bezierPts.flatMap(p => [p.x, p.y]),
                 stroke: color,
-                strokeWidth: 0.5,
+                strokeWidth: 1, // 【關鍵修改】最細線寬
+                bezier: true,   // 開啟貝茲曲線
+                // 移除了 dash 屬性，變成連續實線
                 hitStrokeWidth: 10,
                 lineCap: 'round',
-                tension: 0, // A tension of 0 ensures a straight line
                 listening: true,
             })
         };
         network.connections[id] = conn;
         layer.add(conn.konvaBezier);
         conn.konvaBezier.moveToBottom();
-        node.konvaShape.moveToBottom();
         return conn;
     }
     function createDetector(type, link, position, endPosition = null) {
@@ -466,6 +518,26 @@ document.addEventListener('DOMContentLoaded', () => {
         } else if (obj.type === 'Link') {
             konvaObj = obj.konvaGroup;
             drawWaypointHandles(obj);
+
+            // --- [修改] 點選 Link 時：顯示各車道的連接線，隱藏相關 Node 內的所有群組線 ---
+            Object.values(network.connections).forEach(conn => {
+                // 顯示屬於這個 Link 的單車道細線
+                if (conn.sourceLinkId === obj.id || conn.destLinkId === obj.id) {
+                    if (conn.konvaBezier) {
+                        conn.konvaBezier.visible(true); 
+                    }
+                }
+            });
+
+            // 只要群組線所屬的 Node 是該 Link 的起點或終點，就全部隱藏
+            layer.find('.group-connection-visual').forEach(groupVis => {
+                const meta = groupVis.getAttr('meta');
+                if (meta && meta.nodeId && (meta.nodeId === obj.startNodeId || meta.nodeId === obj.endNodeId)) {
+                    groupVis.visible(false); 
+                }
+            });
+            // --------------------------------------------------------
+
         } else if (obj.type === 'Origin' || obj.type === 'Destination') {
             konvaObj = obj.konvaShape;
             if (obj.konvaLabel) {
@@ -586,11 +658,15 @@ document.addEventListener('DOMContentLoaded', () => {
         // 更新屬性面板以顯示選取物件的詳細資訊
         updatePropertiesPanel(obj);
     }
-    // 完整替換此函數
+
     // 完整替換此函數
     function deselectAll() {
         clearLaneIndicators();
         lastSelectedNodeForProperties = null;
+
+        // --- [新增修正] 強制清除所有屬性面板 Hover 時產生的暫存高亮圖形，防止殘留 ---
+        layer.find('.link-highlight, .lane-polygon-highlight, .bg-list-highlight').forEach(shape => shape.destroy());
+        // --------------------------------------------------------------------------
 
         if (selectedObject) {
             let konvaObj;
@@ -606,7 +682,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             else if (obj.type === 'Node') {
                 konvaObj = obj.konvaShape;
-                destroyNodeHandles(obj); // <--- 新增這行：取消選取時清除控制點
+                destroyNodeHandles(obj); // <--- 取消選取時清除控制點
             }
             else if (obj.type === 'Connection') {
                 konvaObj = obj.konvaBezier;
@@ -615,6 +691,24 @@ document.addEventListener('DOMContentLoaded', () => {
             } else if (obj.type === 'Link') {
                 konvaObj = obj.konvaGroup;
                 destroyWaypointHandles(obj);
+
+                // --- [修改] 取消點選 Link 時：隱藏各車道連接線，恢復相關 Node 內的所有群組線 ---
+                Object.values(network.connections).forEach(conn => {
+                    if (conn.sourceLinkId === obj.id || conn.destLinkId === obj.id) {
+                        if (conn.konvaBezier) {
+                            conn.konvaBezier.visible(false); 
+                        }
+                    }
+                });
+
+                layer.find('.group-connection-visual').forEach(groupVis => {
+                    const meta = groupVis.getAttr('meta');
+                    if (meta && meta.nodeId && (meta.nodeId === obj.startNodeId || meta.nodeId === obj.endNodeId)) {
+                        groupVis.visible(true); 
+                    }
+                });
+                // --------------------------------------------------------
+
             } else if (obj.type === 'Origin' || obj.type === 'Destination') {
                 konvaObj = obj.konvaShape;
                 if (obj.konvaLabel) {
@@ -628,7 +722,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     obj.konvaTransformer = null;
                 }
                 konvaObj = obj.konvaGroup;
-            } else if (obj.type === 'Overpass') { // <--- 新增 Overpass 處理
+            } else if (obj.type === 'Overpass') {
                 konvaObj = obj.konvaRect;
                 // 恢復原來的紅色邊框
                 konvaObj.stroke('red');
@@ -650,7 +744,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     obj.konvaTransformer = null;
                 }
                 if (obj.markingType === 'channelization') {
-                    // 【修正重點】只移除附帶命名空間的事件，保留基礎的 dragmove/dragend
+                    // 只移除附帶命名空間的事件，保留基礎的 dragmove/dragend
                     obj.konvaGroup.off('.ch_select');
                     destroyChannelizationHandles(obj);
                 }
@@ -661,8 +755,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 konvaObj.setAttr('shadowOpacity', 0);
             }
         }
+
         selectedObject = null;
         updatePropertiesPanel(null);
+        layer.batchDraw(); // 確保清除高亮後畫面即時更新
     }
     function createOrigin(link, position) {
         const id = window.generateId('origin');
@@ -4549,36 +4645,64 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         return bestProjection;
     }
-
     function updateConnectionEndpoints(linkId) {
         const modifiedLink = network.links[linkId];
         if (!modifiedLink) return;
 
+        // 1. 更新單一車道的連接線 (Micro Connections)
         Object.values(network.connections).forEach(conn => {
             let needsUpdate = false;
+            if (conn.sourceLinkId === linkId || conn.destLinkId === linkId) {
+                const sourceLink = network.links[conn.sourceLinkId];
+                const destLink = network.links[conn.destLinkId];
 
-            // conn.bezierPoints is now [startPoint, endPoint]
-            if (conn.sourceLinkId === linkId) {
-                const sourceLanePath = getLanePath(modifiedLink, conn.sourceLaneIndex);
-                if (sourceLanePath.length > 0) {
-                    const newP1 = sourceLanePath[sourceLanePath.length - 1];
-                    conn.bezierPoints[0] = newP1; // Update start point at index 0
-                    needsUpdate = true;
+                if (sourceLink && destLink) {
+                    const srcPath = getLanePath(sourceLink, conn.sourceLaneIndex);
+                    const dstPath = getLanePath(destLink, conn.destLaneIndex);
+
+                    if (srcPath.length >= 2 && dstPath.length >= 2) {
+                        const pStart = srcPath[srcPath.length - 1];
+                        const pEnd = dstPath[0];
+                        const vStart = normalize(getVector(srcPath[srcPath.length - 2], pStart));
+                        const vEnd = normalize(getVector(pEnd, dstPath[1]));
+
+                        const turnDir = getTurnDirection(sourceLink, destLink);
+                        const bezierPts = calculateBezierPoints(pStart, vStart, pEnd, vEnd, turnDir, getLinkTotalWidth(sourceLink));
+
+                        conn.bezierPoints = bezierPts;
+                        conn.konvaBezier.points(bezierPts.flatMap(p => [p.x, p.y]));
+                    }
                 }
             }
+        });
 
-            if (conn.destLinkId === linkId) {
-                const destLanePath = getLanePath(modifiedLink, conn.destLaneIndex);
-                if (destLanePath.length > 0) {
-                    const newP4 = destLanePath[0];
-                    conn.bezierPoints[1] = newP4; // Update end point at index 1
-                    needsUpdate = true;
+        // 2. 更新群組視覺線條 (Macro Groups)
+        layer.find('.group-connection-visual').forEach(groupVisual => {
+            const meta = groupVisual.getAttr('meta');
+            if (!meta) return;
+
+            if (meta.sourceLinkId === linkId || meta.destLinkId === linkId) {
+                const srcLink = network.links[meta.sourceLinkId];
+                const dstLink = network.links[meta.destLinkId];
+                if (srcLink && dstLink && srcLink.waypoints.length > 1 && dstLink.waypoints.length > 1) {
+                    const pStart = srcLink.waypoints[srcLink.waypoints.length - 1];
+                    const pEnd = dstLink.waypoints[0];
+                    const vStart = normalize(getVector(srcLink.waypoints[srcLink.waypoints.length - 2], pStart));
+                    const vEnd = normalize(getVector(pEnd, dstLink.waypoints[1]));
+
+                    const turnDir = getTurnDirection(srcLink, dstLink);
+                    const bezierPts = calculateBezierPoints(pStart, vStart, pEnd, vEnd, turnDir, getLinkTotalWidth(srcLink) + getLinkTotalWidth(dstLink));
+
+                    // 【修改】只更新曲線位置，移除箭頭更新邏輯
+                    if (typeof groupVisual.findOne === 'function') {
+                        const spline = groupVisual.findOne('.trajectory-spline');
+                        if (spline) {
+                            spline.points(bezierPts.flatMap(p => [p.x, p.y]));
+                        }
+                    } else if (typeof groupVisual.points === 'function') {
+                        groupVisual.points([pStart.x, pStart.y, pEnd.x, pEnd.y]);
+                    }
                 }
-            }
-
-            if (needsUpdate) {
-                conn.konvaBezier.points(conn.bezierPoints.flatMap(p => [p.x, p.y]));
-                // No controls to redraw.
             }
         });
     }
@@ -4830,6 +4954,37 @@ document.addEventListener('DOMContentLoaded', () => {
         const pointsToAppend = (dist < 1.0) ? linkB.waypoints.slice(1) : linkB.waypoints;
         linkA.waypoints = linkA.waypoints.concat(pointsToAppend);
 
+        // =========================================================
+        // [新增修正] 統一並修復幾何模式 (Geometry Type)
+        // 確保 Standard 與 Parametric 混合合併時，強制升級為 Parametric
+        // =========================================================
+        const isAnyParametric = (linkA.geometryType === 'parametric' || linkB.geometryType === 'parametric');
+        const isAnyLaneBased = (linkA.geometryType === 'lane-based' || linkB.geometryType === 'lane-based');
+
+        if (isAnyParametric) {
+            linkA.geometryType = 'parametric';
+
+            // 決定 Parametric 組態：如果 A 沒有，則繼承 B 的，若都沒有則生成預設值
+            if (!linkA.parametricConfig) {
+                if (linkB.parametricConfig) {
+                    linkA.parametricConfig = JSON.parse(JSON.stringify(linkB.parametricConfig));
+                } else {
+                    linkA.parametricConfig = {
+                        throughLanes: linkA.lanes.length,
+                        leftPocket: { exists: false, lanes: 1, length: 30, taper: 15 },
+                        rightPocket: { exists: false, lanes: 1, length: 30, taper: 15 },
+                        _prevLL: 0,
+                        _prevTL: linkA.lanes.length,
+                        _prevRL: 0
+                    };
+                }
+            }
+        } else if (isAnyLaneBased) {
+            // 對於無法完美相接的不規則手繪標線，安全降級為 Standard 以防止破圖
+            linkA.geometryType = 'standard';
+        }
+        // =========================================================
+
         // 2. 遷移資產 (Assets Migration)
         Object.values(network.detectors).forEach(det => {
             if (det.linkId === linkB.id) { det.linkId = linkA.id; det.position += offsetLength; drawDetector(det); }
@@ -4879,9 +5034,7 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         });
 
-        // =========================================================
-        // [修正重點開始] 4. 更新連接線與群組視覺物件 (Connections & Groups)
-        // =========================================================
+        // 4. 更新連接線與群組視覺物件 (Connections & Groups)
         const connsToDelete = [];
         Object.values(network.connections).forEach(conn => {
             if (conn.sourceLinkId === linkA.id && conn.destLinkId === linkB.id) {
@@ -4942,9 +5095,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // 清理無效的群組線
         groupsToRemove.forEach(g => g.destroy());
-        // =========================================================
-        // [修正重點結束]
-        // =========================================================
 
         // 5. 處理中間節點刪除
         if (midNodeId && network.nodes[midNodeId]) {
@@ -4964,54 +5114,79 @@ document.addEventListener('DOMContentLoaded', () => {
         delete network.links[linkB.id];
 
         // 7. 重繪 Link A 與更新附屬物件
+        // =========================================================
+        // [新增修正] 呼叫參數化引擎重新計算座標與標線
+        // 因為中心線(waypoints)已改變，必須重算實體標線以免錯位
+        // =========================================================
+        if (linkA.geometryType === 'parametric') {
+            window.generateParametricStrokes(linkA);
+        }
+
         drawLink(linkA);
         updateConnectionEndpoints(linkA.id);
     }
 
-    // --- [輔助] 繪製/更新群組視覺物件 ---
+    // 完整替換現有的 drawConnectionGroupVisual 函數
     function drawConnectionGroupVisual(srcLink, dstLink, newIds, commonNodeId) {
-        const p1 = srcLink.waypoints[srcLink.waypoints.length - 1];
-        const p4 = dstLink.waypoints[0];
-
-        // 檢查是否已經有這組 Link 對的視覺線條
-        const existingVisual = layer.find('.group-connection-visual').find(shape => {
+        // 檢查是否已經有這組 Link 對的視覺線條，若有則先銷毀重建
+        let existingVisual = layer.find('.group-connection-visual').find(shape => {
             const meta = shape.getAttr('meta');
             return meta && meta.sourceLinkId === srcLink.id && meta.destLinkId === dstLink.id;
         });
 
-        if (!existingVisual) {
-            // 建立新的視覺線條
-            const groupLine = new Konva.Line({
-                points: [p1.x, p1.y, p4.x, p4.y],
-                stroke: 'darkgreen',
-                strokeWidth: 2,
-                hitStrokeWidth: 20, // 增加點擊範圍
-                name: 'group-connection-visual',
-                listening: true,
-            });
+        const turnDir = getTurnDirection(srcLink, dstLink);
+        const color = TRAJECTORY_COLORS[turnDir] || TRAJECTORY_COLORS['default'];
 
-            const newMeta = {
-                type: 'ConnectionGroup',
-                connectionIds: newIds,
-                nodeId: commonNodeId,
-                sourceLinkId: srcLink.id,
-                destLinkId: dstLink.id
-            };
-            groupLine.setAttr('meta', newMeta);
-            layer.add(groupLine);
-            groupLine.moveToBottom();
+        // 取得端點與向量
+        const pStart = srcLink.waypoints[srcLink.waypoints.length - 1];
+        const pEnd = dstLink.waypoints[0];
+        const vStart = normalize(getVector(srcLink.waypoints[srcLink.waypoints.length - 2], pStart));
+        const vEnd = normalize(getVector(pEnd, dstLink.waypoints[1]));
 
-            // 確保 Node 在線條之上
-            if (network.nodes[commonNodeId]) {
-                network.nodes[commonNodeId].konvaShape.moveToTop();
-            }
-        } else {
-            // 更新現有線條的 connectionIds
-            const meta = existingVisual.getAttr('meta');
-            // 合併並去重 ID
-            const updatedIds = [...new Set([...meta.connectionIds, ...newIds])];
-            meta.connectionIds = updatedIds;
-            existingVisual.setAttr('meta', meta);
+        const totalWidth = getLinkTotalWidth(srcLink) + getLinkTotalWidth(dstLink);
+        const bezierPts = calculateBezierPoints(pStart, vStart, pEnd, vEnd, turnDir, totalWidth);
+
+        const groupVisual = new Konva.Group({
+            name: 'group-connection-visual',
+            listening: true,
+        });
+
+        // 1. 平滑實線軌跡 (最細、連續、無箭頭)
+        const spline = new Konva.Line({
+            points: bezierPts.flatMap(p => [p.x, p.y]),
+            bezier: true,
+            stroke: color,
+            strokeWidth: 1, // 【關鍵修改】最細線寬
+            // 移除了 dash 屬性，變成連續實線
+            lineCap: 'round',
+            hitStrokeWidth: 20, // 保持隱形的點擊範圍夠寬
+            name: 'trajectory-spline'
+        });
+
+        groupVisual.add(spline);
+
+        // 更新與合併 Meta 資料
+        const newMeta = {
+            type: 'ConnectionGroup',
+            connectionIds: newIds,
+            nodeId: commonNodeId,
+            sourceLinkId: srcLink.id,
+            destLinkId: dstLink.id
+        };
+
+        if (existingVisual) {
+            const oldMeta = existingVisual.getAttr('meta');
+            newMeta.connectionIds = [...new Set([...oldMeta.connectionIds, ...newIds])];
+            existingVisual.destroy();
+        }
+
+        groupVisual.setAttr('meta', newMeta);
+        layer.add(groupVisual);
+        groupVisual.moveToBottom();
+
+        // 確保 Node 墊在最底部，讓軌跡浮在上方
+        if (network.nodes[commonNodeId]) {
+            network.nodes[commonNodeId].konvaShape.moveToBottom();
         }
     }
 
@@ -5171,11 +5346,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const p1 = sourceLanePath.slice(-1)[0];
             const p4 = destLanePath[0];
+            
+            // [修正] 計算完整的切線向量與貝茲控制點
+            const v1 = normalize(getVector(sourceLanePath[sourceLanePath.length - 2], p1));
+            const v4 = normalize(getVector(p4, destLanePath[1]));
+            const turnDir = getTurnDirection(sourceLink, destLink);
+            const bezierPts = calculateBezierPoints(p1, v1, p4, v4, turnDir, getLinkTotalWidth(sourceLink));
 
-            // Update the connection's data model (which is just [start, end])
-            conn.bezierPoints = [p1, p4];
-
-            // Update the Konva shape with the new points
+            // 賦予完整的 4 個貝茲控制點
+            conn.bezierPoints = bezierPts;
             conn.konvaBezier.points(conn.bezierPoints.flatMap(p => [p.x, p.y]));
 
             // No controls to draw, so the 'if selected' block is removed.
@@ -7201,23 +7380,38 @@ document.addEventListener('DOMContentLoaded', () => {
                         });
                         signalSelectHtml += `</select>`;
 
-                        // --- [新增] 判斷是否為右轉，以顯示產生引道按鈕 ---
-                        let slipBtnHtml = '';
+                        // --- [新增] 判斷是否為右轉，以顯示產生引道按鈕與設定區塊 ---
+                        let slipConfigHtml = '';
                         const srcLink = network.links[group.sourceLinkId];
                         const dstLink = network.links[group.destLinkId];
                         if (srcLink && dstLink) {
                             const turnDir = getTurnDirection(srcLink, dstLink);
-                            // 只要是右轉，就顯示這個按鈕
+                            // 只要是右轉，就顯示這個區塊
                             if (turnDir === 'right') {
-                                slipBtnHtml = `
-                                <button class="btn-mini btn-macro-slip" title="Generate Slip Lane" data-source="${group.sourceLinkId}" data-dest="${group.destLinkId}" style="background:#10b981; border:1px solid #059669; color:white;">
-                                    <i class="fa-solid fa-code-branch"></i> 引道
-                                </button>`;
+                                slipConfigHtml = `
+                                <div class="prop-card-row" style="margin-top:8px; padding-top:8px; border-top:1px dashed #cbd5e1; display:flex; flex-direction:column; gap:6px;">
+                                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                                        <span style="font-weight:600; color:#10b981; font-size:0.8rem;"><i class="fa-solid fa-code-branch"></i> Slip Lane (引道設定)</span>
+                                        <button class="btn-mini btn-macro-slip" title="Generate Slip Lane" data-source="${group.sourceLinkId}" data-dest="${group.destLinkId}" style="background:#10b981; border:1px solid #059669; color:white;">
+                                            產生
+                                        </button>
+                                    </div>
+                                    <div style="display:flex; justify-content:space-between; align-items:center; gap:4px;">
+                                        <div style="display:flex; align-items:center; gap:4px;">
+                                            <span style="font-size:0.7rem; color:#64748b;">上游起點(m)</span>
+                                            <input type="number" id="slip-up-${group.sourceLinkId}-${group.destLinkId}" class="prop-input" value="20" min="5" step="1" style="width:45px; padding:2px; text-align:center;">
+                                        </div>
+                                        <div style="display:flex; align-items:center; gap:4px;">
+                                            <span style="font-size:0.7rem; color:#64748b;">下游終點(m)</span>
+                                            <input type="number" id="slip-down-${group.sourceLinkId}-${group.destLinkId}" class="prop-input" value="20" min="5" step="1" style="width:45px; padding:2px; text-align:center;">
+                                        </div>
+                                    </div>
+                                </div>`;
                             }
                         }
                         // ------------------------------------------------
 
-                        // 3. 渲染卡片 (注意我把 ${slipBtnHtml} 插進去 Buttons 區塊了)
+                        // 3. 渲染卡片 (將 slipConfigHtml 放置於卡片底部)
                         content += `<div class="prop-card connection-group-card" 
                                      data-source="${group.sourceLinkId}" 
                                      data-dest="${group.destLinkId}"
@@ -7232,7 +7426,6 @@ document.addEventListener('DOMContentLoaded', () => {
                                         
                                         <!-- Buttons -->
                                         <div style="display:flex; gap:6px;">
-                                            ${slipBtnHtml} <!-- 在這裡插入 -->
                                             <button class="btn-mini group-edit-btn" title="Edit Lanes" data-source="${group.sourceLinkId}" data-dest="${group.destLinkId}" style="background:#f1f5f9; border:1px solid #e2e8f0; color:var(--text-muted);">
                                                 <i class="fa-solid fa-pen"></i>
                                             </button>
@@ -7255,6 +7448,9 @@ document.addEventListener('DOMContentLoaded', () => {
                                             ${signalSelectHtml}
                                         </div>
                                     </div>
+                                    
+                                    <!-- Slip Lane Control Area -->
+                                    ${slipConfigHtml}
                                 </div>`;
                     });
                 } else {
@@ -7685,6 +7881,15 @@ document.addEventListener('DOMContentLoaded', () => {
                         <p>${bottomLinkId}</p>
                     </div>`;
                 content += `<button id="swap-overpass-btn" class="tool-btn">Swap Layer Order</button>`;
+
+                // [新增] 快速建立路口按鈕
+                content += `<div class="prop-section-header" style="margin-top:16px;">Tools</div>`;
+                content += `<button id="btn-overpass-to-intersection" class="btn-action" style="width:100%; background-color:#10b981;">
+                                <i class="fa-solid fa-network-wired"></i> Create Intersection (Point)
+                            </button>`;
+                content += `<div class="prop-hint" style="margin-top:6px;">
+                                <i class="fa-solid fa-info-circle"></i> Convert this overpass into an intersection (Snap to center).
+                            </div>`;
                 break;
 
             case 'Pushpin':
@@ -7883,7 +8088,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 <option value="waiting_area" ${obj.markingType === 'waiting_area' ? 'selected' : ''}>Waiting Area</option>
                                 <option value="two_stage_box" ${obj.markingType === 'two_stage_box' ? 'selected' : ''}>Two-Stage Box</option>
                                 <option value="crosswalk" ${obj.markingType === 'crosswalk' ? 'selected' : ''}>Pedestrian Crosswalk</option>
-                                <option value="channelization" ${obj.markingType === 'channelization' ? 'selected' : ''}>Channelization</option>
+                                <!--<option value="channelization" ${obj.markingType === 'channelization' ? 'selected' : ''}>Channelization</option>-->
                             </select>
                         </div>`;
                 // 在選單下加入顏色屬性
@@ -8550,6 +8755,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     const sourceId = btn.dataset.source;
                     const destId = btn.dataset.dest;
 
+                    // 抓取輸入框的自訂距離，若無法取得則回退到預設值 20
+                    const upInput = document.getElementById(`slip-up-${sourceId}-${destId}`);
+                    const downInput = document.getElementById(`slip-down-${sourceId}-${destId}`);
+                    const upDist = upInput ? (parseFloat(upInput.value) || 20) : 20;
+                    const downDist = downInput ? (parseFloat(downInput.value) || 20) : 20;
+
                     let targetGroupObj = null;
                     layer.find('.group-connection-visual').forEach(shape => {
                         const meta = shape.getAttr('meta');
@@ -8558,8 +8769,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
                     });
 
-                    if (confirm("是否自動建立右轉槽化引道？(這將會分割原始路段並重組拓撲)")) {
-                        window.generateSlipLaneMacro(sourceId, destId, targetGroupObj);
+                    if (confirm("是否自動建立右轉槽化引道？(這將會依據您設定的距離分割路段並重組拓撲)")) {
+                        window.generateSlipLaneMacro(sourceId, destId, targetGroupObj, upDist, downDist);
                     }
                 });
             });
@@ -9021,22 +9232,24 @@ document.addEventListener('DOMContentLoaded', () => {
                 const connId = item.dataset.connId;
                 const conn = network.connections[connId];
 
-                // 滑鼠移入：強制顯示該條貝茲曲線並上色
+                // 滑鼠移入：將該單獨連接線高亮 (變色、變粗)
                 item.addEventListener('mouseenter', () => {
-                    item.style.backgroundColor = '#f1f5f9'; // 清單背景變色
+                    item.style.backgroundColor = '#e2e8f0'; // 面板清單背景變色
                     if (conn && conn.konvaBezier) {
+                        // 記錄原來的顏色和粗細
                         if (!conn.konvaBezier.getAttr('originalStroke')) {
                             conn.konvaBezier.setAttr('originalStroke', conn.konvaBezier.stroke());
                             conn.konvaBezier.setAttr('originalStrokeWidth', conn.konvaBezier.strokeWidth());
                         }
-                        conn.konvaBezier.visible(true); // 強制顯示 (可能原先被 Group 隱藏)
-                        conn.konvaBezier.stroke('#dc3545'); // 變成紅色
-                        conn.konvaBezier.strokeWidth(3);    // 加粗
+                        // 高亮：變成鮮明的亮橘黃色並加粗
+                        conn.konvaBezier.stroke('#fbbf24'); // 鮮明橘黃色 (Amber)
+                        conn.konvaBezier.strokeWidth(3);
+                        conn.konvaBezier.moveToTop(); // 移到最上層，避免被其他線遮住
                         layer.batchDraw();
                     }
                 });
 
-                // 滑鼠移出：恢復原狀
+                // 滑鼠移出：恢復原來的顏色和粗細
                 item.addEventListener('mouseleave', () => {
                     item.style.backgroundColor = 'transparent';
                     if (conn && conn.konvaBezier) {
@@ -9049,14 +9262,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             conn.konvaBezier.setAttr('originalStrokeWidth', null);
                         }
 
-                        // 檢查該線是否從屬於某個 Group，如果是，則恢復隱藏狀態
-                        const isInGroup = Array.from(layer.find('.group-connection-visual')).some(g => {
-                            const meta = g.getAttr('meta');
-                            return meta && meta.connectionIds && meta.connectionIds.includes(connId);
-                        });
-                        if (isInGroup && (!selectedObject || selectedObject.id !== connId)) {
-                            conn.konvaBezier.visible(false);
-                        }
+                        // 【注意】這裡不呼叫 visible(false)，因為 Link 還在選取狀態，線應該保持顯示
                         layer.batchDraw();
                     }
                 });
@@ -9070,6 +9276,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 });
             });
+
 
             // 2. 綁定刪除按鈕
             document.querySelectorAll('.btn-del-single-conn').forEach(btn => {
@@ -9556,6 +9763,41 @@ document.addEventListener('DOMContentLoaded', () => {
                     updateAllOverpasses();
                     layer.batchDraw();
                     updatePropertiesPanel(obj);
+                });
+            }
+
+            // [新增] 將立體交叉轉換為路口事件
+            const createIntBtn = document.getElementById('btn-overpass-to-intersection');
+            if (createIntBtn) {
+                createIntBtn.addEventListener('click', () => {
+                    const confirmMsg = (typeof I18N !== 'undefined' && I18N.t)
+                        ? I18N.t("Convert this overpass into an intersection?")
+                        : "Convert this overpass into an intersection?";
+
+                    if (confirm(confirmMsg)) {
+                        // 1. 取得 Overpass 的紅框範圍
+                        const r = obj.konvaRect;
+
+                        // 稍微將框向外擴展一點 (5px)，確保兩條路徑都被確實包覆並判定為交會
+                        const padding = 5;
+                        const polyPoints = [
+                            { x: r.x() - padding, y: r.y() - padding },
+                            { x: r.x() + r.width() + padding, y: r.y() - padding },
+                            { x: r.x() + r.width() + padding, y: r.y() + r.height() + padding },
+                            { x: r.x() - padding, y: r.y() + r.height() + padding }
+                        ];
+
+                        // 2. 暫時強制切換為 Point Mode (中心聚合模式)
+                        const originalMode = intersectionMode;
+                        intersectionMode = 'point';
+
+                        // 3. 執行手動路口建立核心流程
+                        processManualIntersection(polyPoints);
+
+                        // 4. 恢復原設定並儲存狀態
+                        intersectionMode = originalMode;
+                        saveState();
+                    }
                 });
             }
         }
@@ -10445,39 +10687,24 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             if (newConnectionIds.length > 0) {
-                // --- START OF VISUAL CHANGE: Revert to Line with hitStrokeWidth ---
-                const p1 = sourceLink.waypoints[sourceLink.waypoints.length - 1];
-                const p4 = destLink.waypoints[0];
+                // 直接呼叫新版繪圖函數
+                drawConnectionGroupVisual(sourceLink, destLink, newConnectionIds, commonNodeId);
 
-                const groupLine = new Konva.Line({
-                    points: [p1.x, p1.y, p4.x, p4.y],
-                    stroke: 'darkgreen',        // The visible dark green line
-                    strokeWidth: 2,             // Make it a thin line
-                    name: 'group-connection-visual',
-                    listening: true,            // Must be true to capture clicks
-                    hitStrokeWidth: 20          // KEY: Creates a large, invisible clickable area around the line
+                // 為了讓屬性面板選取生效，我們從 layer 中把剛建好的物件抓出來
+                const groupShape = layer.find('.group-connection-visual').find(shape => {
+                    const meta = shape.getAttr('meta');
+                    return meta && meta.sourceLinkId === sourceLink.id && meta.destLinkId === destLink.id;
                 });
-                // --- END OF VISUAL CHANGE ---
 
-                const newMeta = {
-                    type: 'ConnectionGroup', connectionIds: newConnectionIds,
-                    nodeId: commonNodeId, sourceLinkId: sourceLink.id, destLinkId: destLink.id
-                };
-                groupLine.setAttr('meta', newMeta);
-                layer.add(groupLine);
-
-                const newGroupObject = {
-                    id: `group_${newMeta.sourceLinkId}_to_${newMeta.destLinkId}`,
-                    ...newMeta,
-                    konvaLine: groupLine,
-                };
-
-                groupLine.moveToBottom();
-                if (network.nodes[commonNodeId]) {
-                    network.nodes[commonNodeId].konvaShape.moveToTop();
+                if (groupShape) {
+                    const newMeta = groupShape.getAttr('meta');
+                    const newGroupObject = {
+                        id: `group_${newMeta.sourceLinkId}_to_${newMeta.destLinkId}`,
+                        ...newMeta,
+                        konvaLine: groupShape,
+                    };
+                    selectObject(newGroupObject);
                 }
-
-                selectObject(newGroupObject);
             } else if (isEditing) {
                 deselectAll();
             }
@@ -12340,23 +12567,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                     newConn.nodeId = xmlNodeIdMap.get(xmlRegNodeId);
                                 }
 
-                                const geom = getChildrenByLocalName(ruleEl, "BezierCurveGeometry")[0];
-                                if (geom) {
-                                    const ptsContainer = getChildrenByLocalName(geom, "ReferencePoints")[0] || getChildrenByLocalName(geom, "Points")[0];
-                                    if (ptsContainer) {
-                                        const points = [];
-                                        getChildrenByLocalName(ptsContainer, "Point").forEach(pEl => {
-                                            points.push({
-                                                x: parseFloat(getChildValue(pEl, "x")),
-                                                y: parseFloat(getChildValue(pEl, "y")) * C_SYSTEM_Y_INVERT
-                                            });
-                                        });
-                                        if (points.length >= 2) {
-                                            newConn.bezierPoints = [points[0], points[points.length - 1]];
-                                            newConn.konvaBezier.points(newConn.bezierPoints.flatMap(p => [p.x, p.y]));
-                                        }
-                                    }
-                                }
+
                             }
                         }
                     });
@@ -12395,30 +12606,15 @@ document.addEventListener('DOMContentLoaded', () => {
             const sourceLink = network.links[firstConn.sourceLinkId];
             const destLink = network.links[firstConn.destLinkId];
             const nodeId = firstConn.nodeId;
+            
             if (!sourceLink || !destLink) return;
-            const p1 = sourceLink.waypoints[sourceLink.waypoints.length - 1];
-            const p4 = destLink.waypoints[0];
 
-            const groupLine = new Konva.Line({
-                points: [p1.x, p1.y, p4.x, p4.y],
-                stroke: 'darkgreen',
-                strokeWidth: 2,
-                name: 'group-connection-visual',
-                listening: true,
-                hitStrokeWidth: 20
-            });
-            const groupMeta = {
-                type: 'ConnectionGroup',
-                connectionIds: connectionsInGroup.map(c => c.id),
-                nodeId: nodeId,
-                sourceLinkId: sourceLink.id,
-                destLinkId: destLink.id
-            };
-            groupLine.setAttr('meta', groupMeta);
-            layer.add(groupLine);
+            // [修正] 放棄舊版直線邏輯，直接呼叫新版繪圖函數，自動產生平滑群組軌跡
+            const connIds = connectionsInGroup.map(c => c.id);
+            drawConnectionGroupVisual(sourceLink, destLink, connIds, nodeId);
 
             connectionsInGroup.forEach(conn => {
-                conn.konvaBezier.visible(false);
+                conn.konvaBezier.visible(false); // 隱藏單條車道線
             });
         });
 
@@ -14903,6 +15099,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
         linksToRemove.forEach(id => deleteLink(id));
         linksToAdd.forEach(link => {
+            // <--- [新增修正] 根據繼承來的幾何模式，重新計算邊界與標線 --->
+            if (link.geometryType === 'parametric') {
+                // 呼叫原本寫好的數學引擎，根據新切短的長度重新產生轉向道與標線
+                generateParametricStrokes(link);
+            } else if (link.geometryType === 'lane-based') {
+                // 如果是純手繪 Lane-based 模式，因為不規則多邊形難以完美從中間裁切，
+                // 為了避免破圖，安全起見將其降級回 standard 模式
+                link.geometryType = 'standard';
+            }
+            // <------------------------------------------------------->
+
             layer.add(link.konvaGroup);
             drawLink(link);
         });
@@ -14934,6 +15141,7 @@ document.addEventListener('DOMContentLoaded', () => {
             id: newId,
             name: (parentLink.name || parentLink.id) + suffix,
             type: 'Link',
+            geometryType: parentLink.geometryType || 'standard', // <--- [修正] 繼承幾何模式
             waypoints: waypoints,
             lanes: newLanes,
             startNodeId: startNodeId,
@@ -14941,6 +15149,11 @@ document.addEventListener('DOMContentLoaded', () => {
             konvaGroup: new Konva.Group({ id: newId, draggable: false }),
             konvaHandles: [],
         };
+
+        // <--- [修正] 如果母路段是參數化模式，將參數配置深拷貝給子路段 --->
+        if (parentLink.parametricConfig) {
+            link.parametricConfig = JSON.parse(JSON.stringify(parentLink.parametricConfig));
+        }
 
         network.links[newId] = link;
 
@@ -15198,24 +15411,24 @@ document.addEventListener('DOMContentLoaded', () => {
         return { upstream: link, downstream: downstreamLink, splitNode };
     }
 
-    // 主函數：巨集生成器
-    window.generateSlipLaneMacro = function (srcLinkId, dstLinkId, groupObj) {
+    // 主函數：巨集生成器 (支援動態上下游距離，已移除綠色槽化島)
+    window.generateSlipLaneMacro = function (srcLinkId, dstLinkId, groupObj, upDist = 20, downDist = 20) {
         const originalSrc = network.links[srcLinkId];
         const originalDst = network.links[dstLinkId];
         if (!originalSrc || !originalDst) return;
 
-        const SLIP_DIST = 20; // 引道長度，20公尺
         const srcLen = getPolylineLength(originalSrc.waypoints);
         const dstLen = getPolylineLength(originalDst.waypoints);
 
-        if (srcLen <= SLIP_DIST + 5 || dstLen <= SLIP_DIST + 5) {
-            alert("路段長度不足，無法生成右轉引道 (需至少大於 25m)。");
+        // 使用傳入的距離作為防呆判斷依據
+        if (srcLen <= upDist + 5 || dstLen <= downDist + 5) {
+            alert(`路段長度不足，無法生成右轉引道。\n(來源路段長度需大於 ${upDist + 5}m，目的路段長度需大於 ${downDist + 5}m)`);
             return;
         }
 
-        // 1. 拓撲分割
-        const srcSplit = splitLinkAtDistance(originalSrc, srcLen - SLIP_DIST);
-        const dstSplit = splitLinkAtDistance(originalDst, SLIP_DIST);
+        // 1. 拓撲分割 (套用動態距離)
+        const srcSplit = splitLinkAtDistance(originalSrc, srcLen - upDist);
+        const dstSplit = splitLinkAtDistance(originalDst, downDist);
 
         const nodeA = srcSplit.splitNode;
         const nodeB = dstSplit.splitNode;
@@ -15248,10 +15461,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!cp) {
             cp = { x: (pStart.x + pEnd.x) / 2, y: (pStart.y + pEnd.y) / 2 };
         } else {
-            // 防呆：如果控制點跑太遠(角度接近平行)，限制其距離
+            // 防呆：如果控制點跑太遠(角度接近平行)，限制其距離 (採用較大的一方作為基準)
             const d1 = vecLen(getVector(pStart, cp));
             const d2 = vecLen(getVector(pEnd, cp));
-            if (d1 > SLIP_DIST * 2 || d2 > SLIP_DIST * 2) {
+            const maxAllowedDist = Math.max(upDist, downDist) * 2;
+            if (d1 > maxAllowedDist || d2 > maxAllowedDist) {
                 cp = { x: (pStart.x + pEnd.x) / 2, y: (pStart.y + pEnd.y) / 2 };
             }
         }
@@ -15298,41 +15512,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (conn1) conn1.konvaBezier.visible(true);
         if (conn2) conn2.konvaBezier.visible(true);
 
-        // 5. 生成綠色三角島 (Pork Chop Island) 
-        // 核心修復：完美貼合邊緣演算法
-        const srcDownRightEdge = getOffsetPolyline(srcDown.waypoints, getLinkTotalWidth(srcDown) / 2);
-        const dstUpRightEdge = getOffsetPolyline(dstUp.waypoints, getLinkTotalWidth(dstUp) / 2);
-
-        const vSrcEdge = normalize(getVector(srcDownRightEdge[0], srcDownRightEdge[srcDownRightEdge.length - 1]));
-        const vDstEdge = normalize(getVector(dstUpRightEdge[0], dstUpRightEdge[dstUpRightEdge.length - 1]));
-
-        const P_split = slipLeftEdge[0];
-        const P_merge = slipLeftEdge[slipLeftEdge.length - 1];
-
-        const cornerPt = getLineIntersection(P_split, vSrcEdge, P_merge, vDstEdge);
-
-        const islandPts = [P_split];
-        if (cornerPt) islandPts.push(cornerPt);
-        islandPts.push(P_merge);
-
-        // 將曲線左側邊界反向加入，形成封閉多邊形
-        for (let i = slipLeftEdge.length - 2; i >= 1; i--) {
-            islandPts.push(slipLeftEdge[i]);
-        }
-
-        const marking = createRoadMarking('channelization', null, islandPts.flatMap(p => [p.x, p.y]));
-        marking.color = 'green';
-        const polygon = marking.konvaGroup.findOne('.marking-shape');
-        if (polygon) {
-            polygon.stroke('#22c55e');
-            polygon.fill('rgba(34, 197, 94, 0.6)');
-        }
-
         drawLink(slipLink);
         saveState();
         layer.batchDraw();
 
-        deselectAll();
+        deselectAll(); // 執行後清除選取並確保消除高亮
     };
 
     window.AgentAPI = {
