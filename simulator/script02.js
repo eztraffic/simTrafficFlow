@@ -4163,6 +4163,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 // 2. 建立 10cm 寬度實體標線
                 link.strokes.forEach(stroke => {
+                    // ★★★ 新增此行：在 3D 中忽略純邏輯邊界，不產生實體黃橘色標線 ★★★
+                    if (stroke.type === 'boundary') return;
+
                     const style = STROKE_TYPES[stroke.type] || STROKE_TYPES['boundary'];
                     const colorHex = parseInt(style.color.replace('#', '0x'), 16);
                     const markHeight = 0.11; // 略高於路面
@@ -7371,6 +7374,45 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         return null;
     }
+    /**
+ * 輔助函數：取得道路最上游（起點處）即存在的合法車道索引
+ * 針對 lane-based (stroke-based) 路網，排除下游才產生的附加車道
+ */
+    function getUpstreamAllowedLanes(link, profile, network) {
+        if (!link || !link.lanes) return [];
+
+        const profileId = profile ? (profile.profileId || profile.id) : null;
+
+        return Object.values(link.lanes)
+            .filter(l => {
+                // 1. 基本車種限制過濾
+                if (l.allowedVehicles && l.allowedVehicles.length > 0) {
+                    if (!profileId || !l.allowedVehicles.includes(profileId)) {
+                        return false;
+                    }
+                }
+
+                // 2. 針對 Lane-based (Stroke-based) 路段的起點判定
+                if (link.geometryType === 'lane-based' && link.strokes) {
+                    const leftStroke = link.strokes.find(st => st.id === l.leftStrokeId);
+                    const rightStroke = link.strokes.find(st => st.id === l.rightStrokeId);
+
+                    // 判定起點存在門檻值（通常 s_min 在 5.0 公尺或總長 10% 內視為起點車道）
+                    const startThreshold = Math.min(5.0, link.length * 0.1);
+
+                    // 如果該車道的左側或右側邊界線是在下游才開始（s_min > 門檻值），代表其為附加車道，排除之
+                    if (leftStroke && typeof leftStroke.s_min === 'number' && leftStroke.s_min > startThreshold) {
+                        return false;
+                    }
+                    if (rightStroke && typeof rightStroke.s_min === 'number' && rightStroke.s_min > startThreshold) {
+                        return false;
+                    }
+                }
+
+                return true;
+            })
+            .map(l => l.index);
+    }
     // =================================================================
     // [新增] 偵測器發車器：依據觀測流量產生車輛
     // 請將此類別放在 Simulation 類別之前
@@ -7421,10 +7463,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 const profile = network.vehicleProfiles[chosenProfileEntry.profileId];
                 if (!profile) return null;
 
-                // [修正] 過濾出允許該車種的車道
-                const allowedLanes = Object.values(link.lanes)
-                    .filter(l => !l.allowedVehicles || l.allowedVehicles.length === 0 || l.allowedVehicles.includes(profile.id))
-                    .map(l => l.index);
+                // ★ 使用修正後的輔助函數，確保車輛產生於最上游既存車道
+                const allowedLanes = getUpstreamAllowedLanes(link, profile, network);
 
                 if (allowedLanes.length === 0) return null; // 無合法車道，放棄生成
 
@@ -7939,26 +7979,23 @@ document.addEventListener('DOMContentLoaded', () => {
                 const startLink = network.links[startLinkId];
                 let startLaneIndex = 0;
                 if (startLink) {
-                    // [修正] 過濾出允許該車種的車道
-                    const allowedLanes = Object.values(startLink.lanes)
-                        .filter(l => !l.allowedVehicles || l.allowedVehicles.length === 0 || l.allowedVehicles.includes(profile.profileId || profile.id))
-                        .map(l => l.index);
+                    // ★ 使用修正後的輔助函數，過濾出最上游起點即存在的合法車道
+                    const allowedLanes = getUpstreamAllowedLanes(startLink, profile, network);
 
                     if (allowedLanes.length > 0) {
                         startLaneIndex = allowedLanes[Math.floor(Math.random() * allowedLanes.length)];
                     } else {
-                        return null; // 該路段沒有允許此車種的車道，放棄生成
+                        return null; // 若無合適的最上游車道，則跳過此發車
                     }
                 }
 
-                // --- [修改] 處理停車任務 ---
+                // --- 處理停車任務 ---
                 let assignedStop = null;
                 if (this.currentConfig.stops && this.currentConfig.stops.length > 0) {
-                    // 簡單處理：遍歷所有可能的停靠點，依機率決定是否停靠
                     for (const stop of this.currentConfig.stops) {
                         if (Math.random() * 100 < stop.probability) {
-                            assignedStop = { ...stop }; // 複製任務
-                            break; // 暫時只支援停一個
+                            assignedStop = { ...stop };
+                            break;
                         }
                     }
                 }
@@ -7968,7 +8005,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     v.assignParkingTask(assignedStop, network);
                 }
                 return v;
-                // ---------------------------
             }
             return null;
         }
