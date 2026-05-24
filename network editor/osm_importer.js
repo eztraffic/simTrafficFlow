@@ -7,16 +7,89 @@ const OSMImporter = (() => {
     let mapLayer = null;
     let modalElement = null;
 
+    // 逆向地理投影計算：將畫布上的世界座標 (X, Y) 轉換回經緯度 (Lat, Lon)
+    function getCanvasCenterGPS() {
+        const net = window.network;
+        const stg = window.stage;
+        if (!net || !stg) return null;
+
+        // 必須存在剛好兩個地理對位圖釘
+        const pins = Object.values(net.pushpins || {});
+        if (pins.length < 2) {
+            return null;
+        }
+        const C1 = pins[0];
+        const C2 = pins[1];
+
+        // 經緯度轉麥卡托投影
+        function latLonToMercator(lat, lon) {
+            const R = 6378137;
+            const mx = R * lon * Math.PI / 180;
+            const my = R * Math.log(Math.tan(Math.PI / 4 + lat * Math.PI / 360));
+            return { x: mx, y: my };
+        }
+
+        const cm1 = latLonToMercator(C1.lat, C1.lon);
+        const cm2 = latLonToMercator(C2.lat, C2.lon);
+
+        // 取得目前 Konva 視角在世界座標中的中心點
+        const centerScreenX = stg.width() / 2;
+        const centerScreenY = stg.height() / 2;
+        const worldCenter = {
+            x: (centerScreenX - stg.x()) / stg.scaleX(),
+            y: (centerScreenY - stg.y()) / stg.scaleY()
+        };
+
+        const dxc = C2.x - C1.x;
+        const dyc = C2.y - C1.y;
+        const Lc2 = dxc * dxc + dyc * dyc;
+        if (Lc2 === 0) {
+            return { lat: C1.lat, lon: C1.lon };
+        }
+
+        // 投影到相對圖釘 1 的相對向量比例 (u, v)
+        const deltaXc = worldCenter.x - C1.x;
+        const deltaYc = worldCenter.y - C1.y;
+
+        const u = (deltaXc * dxc + deltaYc * dyc) / Lc2;
+        const v = (deltaYc * dxc - deltaXc * dyc) / Lc2;
+
+        // 映射回麥卡托投影平面座標 (需處理 Y 軸向下反轉)
+        const Xg1 = cm1.x, Yg1 = -cm1.y;
+        const Xg2 = cm2.x, Yg2 = -cm2.y;
+        const dXg = Xg2 - Xg1;
+        const dYg = Yg2 - Yg1;
+
+        const dXp = u * dXg - v * dYg;
+        const dYp = u * dYg + v * dXg;
+
+        const Xp = Xg1 + dXp;
+        const Yp = Yg1 + dYp;
+
+        const mx_p = Xp;
+        const my_p = -Yp;
+
+        // 麥卡托投影座標還原為經緯度
+        function mercatorToLatLon(mx, my) {
+            const R = 6378137;
+            const lon = (mx * 180) / (Math.PI * R);
+            const lat = (360 / Math.PI) * Math.atan(Math.exp(my / R)) - 90;
+            return { lat, lon };
+        }
+
+        return mercatorToLatLon(mx_p, my_p);
+    }
+
     // 初始化地圖與模態視窗
     function init() {
         // 建立 Modal 的 HTML 結構 (如果尚未存在)
         if (!document.getElementById('osm-modal')) {
             createModalHTML();
         }
-        
+
         modalElement = document.getElementById('osm-modal');
-        
-        // 綁定搜尋按鈕
+
+        // 1. 綁定搜尋按鈕
         document.getElementById('osm-search-btn').addEventListener('click', () => {
             searchLocation(document.getElementById('osm-search-input').value);
         });
@@ -25,15 +98,39 @@ const OSMImporter = (() => {
         document.getElementById('osm-search-input').addEventListener('keypress', (e) => {
             if (e.key === 'Enter') searchLocation(e.target.value);
         });
-        
-        // 綁定關閉按鈕
+
+        // 2. 綁定關閉按鈕
         document.getElementById('osm-close-btn').addEventListener('click', close);
-        
-        // 綁定匯入按鈕
+
+        // 3. 綁定匯入按鈕
         document.getElementById('osm-capture-btn').addEventListener('click', executeImport);
+
+        // 4. 綁定「對齊到畫布中心」按鈕
+        const centerBtn = document.getElementById('osm-center-to-canvas-btn');
+        if (centerBtn) {
+            // 利用克隆節點清除舊的監聽器，防止重複初始化
+            const newCenterBtn = centerBtn.cloneNode(true);
+            centerBtn.parentNode.replaceChild(newCenterBtn, centerBtn);
+
+            newCenterBtn.addEventListener('click', () => {
+                const gps = getCanvasCenterGPS();
+                if (!gps) {
+                    const alertMsg = (typeof I18N !== 'undefined' && I18N.t)
+                        ? I18N.t("Please set exactly 2 Geo Pins on the canvas first to calibrate coordinates.")
+                        : "請先在畫布上設定 2 個 Geo Pin 圖釘以校正座標系統！";
+                    alert(alertMsg);
+                    return;
+                }
+                if (map) {
+                    // 將 Leaflet 地圖視角移動到算出的世界中心經緯度
+                    map.setView([gps.lat, gps.lon], map.getZoom());
+                    updateInfo();
+                }
+            });
+        }
     }
 
-    // 動態建立 Modal HTML (避免污染 main.html 太嚴重)
+    // 動態建立 Modal HTML
     function createModalHTML() {
         const div = document.createElement('div');
         div.innerHTML = `
@@ -92,7 +189,7 @@ const OSMImporter = (() => {
         document.body.appendChild(div);
     }
 
-  // 初始化 Leaflet 地圖
+    // 初始化 Leaflet 地圖
     function initMap() {
         if (map) return;
 
@@ -102,48 +199,34 @@ const OSMImporter = (() => {
             zoomControl: true
         }).setView([24.1375386, 120.684663], 17);
 
-        // ==========================================
-        // 1. Google 圖層系列 (最強大的混合圖與街景)
-        // ==========================================
         const googleHybridLayer = L.tileLayer('https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', {
-            maxZoom: 20, crossOrigin: true 
+            maxZoom: 20, crossOrigin: true
         });
         const googleStreetLayer = L.tileLayer('https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', {
             maxZoom: 20, crossOrigin: true
         });
 
-        // ==========================================
-        // 2. 台灣國土測繪中心 (NLSC) 官方圖層系列
-        // 特色：台灣在地更新最快、新建重劃區道路最準確
-        // ==========================================
-        // 台灣官方正射影像 (最高畫質空照圖)
         const taiwanPhotoLayer = L.tileLayer('https://wmts.nlsc.gov.tw/wmts/PHOTO2/default/GoogleMapsCompatible/{z}/{y}/{x}', {
-            maxZoom: 20, 
-            crossOrigin: true,
-            attribution: '© 內政部國土測繪中心'
-        });
-        
-        // 台灣通用電子地圖 (台灣最精準的街道圖，包含精確的建築物輪廓)
-        const taiwanEmapLayer = L.tileLayer('https://wmts.nlsc.gov.tw/wmts/EMAP/default/GoogleMapsCompatible/{z}/{y}/{x}', {
-            maxZoom: 20, 
+            maxZoom: 20,
             crossOrigin: true,
             attribution: '© 內政部國土測繪中心'
         });
 
-        // ==========================================
-        // 3. 國際備用圖層 (穩定度最高)
-        // ==========================================
+        const taiwanEmapLayer = L.tileLayer('https://wmts.nlsc.gov.tw/wmts/EMAP/default/GoogleMapsCompatible/{z}/{y}/{x}', {
+            maxZoom: 20,
+            crossOrigin: true,
+            attribution: '© 內政部國土測繪中心'
+        });
+
         const cartoStreetLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-            maxZoom: 19, crossOrigin: true 
+            maxZoom: 19, crossOrigin: true
         });
         const esriSatLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
             maxZoom: 19, crossOrigin: true
         });
 
-        // 預設載入 Google 混合圖 (畫路網最好用)
         googleHybridLayer.addTo(map);
 
-        // 建立右上角的圖層切換選單
         const baseMaps = {
             "🛰️ 衛星+標籤 (Google)": googleHybridLayer,
             "🇹🇼 台灣官方空照 (國土測繪)": taiwanPhotoLayer,
@@ -153,14 +236,11 @@ const OSMImporter = (() => {
             "🗺️ 街道地圖 (CartoDB 備用)": cartoStreetLayer
         };
 
-        // 將切換選單加入地圖
         L.control.layers(baseMaps, null, { position: 'topright' }).addTo(map);
 
-        // 監聽移動事件以更新座標資訊
         map.on('moveend', updateInfo);
         map.on('zoomend', updateInfo);
-        
-        // 初始更新
+
         setTimeout(updateInfo, 500);
     }
 
@@ -173,16 +253,15 @@ const OSMImporter = (() => {
         const east = bounds.getEast();
         const west = bounds.getWest();
 
-        // 計算實際公尺數 (Haversine 距離)
         const heightMeters = map.distance([north, center.lng], [south, center.lng]);
         const widthMeters = map.distance([center.lat, west], [center.lat, east]);
 
-        document.getElementById('osm-bounds-text').innerHTML = 
+        document.getElementById('osm-bounds-text').innerHTML =
             `N: ${north.toFixed(5)}<br>S: ${south.toFixed(5)}<br>E: ${east.toFixed(5)}<br>W: ${west.toFixed(5)}`;
-        
-        document.getElementById('osm-size-text').innerHTML = 
+
+        document.getElementById('osm-size-text').innerHTML =
             `Width:  ${widthMeters.toFixed(1)} m<br>Height: ${heightMeters.toFixed(1)} m`;
-            
+
         return { widthMeters, heightMeters, bounds };
     }
 
@@ -191,7 +270,7 @@ const OSMImporter = (() => {
         const btn = document.getElementById('osm-search-btn');
         const originalHtml = btn.innerHTML;
         btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
-        
+
         try {
             const resp = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}`);
             const data = await resp.json();
@@ -210,53 +289,39 @@ const OSMImporter = (() => {
         }
     }
 
-    // 截圖核心邏輯：手動繪製 Tile 到 Canvas
-    // --- [修正] 截圖核心邏輯：使用 getBoundingClientRect 確保精確對齊 ---
     async function captureMapImage() {
         return new Promise((resolve, reject) => {
             const mapContainer = document.getElementById('osm-map');
-            // 取得地圖容器在視窗中的絕對位置
             const mapRect = mapContainer.getBoundingClientRect();
-            
+
             const width = mapContainer.clientWidth;
             const height = mapContainer.clientHeight;
-            
-            // 建立暫存 Canvas
+
             const canvas = document.createElement('canvas');
             canvas.width = width;
             canvas.height = height;
             const ctx = canvas.getContext('2d');
 
-            // 填滿背景色 (避免透明區域)
             ctx.fillStyle = '#e5e5e5';
             ctx.fillRect(0, 0, width, height);
 
-            // 獲取 Leaflet 的 Tile 容器內的圖片
-            // 修正：直接抓取所有 .leaflet-tile 類別的圖片，這包含了目前顯示的所有圖層
             const tiles = mapContainer.querySelectorAll('.leaflet-tile');
             const totalTiles = tiles.length;
-            let loadedCount = 0;
 
             if (totalTiles === 0) {
                 reject("No map tiles found.");
                 return;
             }
 
-            // 繪製函數
             const drawTiles = () => {
                 Array.from(tiles).forEach(img => {
-                    // [修正重點]：不解析 transform，直接計算相對位置
-                    // 1. 取得圖磚在螢幕上的絕對位置
                     const imgRect = img.getBoundingClientRect();
-
-                    // 2. 計算圖磚相對於地圖容器左上角的偏移量 (x, y)
                     const x = imgRect.left - mapRect.left;
                     const y = imgRect.top - mapRect.top;
-                    
+
                     const drawW = imgRect.width;
                     const drawH = imgRect.height;
 
-                    // 3. 只有當圖片與畫布有交集時才繪製 (優化效能，並防止邊緣殘影)
                     if (x + drawW > 0 && y + drawH > 0 && x < width && y < height) {
                         if (img.complete) {
                             try {
@@ -267,11 +332,9 @@ const OSMImporter = (() => {
                         }
                     }
                 });
-                // 輸出為 Data URL
                 resolve(canvas.toDataURL('image/png'));
             };
 
-            // 簡單延遲確保 Leaflet DOM 更新完成
             setTimeout(drawTiles, 100);
         });
     }
@@ -282,13 +345,9 @@ const OSMImporter = (() => {
         btn.disabled = true;
 
         try {
-            // 1. 取得當前地圖資訊
             const info = updateInfo();
-            
-            // 2. 截圖 (取得 Base64)
             const dataUrl = await captureMapImage();
-            
-            // 3. 呼叫主程式回調
+
             if (window.handleOSMImportCallback) {
                 window.handleOSMImportCallback({
                     imageData: dataUrl,
@@ -297,7 +356,7 @@ const OSMImporter = (() => {
                     bounds: info.bounds
                 });
             }
-            
+
             close();
 
         } catch (err) {
@@ -310,9 +369,8 @@ const OSMImporter = (() => {
     }
 
     function open() {
-        init(); // 確保已初始化
+        init();
         modalElement.style.display = 'flex';
-        // Leaflet 需要在容器可見後調整大小
         setTimeout(() => {
             if (map) map.invalidateSize();
             else initMap();
@@ -323,7 +381,6 @@ const OSMImporter = (() => {
         if (modalElement) modalElement.style.display = 'none';
     }
 
-    // 公開 API
     return {
         open: open
     };
