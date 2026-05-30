@@ -3915,6 +3915,17 @@ document.addEventListener('DOMContentLoaded', () => {
         const node = network.nodes[nodeId];
         if (!node) return;
 
+        // --- [新增] 收集受影響的相鄰路段 (Links) 列表，以便稍後重新整理 ---
+        const affectedLinkIds = new Set([...node.incomingLinkIds, ...node.outgoingLinkIds]);
+
+        // --- [新增] 清理與此路口相關的 Connection Group 視覺物件 (綠色粗線) ---
+        layer.find('.group-connection-visual').forEach(groupVis => {
+            const meta = groupVis.getAttr('meta');
+            if (meta && meta.nodeId === nodeId) {
+                groupVis.destroy();
+            }
+        });
+
         // Delete connections passing through this node
         Object.values(network.connections).forEach(conn => {
             if (conn.nodeId === nodeId) {
@@ -3925,7 +3936,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // Delete associated traffic light data
         if (network.trafficLights[nodeId]) delete network.trafficLights[nodeId];
 
-        // --- [新增] 強制刪除時，主動清除周遭路段對此路口的關聯 ---
+        // --- 強制刪除時，主動清除周遭路段對此路口的關聯 ---
         if (force) {
             node.incomingLinkIds.forEach(linkId => {
                 if (network.links[linkId]) network.links[linkId].endNodeId = null;
@@ -3944,7 +3955,28 @@ document.addEventListener('DOMContentLoaded', () => {
             delete network.nodes[nodeId];
         }
 
-        updateAllOverpasses(); // 在函數結尾更新橋樑
+        // --- 自動重新整理受影響的路段 (Links) ---
+        affectedLinkIds.forEach(linkId => {
+            const link = network.links[linkId];
+            if (link) {
+                if (link.geometryType === 'parametric' && typeof window.generateParametricStrokes === 'function') {
+                    window.generateParametricStrokes(link);
+                }
+                drawLink(link);
+                updateDependencies(link);
+            }
+        });
+
+        updateAllOverpasses(); // 在函數結尾更新橋樑檢測
+
+        // --- [新增修正] 刷新畫面上的工具圖示 (設定⚙️與號誌🚦)，避免殘留 ---
+        if (activeTool === 'select') {
+            showNodeSettingsIcons();
+        } else if (activeTool === 'edit-tfl') {
+            showTrafficLightIcons();
+        }
+
+        layer.batchDraw();     // 確保畫面即時刷新
     }
 
     // --- 刪除單一連接線 ---
