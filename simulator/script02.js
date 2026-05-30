@@ -136,6 +136,8 @@ document.addEventListener('DOMContentLoaded', () => {
     let viewRotation2D = 0;
     let initialViewRotation2D = 0;
     let networkCenter2D = null;
+    let isSyncingFrom3D = false;
+    let isSyncingFrom2D = false;
 
     function setLanguage(lang) {
         currentLang = lang;
@@ -224,12 +226,80 @@ document.addEventListener('DOMContentLoaded', () => {
         return d;
     }
 
-    function sync2DRotationFrom3D() {
-        if (!isDisplay2D || !isDisplay3D) return;
-        if (!isRotationSyncEnabled) return;
+    // --- 3D 驅動 2D (旋轉、平移、縮放) ---
+    function sync2DFrom3D() {
+        if (isSyncingFrom2D || !isDisplay2D || !isDisplay3D || !isRotationSyncEnabled) return;
+        if (!camera || !controls || !networkCenter2D) return;
+        isSyncingFrom3D = true;
 
-        // 修正：移除原本的負號，使 2D 畫布與 3D 視角旋轉方向保持一致
+        // 1. 同步旋轉
         viewRotation2D = get3DAzimuth();
+
+        // 2. 同步縮放 (Zoom) -> 利用 3D FOV 與距離計算可視範圍
+        const dist = camera.position.distanceTo(controls.target);
+        const fovRad = camera.fov * (Math.PI / 180);
+        const visibleWorldHeight = 2 * dist * Math.tan(fovRad / 2);
+        scale = canvas2D.height / visibleWorldHeight;
+
+        // 3. 同步平移 (Pan) -> 確保 3D 看著的目標點落在 2D 畫布正中央
+        let wx = controls.target.x;
+        let wy = controls.target.z;
+
+        // 必須套用 2D 的旋轉轉換矩陣，才能算出正確的 Pan 值
+        if (viewRotation2D !== 0) {
+            const cos = Math.cos(viewRotation2D);
+            const sin = Math.sin(viewRotation2D);
+            const dx = wx - networkCenter2D.x;
+            const dy = wy - networkCenter2D.y;
+            wx = dx * cos - dy * sin + networkCenter2D.x;
+            wy = dx * sin + dy * cos + networkCenter2D.y;
+        }
+
+        panX = (canvas2D.width / 2) - wx * scale;
+        panY = (canvas2D.height / 2) - wy * scale;
+
+        isSyncingFrom3D = false;
+    }
+
+    // --- 2D 驅動 3D (旋轉、平移、縮放) ---
+    function sync3DFrom2D() {
+        if (isSyncingFrom3D || !isDisplay2D || !isDisplay3D || !isRotationSyncEnabled) return;
+        if (!camera || !controls) return;
+        isSyncingFrom2D = true;
+
+        // 1. 同步平移 (Pan) -> 讓 3D 目標點對齊 2D 畫布正中央的世界座標
+        const centerWorld = screenToWorld2D(canvas2D.width / 2, canvas2D.height / 2);
+        const dx = centerWorld.x - controls.target.x;
+        const dz = centerWorld.y - controls.target.z;
+
+        controls.target.set(centerWorld.x, 0, centerWorld.y);
+        // 相機位置跟著平移，以維持原本的視角角度
+        camera.position.x += dx;
+        camera.position.z += dz;
+
+        // 2. 同步縮放 (Zoom) -> 將 2D Scale 反推為相機距離
+        const fovRad = camera.fov * (Math.PI / 180);
+        const visibleWorldHeight = canvas2D.height / scale;
+        const targetDist = visibleWorldHeight / (2 * Math.tan(fovRad / 2));
+
+        const dir = new THREE.Vector3().subVectors(camera.position, controls.target).normalize();
+        camera.position.copy(controls.target).add(dir.multiplyScalar(targetDist));
+
+        // 3. 同步旋轉 (如果未來 2D 支援手勢旋轉，這段能保證 3D 一起轉)
+        const currentAzimuth = Math.atan2(camera.position.x - controls.target.x, camera.position.z - controls.target.z);
+        if (Math.abs(currentAzimuth - viewRotation2D) > 0.001) {
+            const radius = camera.position.distanceTo(controls.target);
+            const polar = Math.acos(Math.max(-1, Math.min(1, (camera.position.y - controls.target.y) / radius)));
+            camera.position.x = controls.target.x + radius * Math.sin(polar) * Math.sin(viewRotation2D);
+            camera.position.z = controls.target.z + radius * Math.sin(polar) * Math.cos(viewRotation2D);
+        }
+
+        controls.update(); // 更新 3D 控制器
+
+        // 必須手動觸發一次重繪，確保靜止時 3D 畫面更新
+        if (!isRunning && renderer) renderer.render(scene, camera);
+
+        isSyncingFrom2D = false;
     }
 
     function applyDisplayState() {
@@ -293,7 +363,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!isRotationSyncEnabled) {
                 viewRotation2D = initialViewRotation2D;
             } else {
-                sync2DRotationFrom3D();
+                sync2DFrom3D(); // <--- 修改這裡
             }
         }
 
@@ -643,7 +713,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (isDisplay2D && isDisplay3D) {
                 if (isRotationSyncEnabled) {
                     has3DHeadingChangedSinceSplit = true;
-                    sync2DRotationFrom3D();
+                    sync2DFrom3D(); // <--- 修改這裡
                 } else {
                     has3DHeadingChangedSinceSplit = false;
                     viewRotation2D = initialViewRotation2D;
@@ -1734,15 +1804,25 @@ document.addEventListener('DOMContentLoaded', () => {
         const zoomIntensity = 0.1;
         const wheel = event.deltaY < 0 ? 1 : -1;
         const zoom = Math.exp(wheel * zoomIntensity);
-        const mouseX = event.clientX - canvas2D.offsetLeft;
-        const mouseY = event.clientY - canvas2D.offsetTop;
+
+        // 修正：在雙畫面分割時，使用 getBoundingClientRect 抓取滑鼠座標才準確
+        const rect = canvas2D.getBoundingClientRect();
+        const mouseX = event.clientX - rect.left;
+        const mouseY = event.clientY - rect.top;
+
         const worldX = (mouseX - panX) / scale;
         const worldY = (mouseY - panY) / scale;
+
         scale *= zoom;
         panX = mouseX - worldX * scale;
         panY = mouseY - worldY * scale;
+
+        // 通知 3D 跟隨縮放
+        sync3DFrom2D();
+
         if (!isRunning) redraw2D();
     }
+
     function handlePanStart2D(event) {
         event.preventDefault();
         isPanning = true;
@@ -1768,6 +1848,10 @@ document.addEventListener('DOMContentLoaded', () => {
         panY += dy;
         panStart.x = event.clientX;
         panStart.y = event.clientY;
+
+        // 通知 3D 跟隨平移
+        sync3DFrom2D();
+
         if (!isRunning) redraw2D();
     }
 
@@ -3145,7 +3229,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!isDisplay2D || !isDisplay3D) return;
             if (!isRotationSyncEnabled) return;
             has3DHeadingChangedSinceSplit = true;
-            sync2DRotationFrom3D();
+            sync2DFrom3D(); // <--- 修改這裡
             if (!isRunning) redraw2D();
         });
 
@@ -7139,16 +7223,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         lastTimestamp = timestamp;
 
-        if (isDisplay2D && isDisplay3D && isRotationSyncEnabled) {
-            if (!has3DHeadingChangedSinceSplit) {
-                const az = get3DAzimuth();
-                const d = Math.abs(angleDeltaRad(az, splitStartAzimuth));
-                if (d > 0.02) {
-                    has3DHeadingChangedSinceSplit = true;
-                }
-            }
-            sync2DRotationFrom3D();
-        }
+
 
         if (isDisplay2D) {
             if (isRunning || (isDisplay3D && isRotationSyncEnabled)) redraw2D();
