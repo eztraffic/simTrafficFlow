@@ -227,7 +227,9 @@ document.addEventListener('DOMContentLoaded', () => {
     function sync2DRotationFrom3D() {
         if (!isDisplay2D || !isDisplay3D) return;
         if (!isRotationSyncEnabled) return;
-        viewRotation2D = -get3DAzimuth();
+
+        // 修正：移除原本的負號，使 2D 畫布與 3D 視角旋轉方向保持一致
+        viewRotation2D = get3DAzimuth();
     }
 
     function applyDisplayState() {
@@ -9590,7 +9592,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (this.twoStageState === 'moving_to_box') {
                 // 剛抵達待轉格，由 update() 函數處理煞停與轉向
-                // 這裡只需攔截，不讓它執行下方的 switchToNextLink
                 return;
             }
             // =========================================================
@@ -9618,23 +9619,17 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (boxes && boxes.length > 0) {
                             const targetBox = this.findBestBox(boxes, currentLink);
                             if (targetBox) {
-                                // --- 設定進入待轉區的路徑 ---
                                 this.state = 'inIntersection';
                                 this.twoStageState = 'moving_to_box';
                                 this.waitingBox = targetBox;
                                 this.currentTransition = null;
 
-                                // ★★★ [新增] 主動降低極速，模擬進站減速行為 ★★★
-                                // 設定為約 20 km/h (5.5 m/s)，確保它不會嘗試加速衝進格子
                                 this.maxSpeed = 20 / 3.6;
-                                // 重置加速度，避免帶著上一幀的急加速衝進來
                                 this.accel = 0;
-                                // 排隊計數
                                 if (typeof targetBox.waitingCount === 'undefined') targetBox.waitingCount = 0;
                                 const idx = targetBox.waitingCount;
                                 targetBox.waitingCount++;
 
-                                // --- 計算排隊座標 (Grid Layout) ---
                                 const bikeW = 0.8;
                                 const bikeL = 2.0;
                                 const padding = 0.5;
@@ -9644,7 +9639,6 @@ document.addEventListener('DOMContentLoaded', () => {
                                 const col = idx % capacityPerRow;
                                 const row = Math.floor(idx / capacityPerRow);
 
-                                // 計算目標朝向
                                 let aimAngle = targetBox.rotation || 0;
                                 if (nextLinkObj && nextLinkObj.lanes[0]) {
                                     const p1 = nextLinkObj.lanes[0].path[0];
@@ -9657,7 +9651,6 @@ document.addEventListener('DOMContentLoaded', () => {
                                 const vecFwd = { x: cos, y: sin };
                                 const vecRight = { x: -sin, y: cos };
 
-                                // 計算終點
                                 const cornerFR_x = targetBox.x + (vecFwd.x * boxL / 2) + (vecRight.x * boxW / 2);
                                 const cornerFR_y = targetBox.y + (vecFwd.y * boxL / 2) + (vecRight.y * boxW / 2);
                                 const moveLeft = padding + (col * bikeW) + (bikeW / 2);
@@ -9668,7 +9661,6 @@ document.addEventListener('DOMContentLoaded', () => {
                                     y: cornerFR_y - (vecRight.y * moveLeft) - (vecFwd.y * moveBack)
                                 };
 
-                                // 建立貝茲曲線 (Hook Turn)
                                 const startPos = { x: this.x, y: this.y };
                                 const distDirect = Math.hypot(endPos.x - startPos.x, endPos.y - startPos.y);
                                 const controlLen = distDirect * 0.5;
@@ -9688,24 +9680,22 @@ document.addEventListener('DOMContentLoaded', () => {
                                 this.lateralOffset = 0;
                                 this.targetLateralOffset = 0;
 
-                                return; // 結束，開始前往待轉區
+                                return;
                             }
                         }
                     }
                 }
-                // =================================================================
-                // ★★★ [修正] 路口車道自我修復邏輯 (防死亡交叉) ★★★
-                // =================================================================
 
-                // 1. 優先尋找：起點車道吻合，且「終點車道允許本車種」的 Transition
+                // =================================================================
+                // 路口車道自我修復邏輯 (防死亡交叉)
+                // =================================================================
                 let transition = destNode.transitions.find(t =>
                     t.sourceLinkId === this.currentLinkId &&
                     t.sourceLaneIndex === this.currentLaneIndex &&
                     t.destLinkId === nextLinkId &&
-                    this.isLaneAllowed(network, nextLinkId, t.destLaneIndex) // ★ 強制檢查目的地合法性
+                    this.isLaneAllowed(network, nextLinkId, t.destLaneIndex)
                 );
 
-                // 2. 退而求其次：找任何一條「終點車道允許本車種」的 Transition (即使起點車道不同)
                 if (!transition) {
                     transition = destNode.transitions.find(t =>
                         t.sourceLinkId === this.currentLinkId &&
@@ -9714,8 +9704,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     );
                 }
 
-                // 3. 最差情況 (XML發生死亡交叉)：XML 中完全沒有畫出合法的對接線
-                // 我們抓一條基本的 Transition 做軌跡參考，並動態將 destLaneIndex 竄改為合法車道
                 if (!transition) {
                     const baseTransition = destNode.transitions.find(t =>
                         t.sourceLinkId === this.currentLinkId &&
@@ -9725,13 +9713,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (baseTransition) {
                         const nextLinkObj = network.links[nextLinkId];
                         if (nextLinkObj) {
-                            // 找出下一條路段中，允許本車進入的所有車道
                             const allowedLanes = Object.keys(nextLinkObj.lanes)
                                 .map(Number)
                                 .filter(idx => this.isLaneAllowed(network, nextLinkId, idx));
 
                             if (allowedLanes.length > 0) {
-                                // 找一個距離目前車道最近的合法目標車道
                                 let bestLane = allowedLanes[0];
                                 let minDiff = Math.abs(this.currentLaneIndex - bestLane);
                                 for (const l of allowedLanes) {
@@ -9741,10 +9727,8 @@ document.addEventListener('DOMContentLoaded', () => {
                                         bestLane = l;
                                     }
                                 }
-                                // 複製該規則，並強制竄改目標車道 (Self-Healing)
                                 transition = { ...baseTransition, destLaneIndex: bestLane };
                             } else {
-                                // 如果下一條路完全沒有合法車道，只好套用原規則違規硬闖 (Fallback)
                                 transition = baseTransition;
                             }
                         }
@@ -9752,7 +9736,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
 
                 this.currentTransition = transition;
-                // =================================================================
 
                 if (transition) {
                     if (typeof optimizerController !== 'undefined' && transition.turnGroupId) {
@@ -9765,34 +9748,45 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (transition.bezier) {
                         this.state = 'inIntersection';
 
-                        // ★ 限制最大偏移，讓機車在彎道中保持錯開，但不至於飄移太遠
                         const maxCurveOffset = 1.0;
                         this.targetLateralOffset = Math.max(-maxCurveOffset, Math.min(maxCurveOffset, this.targetLateralOffset));
 
                         const points = transition.bezier.points.map(p => ({ x: p.x, y: p.y }));
                         this.currentPath = points;
-                        this.currentPathLength = transition.bezier.length;
 
                         // =================================================================
-                        // ★★★ [終極平滑修復] 雙端點動態軌跡補償 (Start & End Morphing) ★★★
+                        // ★★★ [關鍵修復] 雙端點動態軌跡補償與真實長度估算 ★★★
                         // =================================================================
 
-                        // 1. 起點誤差：紀錄車輛「當前真實位置」與「曲線理論起點」的差距
                         const bezierP0 = points[0];
-                        this.startCorrection = {
-                            dx: this.x - bezierP0.x,
-                            dy: this.y - bezierP0.y
-                        };
+                        const currentLaneObj = currentLink.lanes[this.currentLaneIndex];
 
-                        // 將橫向偏移量吸收到 startCorrection 後歸零，讓軌跡純粹依賴補償滑動
+                        // 【修復 1】取得當前車道的真正末端座標，避免使用落後一幀的 this.x/y 導致起點回彈
+                        const posData = this.getPositionOnPath(currentLaneObj.path, currentLaneObj.length);
+
+                        if (posData) {
+                            const nx = -Math.sin(posData.angle);
+                            const ny = Math.cos(posData.angle);
+                            // 真實起點：車道末端中心 + 車輛目前的橫向偏移
+                            const perfectStartX = posData.x + nx * this.lateralOffset;
+                            const perfectStartY = posData.y + ny * this.lateralOffset;
+
+                            this.startCorrection = {
+                                dx: perfectStartX - bezierP0.x,
+                                dy: perfectStartY - bezierP0.y
+                            };
+                        } else {
+                            this.startCorrection = { dx: this.x - bezierP0.x, dy: this.y - bezierP0.y };
+                        }
+
+                        // 吸收橫向偏移
                         this.lateralOffset = 0;
                         this.targetLateralOffset = 0;
 
-                        // 2. 終點誤差：紀錄「曲線理論終點」與「真實目標車道起點」的差距
+                        // 計算終點誤差
                         const bezierP3 = points[3];
                         let endDx = 0, endDy = 0;
                         const nextLinkObj = network.links[nextLinkId];
-                        // 確保目標是我們經過自我修復後的合法車道 (destLaneIndex)
                         if (nextLinkObj && nextLinkObj.lanes[transition.destLaneIndex]) {
                             const trueStartPoint = nextLinkObj.lanes[transition.destLaneIndex].path[0];
                             if (trueStartPoint) {
@@ -9801,6 +9795,32 @@ document.addEventListener('DOMContentLoaded', () => {
                             }
                         }
                         this.endCorrection = { dx: endDx, dy: endDy };
+
+                        // 【修復 2】數值積分估算變形後(Morphed)的真實曲線長度，防瞬間移動
+                        let trueLength = 0;
+                        let lastX = bezierP0.x + this.startCorrection.dx;
+                        let lastY = bezierP0.y + this.startCorrection.dy;
+                        const steps = 15; // 取 15 段進行平滑估算
+
+                        for (let i = 1; i <= steps; i++) {
+                            const t_val = i / steps;
+                            const pt = Geom.Bezier.getPoint(t_val, points[0], points[1], points[2], points[3]);
+
+                            const t2_val = t_val * t_val;
+                            const t3_val = t2_val * t_val;
+                            const wStart = 1.0 - 3.0 * t2_val + 2.0 * t3_val;
+                            const wEnd = 3.0 * t2_val - 2.0 * t3_val;
+
+                            const currX = pt.x + this.startCorrection.dx * wStart + this.endCorrection.dx * wEnd;
+                            const currY = pt.y + this.startCorrection.dy * wStart + this.endCorrection.dy * wEnd;
+
+                            trueLength += Math.hypot(currX - lastX, currY - lastY);
+                            lastX = currX;
+                            lastY = currY;
+                        }
+
+                        // 覆寫 XML 給的理論長度，改用物理拉長/縮短後的真實長度
+                        this.currentPathLength = Math.max(0.1, trueLength);
                         // =================================================================
 
                         this.distanceOnPath = leftoverDistance;
@@ -9809,18 +9829,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
             } else if (this.state === 'inIntersection') {
-                // =========================================================
-                // [修正重點 2] 只有在 "leaving_box" 結束時，才切換到 Next Link
-                // =========================================================
                 if (this.twoStageState === 'leaving_box') {
-                    // 清理狀態
                     this.twoStageState = 'none';
                     this.waitingBox = null;
 
-                    // 執行切換到下一條道路
                     this.switchToNextLink(leftoverDistance, network);
 
-                    // 重新應用偏移與車道 (防止重疊)
                     if (this.pendingLaneIndex !== undefined) {
                         const link = network.links[this.currentLinkId];
                         if (link && link.lanes[this.pendingLaneIndex]) {
@@ -9835,8 +9849,6 @@ document.addEventListener('DOMContentLoaded', () => {
                         this.lateralOffset = this.pendingLateralOffset;
                         this.targetLateralOffset = this.pendingLateralOffset;
                         if (this.isMotorcycle) {
-                            // 【修正重點】不要用 pendingLateralOffset 覆蓋 preferredBias
-                            // 重新隨機賦予該車一個新的騎乘偏好，讓離開待轉區的車群自然散開
                             const rand = Math.random();
                             if (rand < 0.6) this.preferredBias = -0.5 - (Math.random() * 0.4);
                             else if (rand < 0.8) this.preferredBias = (Math.random() - 0.5) * 0.4;
