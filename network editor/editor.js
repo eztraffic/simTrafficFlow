@@ -1908,116 +1908,142 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function getNodePolygonPoints(node) {
-        // --- 1. 如果有自訂/匯入的頂點，優先使用 ---
-        if (node.customPolygonPoints && node.customPolygonPoints.length >= 6) {
-            return node.customPolygonPoints;
-        }
-
         const allLinkIds = [...new Set([...node.incomingLinkIds, ...node.outgoingLinkIds])];
         const allLinks = allLinkIds.map(id => network.links[id]).filter(Boolean);
 
-        if (allLinks.length === 0) return [];
+        let dynamicPoints = [];
 
-        const allCornerPoints = [];
-        const centerlinePoints = [];
+        // 1. 動態計算當前所有連接路段的真實端點
+        if (allLinks.length > 0) {
+            const allCornerPoints = [];
+            const centerlinePoints = [];
 
-        // --- 2. 收集所有連接路段的端點 ---
-        for (const link of allLinks) {
-            if (!link || !link.waypoints || link.waypoints.length < 2) continue;
+            for (const link of allLinks) {
+                if (!link || !link.waypoints || link.waypoints.length < 2) continue;
 
-            const isIncoming = node.incomingLinkIds.has(link.id);
-            const isOutgoing = node.outgoingLinkIds.has(link.id);
+                const isIncoming = node.incomingLinkIds.has(link.id);
+                const isOutgoing = node.outgoingLinkIds.has(link.id);
 
-            // 判斷該 Link 是起點還是終點連接到這個 Node
-            const connectedEnds = [];
-            if (isIncoming && !isOutgoing) connectedEnds.push('end');
-            else if (isOutgoing && !isIncoming) connectedEnds.push('start');
-            else {
-                // 複雜情況防呆 (如同一個 Node 接了同一條路的起終點)
-                const pStart = link.waypoints[0];
-                const pEnd = link.waypoints[link.waypoints.length - 1];
-                const distStart = Math.pow(pStart.x - node.x, 2) + Math.pow(pStart.y - node.y, 2);
-                const distEnd = Math.pow(pEnd.x - node.x, 2) + Math.pow(pEnd.y - node.y, 2);
+                const connectedEnds = [];
+                if (isIncoming && !isOutgoing) connectedEnds.push('end');
+                else if (isOutgoing && !isIncoming) connectedEnds.push('start');
+                else {
+                    const pStart = link.waypoints[0];
+                    const pEnd = link.waypoints[link.waypoints.length - 1];
+                    const distStart = Math.pow(pStart.x - node.x, 2) + Math.pow(pStart.y - node.y, 2);
+                    const distEnd = Math.pow(pEnd.x - node.x, 2) + Math.pow(pEnd.y - node.y, 2);
 
-                if (distStart < distEnd) connectedEnds.push('start');
-                else connectedEnds.push('end');
+                    if (distStart < distEnd) connectedEnds.push('start');
+                    else connectedEnds.push('end');
+                }
+
+                for (const endType of connectedEnds) {
+                    if ((link.geometryType === 'lane-based' || link.geometryType === 'parametric') && link.strokes && link.strokes.length >= 2) {
+                        const leftStroke = link.strokes[0];
+                        const rightStroke = link.strokes[link.strokes.length - 1];
+
+                        if (leftStroke.points.length < 2 || rightStroke.points.length < 2) continue;
+
+                        let pL, pR, pC;
+                        if (endType === 'start') {
+                            pL = leftStroke.points[0];
+                            pR = rightStroke.points[0];
+                        } else {
+                            pL = leftStroke.points[leftStroke.points.length - 1];
+                            pR = rightStroke.points[rightStroke.points.length - 1];
+                        }
+
+                        pC = { x: (pL.x + pR.x) / 2, y: (pL.y + pR.y) / 2 };
+
+                        allCornerPoints.push(pL, pR);
+                        centerlinePoints.push(pC);
+                    } else {
+                        if (!link.lanes || link.lanes.length === 0) continue;
+
+                        let p_node, p_adj;
+                        if (endType === 'start') {
+                            p_node = link.waypoints[0];
+                            p_adj = link.waypoints[1];
+                        } else {
+                            p_node = link.waypoints[link.waypoints.length - 1];
+                            p_adj = link.waypoints[link.waypoints.length - 2];
+                        }
+
+                        centerlinePoints.push(p_node);
+                        const vec = normalize(getVector(p_adj, p_node));
+                        const normal = getNormal(vec);
+                        const totalWidth = getLinkTotalWidth(link);
+
+                        const p_l = add(p_node, scale(normal, totalWidth / 2));
+                        const p_r = add(p_node, scale(normal, -totalWidth / 2));
+
+                        allCornerPoints.push(p_l, p_r);
+                    }
+                }
             }
 
-            for (const endType of connectedEnds) {
-                // ==========================================
-                // [多型邏輯 A]：Lane-Based 模式 (取真實邊線)
-                // ==========================================
-                if ((link.geometryType === 'lane-based' || link.geometryType === 'parametric') && link.strokes && link.strokes.length >= 2) {
-                    const leftStroke = link.strokes[0];
-                    const rightStroke = link.strokes[link.strokes.length - 1];
-
-                    if (leftStroke.points.length < 2 || rightStroke.points.length < 2) continue;
-
-                    let pL, pR, pC;
-                    if (endType === 'start') {
-                        pL = leftStroke.points[0];
-                        pR = rightStroke.points[0];
-                    } else {
-                        pL = leftStroke.points[leftStroke.points.length - 1];
-                        pR = rightStroke.points[rightStroke.points.length - 1];
-                    }
-
-                    pC = { x: (pL.x + pR.x) / 2, y: (pL.y + pR.y) / 2 };
-
-                    allCornerPoints.push(pL, pR);
-                    centerlinePoints.push(pC);
+            if (allCornerPoints.length >= 3) {
+                const center = centerlinePoints.reduce((acc, p) => ({ x: acc.x + p.x, y: acc.y + p.y }), { x: 0, y: 0 });
+                if (centerlinePoints.length > 0) {
+                    center.x /= centerlinePoints.length;
+                    center.y /= centerlinePoints.length;
                 }
-                // ==========================================
-                // [多型邏輯 B]：Standard 模式 (以中心線平移)
-                // ==========================================
-                else {
-                    if (!link.lanes || link.lanes.length === 0) continue;
 
-                    let p_node, p_adj;
-                    if (endType === 'start') {
-                        p_node = link.waypoints[0];
-                        p_adj = link.waypoints[1];
-                    } else {
-                        p_node = link.waypoints[link.waypoints.length - 1];
-                        p_adj = link.waypoints[link.waypoints.length - 2];
-                    }
+                allCornerPoints.sort((a, b) => {
+                    const angleA = Math.atan2(a.y - center.y, a.x - center.x);
+                    const angleB = Math.atan2(b.y - center.y, b.x - center.x);
+                    return angleA - angleB;
+                });
 
-                    centerlinePoints.push(p_node);
-                    const vec = normalize(getVector(p_adj, p_node));
-                    const normal = getNormal(vec);
-                    const totalWidth = getLinkTotalWidth(link);
-
-                    const p_l = add(p_node, scale(normal, totalWidth / 2));
-                    const p_r = add(p_node, scale(normal, -totalWidth / 2));
-
-                    allCornerPoints.push(p_l, p_r);
-                }
+                dynamicPoints = allCornerPoints.flatMap(p => [p.x, p.y]);
             }
         }
 
-        // 若無足夠頂點構成多邊形 (例如該路口只接了 1 條路)
-        if (allCornerPoints.length < 3) {
+        // ====================================================================
+        // 2. 智慧縫合 (Smart Snapping)：讓自訂點與動態端點結合
+        // ====================================================================
+        if (node.customPolygonPoints && node.customPolygonPoints.length >= 6) {
+            if (dynamicPoints.length > 0) {
+                let usedIndices = new Set();
+
+                // 將目前最新的 Link 端點，強制覆蓋到自訂多邊形中「距離它最近」的那個頂點上
+                for (let i = 0; i < dynamicPoints.length; i += 2) {
+                    const dynX = dynamicPoints[i];
+                    const dynY = dynamicPoints[i + 1];
+
+                    let minDist = Infinity;
+                    let closestIdx = -1;
+
+                    for (let j = 0; j < node.customPolygonPoints.length; j += 2) {
+                        if (usedIndices.has(j)) continue; // 避免多個端點吸附到同一個自訂點
+                        const cx = node.customPolygonPoints[j];
+                        const cy = node.customPolygonPoints[j + 1];
+                        const dist = Math.hypot(cx - dynX, cy - dynY);
+
+                        if (dist < minDist) {
+                            minDist = dist;
+                            closestIdx = j;
+                        }
+                    }
+
+                    // 強制吸附更新自訂頂點的座標，達成跟隨效果
+                    if (closestIdx !== -1) {
+                        node.customPolygonPoints[closestIdx] = dynX;
+                        node.customPolygonPoints[closestIdx + 1] = dynY;
+                        usedIndices.add(closestIdx);
+                    }
+                }
+            }
+            return node.customPolygonPoints;
+        }
+
+        // 3. 防呆回退：若無足夠點則給預設方塊
+        if (dynamicPoints.length < 6) {
             if (node.x !== undefined) return [node.x - 5, node.y - 5, node.x + 5, node.y - 5, node.x + 5, node.y + 5, node.x - 5, node.y + 5];
             return [];
         }
 
-        // --- 3. 幾何縫合：圍繞路口幾何中心進行角度排序 ---
-        // 計算所有連接路段端點的幾何中心 (Centroid)
-        const center = centerlinePoints.reduce((acc, p) => ({ x: acc.x + p.x, y: acc.y + p.y }), { x: 0, y: 0 });
-        if (centerlinePoints.length > 0) {
-            center.x /= centerlinePoints.length;
-            center.y /= centerlinePoints.length;
-        }
-
-        // 使用 atan2 依照與中心的極座標角度 (Polar Angle) 將打散的頂點依序連成凸多邊形
-        allCornerPoints.sort((a, b) => {
-            const angleA = Math.atan2(a.y - center.y, a.x - center.x);
-            const angleB = Math.atan2(b.y - center.y, b.x - center.x);
-            return angleA - angleB;
-        });
-
-        // 攤平回傳 [x1, y1, x2, y2, ...]
-        return allCornerPoints.flatMap(p => [p.x, p.y]);
+        return dynamicPoints;
     }
 
     function drawNode(node, ctx, shape) {
@@ -4751,14 +4777,25 @@ document.addEventListener('DOMContentLoaded', () => {
         // 4. 其餘視為直行 (-30 ~ +30 度)
         return 'straight';
     }
+    // --- [新增] 輔助函數：取得左/右轉附加車道數量 ---
+    function getLeftPocketCount(link) {
+        if (link.geometryType === 'parametric' && link.parametricConfig && link.parametricConfig.leftPocket && link.parametricConfig.leftPocket.exists) {
+            return link.parametricConfig.leftPocket.lanes || 0;
+        }
+        return 0;
+    }
 
-    // --- [修正] 框選自動連結演算法 (最大化連接策略) ---
+    function getRightPocketCount(link) {
+        if (link.geometryType === 'parametric' && link.parametricConfig && link.parametricConfig.rightPocket && link.parametricConfig.rightPocket.exists) {
+            return link.parametricConfig.rightPocket.lanes || 0;
+        }
+        return 0;
+    }
+    // --- [修正] 框選自動連結演算法 (支援跳過附加車道) ---
     function autoConnectLanesInSelection(rect) {
         console.log("AutoConnect Box:", rect);
 
-        // [設定] 連結距離閾值 (公尺) - 稍微調大以容許寬路口
         const CONNECT_THRESHOLD = 50;
-
         const candidates = { sources: [], dests: [] };
 
         // 1. 空間搜尋：篩選端點在框內的 Link
@@ -4768,81 +4805,81 @@ document.addEventListener('DOMContentLoaded', () => {
             const startPoint = link.waypoints[0];
             const endPoint = link.waypoints[link.waypoints.length - 1];
 
-            // 檢查是否為「下游路段」(起點在框內)
-            const startInBox =
-                startPoint.x >= rect.x && startPoint.x <= rect.x + rect.width &&
+            const startInBox = startPoint.x >= rect.x && startPoint.x <= rect.x + rect.width &&
                 startPoint.y >= rect.y && startPoint.y <= rect.y + rect.height;
-
             if (startInBox) candidates.dests.push(link);
 
-            // 檢查是否為「上游路段」(終點在框內)
-            const endInBox =
-                endPoint.x >= rect.x && endPoint.x <= rect.x + rect.width &&
+            const endInBox = endPoint.x >= rect.x && endPoint.x <= rect.x + rect.width &&
                 endPoint.y >= rect.y && endPoint.y <= rect.y + rect.height;
-
             if (endInBox) candidates.sources.push(link);
         });
-
-        console.log(`Found candidates: ${candidates.sources.length} sources, ${candidates.dests.length} destinations.`);
 
         let connectionCount = 0;
 
         // 2. 雙重迴圈進行配對
         candidates.sources.forEach(srcLink => {
             candidates.dests.forEach(dstLink => {
-                // 防止自己連自己
                 if (srcLink.id === dstLink.id) return;
 
-                // 計算端點距離
                 const pEnd = srcLink.waypoints[srcLink.waypoints.length - 1];
                 const pStart = dstLink.waypoints[0];
                 const dist = Math.sqrt(Math.pow(pEnd.x - pStart.x, 2) + Math.pow(pEnd.y - pStart.y, 2));
 
-                // 若距離符合，則判斷連結邏輯
                 if (dist <= CONNECT_THRESHOLD) {
                     const turnDir = getTurnDirection(srcLink, dstLink);
-                    console.log(`Connecting ${srcLink.id} -> ${dstLink.id} [${turnDir}] Dist:${dist.toFixed(1)}`);
 
-                    const srcLanes = srcLink.lanes.length;
-                    const dstLanes = dstLink.lanes.length;
+                    if (turnDir === 'u-turn') return; // 略過大迴轉
 
-                    // 核心邏輯：可以建立幾條連接？取兩者最小值
-                    const laneCount = Math.min(srcLanes, dstLanes);
+                    // ==================================================
+                    // [智慧車道對齊邏輯]
+                    // ==================================================
+                    let srcStartIdx = 0;
+                    let dstStartIdx = 0;
+                    let srcLanesForTurn = srcLink.lanes.length;
+                    let dstLanesForTurn = dstLink.lanes.length;
+
+                    // 如果是直行，自動跳過左轉附加車道，只針對直行車道進行匹配
+                    if (turnDir === 'straight') {
+                        const srcLL = getLeftPocketCount(srcLink);
+                        const dstLL = getLeftPocketCount(dstLink);
+                        srcStartIdx = srcLL;
+                        dstStartIdx = dstLL;
+                        srcLanesForTurn = Math.max(1, srcLink.lanes.length - srcLL - getRightPocketCount(srcLink));
+                        dstLanesForTurn = Math.max(1, dstLink.lanes.length - dstLL - getRightPocketCount(dstLink));
+                    }
+
+                    const laneCount = Math.min(srcLanesForTurn, dstLanesForTurn);
                     const newIds = [];
 
                     for (let k = 0; k < laneCount; k++) {
                         let srcIdx, dstIdx;
 
-                        // 3. 車道映射策略 (Lane Mapping Strategy)
                         if (turnDir === 'right') {
-                            // [右轉]: 靠右對齊 (Right-Align)
-                            // 邏輯：從最外側(最大index)開始配對
-                            // 例如 3車道轉2車道： Src[2]->Dst[1], Src[1]->Dst[0]
-                            srcIdx = srcLanes - 1 - k;
-                            dstIdx = dstLanes - 1 - k;
+                            // [右轉]: 靠右對齊 (從最外側車道開始)
+                            srcIdx = srcLink.lanes.length - 1 - k;
+                            dstIdx = dstLink.lanes.length - 1 - k;
                         } else {
-                            // [直行 / 左轉 / 迴轉]: 靠左對齊 (Left-Align)
-                            // 邏輯：從最內側(最小index)開始配對 (符合靠右行駛規則)
-                            // 例如 3車道轉2車道： Src[0]->Dst[0], Src[1]->Dst[1]
-                            srcIdx = k;
-                            dstIdx = k;
+                            // [直行 / 左轉]: 靠左對齊 (套用起點偏移量)
+                            srcIdx = srcStartIdx + k;
+                            dstIdx = dstStartIdx + k;
                         }
 
-                        // 建立連接
+                        // 防呆：確保索引未超出陣列
+                        if (srcIdx >= srcLink.lanes.length || dstIdx >= dstLink.lanes.length) continue;
+
                         const srcMeta = { linkId: srcLink.id, laneIndex: srcIdx, portType: 'end' };
                         const dstMeta = { linkId: dstLink.id, laneIndex: dstIdx, portType: 'start' };
 
                         const newConn = handleConnection(srcMeta, dstMeta);
                         if (newConn) {
+                            newConn.konvaBezier.visible(false); // 隱藏單車道細線
                             newIds.push(newConn.id);
                             connectionCount++;
                         }
                     }
 
-                    // 4. 建立 Connection Group 視覺效果 (綠色粗線)
+                    // 建立 Connection Group 視覺效果 (綠色/色碼群組粗線)
                     if (newIds.length > 0) {
-                        // 取得共用的 Node ID (這些連接應該會匯聚到同一個 Node)
-                        // 我們取最後一條建立的連接來查詢 Node ID
                         const lastConnId = newIds[newIds.length - 1];
                         const lastConn = network.connections[lastConnId];
                         const commonNodeId = lastConn ? lastConn.nodeId : null;
@@ -4856,8 +4893,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         if (connectionCount > 0) {
-            // 簡單提示
-            // alert(`Auto-connected ${connectionCount} lanes.`);
             console.log(`Auto-connected ${connectionCount} lanes.`);
         }
     }
@@ -5645,6 +5680,12 @@ document.addEventListener('DOMContentLoaded', () => {
                         updateLaneBasedGeometry(link);
                         drawLink(link);
                         updateDependencies(link);
+
+                        // [新增] 同步更新可能顯示中的 Node 控制小圓點
+                        if (selectedObject && selectedObject.type === 'Node') {
+                            drawNodeHandles(selectedObject);
+                        }
+
                         layer.batchDraw();
                     });
 
@@ -5711,6 +5752,12 @@ document.addEventListener('DOMContentLoaded', () => {
                         updateLaneBasedGeometry(link);
                         drawLink(link);
                         updateDependencies(link);
+
+                        // [新增] 同步更新可能顯示中的 Node 控制小圓點
+                        if (selectedObject && selectedObject.type === 'Node') {
+                            drawNodeHandles(selectedObject);
+                        }
+
                         layer.batchDraw();
                     });
 
@@ -5759,6 +5806,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (selectedObject && selectedObject.id === targetLink.id) {
                     updatePropertiesPanel(targetLink);
                 }
+
+                // [新增] 同步更新可能顯示中的 Node 控制小圓點
+                if (selectedObject && selectedObject.type === 'Node') {
+                    drawNodeHandles(selectedObject);
+                }
+
                 layer.batchDraw();
             });
 
@@ -15170,55 +15223,60 @@ document.addEventListener('DOMContentLoaded', () => {
      * @param {Object} node - 要處理的節點物件
      */
     function autoConnectNode(node) {
-        // 1. 取得該節點的所有進入與離開 Link
         const inLinks = [...node.incomingLinkIds].map(id => network.links[id]).filter(Boolean);
         const outLinks = [...node.outgoingLinkIds].map(id => network.links[id]).filter(Boolean);
 
         inLinks.forEach(srcLink => {
             outLinks.forEach(dstLink => {
-                // 防止自我連接
                 if (srcLink.id === dstLink.id) return;
 
-                // 2. 使用與 Box Selection 相同的轉向判斷 (直行/左轉/右轉/迴轉)
                 const turnDir = getTurnDirection(srcLink, dstLink);
+                if (turnDir === 'u-turn') return; // 略過大迴轉
 
-                // 3. 計算可連接的車道數 (取兩者最小值)
-                const srcLanes = srcLink.lanes.length;
-                const dstLanes = dstLink.lanes.length;
-                const laneCount = Math.min(srcLanes, dstLanes);
+                // ==================================================
+                // [智慧車道對齊邏輯]
+                // ==================================================
+                let srcStartIdx = 0;
+                let dstStartIdx = 0;
+                let srcLanesForTurn = srcLink.lanes.length;
+                let dstLanesForTurn = dstLink.lanes.length;
 
+                if (turnDir === 'straight') {
+                    const srcLL = getLeftPocketCount(srcLink);
+                    const dstLL = getLeftPocketCount(dstLink);
+                    srcStartIdx = srcLL;
+                    dstStartIdx = dstLL;
+                    srcLanesForTurn = Math.max(1, srcLink.lanes.length - srcLL - getRightPocketCount(srcLink));
+                    dstLanesForTurn = Math.max(1, dstLink.lanes.length - dstLL - getRightPocketCount(dstLink));
+                }
+
+                const laneCount = Math.min(srcLanesForTurn, dstLanesForTurn);
                 const newIds = [];
 
                 for (let k = 0; k < laneCount; k++) {
                     let srcIdx, dstIdx;
 
-                    // 4. 套用與 Box Selection 相同的車道映射策略
                     if (turnDir === 'right') {
-                        // [右轉]: 靠右對齊 (Right-Align)
-                        // 邏輯：從最外側(最大index)開始配對
-                        srcIdx = srcLanes - 1 - k;
-                        dstIdx = dstLanes - 1 - k;
+                        srcIdx = srcLink.lanes.length - 1 - k;
+                        dstIdx = dstLink.lanes.length - 1 - k;
                     } else {
-                        // [直行 / 左轉 / 迴轉]: 靠左對齊 (Left-Align)
-                        // 邏輯：從最內側(最小index)開始配對
-                        srcIdx = k;
-                        dstIdx = k;
+                        srcIdx = srcStartIdx + k;
+                        dstIdx = dstStartIdx + k;
                     }
 
-                    // 5. 建立連接
-                    // 使用 handleConnection 以確保資料結構正確並處理重複檢查
+                    if (srcIdx >= srcLink.lanes.length || dstIdx >= dstLink.lanes.length) continue;
+
                     const srcMeta = { linkId: srcLink.id, laneIndex: srcIdx, portType: 'end' };
                     const dstMeta = { linkId: dstLink.id, laneIndex: dstIdx, portType: 'start' };
 
                     const newConn = handleConnection(srcMeta, dstMeta);
 
                     if (newConn) {
+                        newConn.konvaBezier.visible(false); // 隱藏單車道細線
                         newIds.push(newConn.id);
                     }
                 }
 
-                // 6. 建立 Connection Group 視覺效果 (綠色粗線)
-                // 這是讓使用者能透過屬性面板一次管理整組連接的關鍵
                 if (newIds.length > 0) {
                     drawConnectionGroupVisual(srcLink, dstLink, newIds, node.id);
                 }
