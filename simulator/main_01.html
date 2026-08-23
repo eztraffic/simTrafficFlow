@@ -19,6 +19,13 @@
     <script src="https://unpkg.com/three@0.147.0/build/three.min.js"></script>
     <script src="https://unpkg.com/three@0.147.0/examples/js/loaders/GLTFLoader.js"></script>
     <script src="https://unpkg.com/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://unpkg.com/three@0.147.0/examples/js/shaders/CopyShader.js"></script>
+    <script src="https://unpkg.com/three@0.147.0/examples/js/shaders/LuminosityHighPassShader.js"></script>
+    <script src="https://unpkg.com/three@0.147.0/examples/js/shaders/VignetteShader.js"></script>
+    <script src="https://unpkg.com/three@0.147.0/examples/js/postprocessing/EffectComposer.js"></script>
+    <script src="https://unpkg.com/three@0.147.0/examples/js/postprocessing/RenderPass.js"></script>
+    <script src="https://unpkg.com/three@0.147.0/examples/js/postprocessing/ShaderPass.js"></script>
+    <script src="https://unpkg.com/three@0.147.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
 </head>
 
 <body>
@@ -198,6 +205,10 @@
                 <label class="mini-switch" title="Signal Optimization (Webster)">
                     <input type="checkbox" id="optToggle">
                     <span class="switch-label">優化</span>
+                </label>
+                <label class="mini-switch" title="Night View (夜景效果)">
+                    <input type="checkbox" id="nightToggle">
+                    <span class="switch-label" data-i18n="lblNight">夜景</span>
                 </label>
             </div>
         </div>
@@ -448,8 +459,8 @@
     <script src="script_pedestrian_sim.js"></script>
     <!-- ★★★ 新增：數位孿生邏輯 ★★★ -->
     <script src="script_digital_twin.js"></script>
-    <!-- ★★★ 新增 VD API 腳本 ★★★ -->
-    <script src="script_vd_api.js"></script>
+    <!-- ★★★ 3D 視覺渲染模組 ★★★ -->
+    <script src="script_visual3d.js"></script>
     <script src="script02.js"></script>
     <script src="script_report.js"></script>
     <script>

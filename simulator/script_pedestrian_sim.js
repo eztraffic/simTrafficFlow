@@ -8,6 +8,14 @@ function randNormal(min, max) {
     return min + rand * (max - min);
 }
 
+// 多樣化行人服飾、膚色與髮型配色庫
+const PED_MALE_SHIRTS = [0x2563eb, 0x0284c7, 0xdc2626, 0x059669, 0x334155, 0xd97706, 0x7c3aed, 0xf1f5f9, 0x0f766e, 0xeab308, 0x475569];
+const PED_FEMALE_SHIRTS = [0xec4899, 0xf43f5e, 0x06b6d4, 0xfbbf24, 0xa855f7, 0xfef3c7, 0x10b981, 0x38bdf8, 0x991b1b, 0xf97316, 0x6366f1];
+const PED_PANTS = [0x1e293b, 0x0f172a, 0x475569, 0xc2b280, 0x18181b, 0x334155, 0x27272a, 0x3f3f46];
+const PED_SKINS = [0xfde2d1, 0xfcbda1, 0xe5a77f, 0xc88358, 0x8d5524];
+const PED_HAIRS = [0x1c1917, 0x292524, 0x451a03, 0x78350f, 0x9a3412, 0xd97706];
+const PED_SHOES = [0xf8fafc, 0x18181b, 0x334155, 0x52525b, 0x7c2d12];
+
 class Pedestrian {
     constructor(id, startPoint, endPoint, width, crosswalk, spawner, crossTwice) {
         this.id = id;
@@ -22,6 +30,14 @@ class Pedestrian {
         this.height = randNormal(1.4, 1.9);
         this.baseSpeed = Math.random() > 0.2 ? 1.2 : 0.9; // 稍微提升步速
         this.speed = this.baseSpeed;
+
+        this.shirtColor = this.isMale
+            ? PED_MALE_SHIRTS[(Math.random() * PED_MALE_SHIRTS.length) | 0]
+            : PED_FEMALE_SHIRTS[(Math.random() * PED_FEMALE_SHIRTS.length) | 0];
+        this.pantsColor = PED_PANTS[(Math.random() * PED_PANTS.length) | 0];
+        this.skinColor = PED_SKINS[(Math.random() * PED_SKINS.length) | 0];
+        this.hairColor = PED_HAIRS[(Math.random() * PED_HAIRS.length) | 0];
+        this.shoeColor = PED_SHOES[(Math.random() * PED_SHOES.length) | 0];
 
         this.lateralOffset = (Math.random() - 0.5) * (width * 0.8);
 
@@ -411,10 +427,22 @@ class PedestrianSimManager {
             this.update3DMesh(ped);
         });
 
-        // 3. 清理已完成的行人
+        // 3. 清理已完成的行人與其 3D 資源
         this.pedestrians = this.pedestrians.filter(ped => {
             if (ped.state === 'FINISHED') {
-                if (ped.mesh && this.group3D) this.group3D.remove(ped.mesh);
+                if (ped.mesh) {
+                    if (this.group3D) this.group3D.remove(ped.mesh);
+                    ped.mesh.traverse(child => {
+                        if (child.isMesh) {
+                            if (child.geometry) child.geometry.dispose();
+                            if (child.material) {
+                                child.material.disposed = true;
+                                if (Array.isArray(child.material)) child.material.forEach(m => m.dispose());
+                                else child.material.dispose();
+                            }
+                        }
+                    });
+                }
                 return false;
             }
             return true;
@@ -428,7 +456,7 @@ class PedestrianSimManager {
             ctx.beginPath();
             // 直接使用真實世界單位大小 (例如半徑 0.4 公尺)
             ctx.arc(pos.x, pos.y, 0.4, 0, Math.PI * 2);
-            ctx.fillStyle = ped.isMale ? '#3b82f6' : '#ec4899'; // 男藍女粉
+            ctx.fillStyle = ped.shirtColor ? ('#' + ped.shirtColor.toString(16).padStart(6, '0')) : (ped.isMale ? '#3b82f6' : '#ec4899');
             ctx.fill();
             ctx.strokeStyle = '#ffffff';
             // 線條寬度依據畫布縮放做反比，使其保持細緻
@@ -438,85 +466,130 @@ class PedestrianSimManager {
         ctx.restore();
     }
 
-    // --- 簡單的 3D 生成與動畫 ---
+    // --- 高精緻度 3D 行人生成、夜景受光與動畫 ---
     update3DMesh(ped) {
         if (!this.group3D) return;
 
         if (!ped.mesh) {
             ped.mesh = new THREE.Group();
 
-            // ★★★ 新增這行：為行人模型綁定 ID，讓點擊射線能辨識 ★★★
+            // 為行人模型綁定 ID，讓點擊射線能辨識
             ped.mesh.userData.pedestrianId = ped.id;
 
-            // 基礎顏色
-            const shirtColor = ped.isMale ? 0x3b82f6 : 0xec4899;
-            const pantsColor = 0x1e293b;
-            const skinColor = 0xfcbda1;
+            const shirtColor = ped.shirtColor || (ped.isMale ? 0x2563eb : 0xec4899);
+            const pantsColor = ped.pantsColor || 0x1e293b;
+            const skinColor = ped.skinColor || 0xfcbda1;
+            const hairColor = ped.hairColor || 0x292524;
+            const shoeColor = ped.shoeColor || 0xf8fafc;
 
-            const matShirt = new THREE.MeshLambertMaterial({ color: shirtColor });
-            const matPants = new THREE.MeshLambertMaterial({ color: pantsColor });
-            const matSkin = new THREE.MeshLambertMaterial({ color: skinColor });
+            // MeshStandardMaterial 接收路燈 / 車頭燈的真實自然投射
+            const matShirt = new THREE.MeshStandardMaterial({ color: shirtColor, roughness: 0.58, metalness: 0.02 });
+            const matPants = new THREE.MeshStandardMaterial({ color: pantsColor, roughness: 0.68, metalness: 0.02 });
+            const matSkin = new THREE.MeshStandardMaterial({ color: skinColor, roughness: 0.52, metalness: 0.0 });
+            const matHair = new THREE.MeshStandardMaterial({ color: hairColor, roughness: 0.65, metalness: 0.05 });
+            const matShoes = new THREE.MeshStandardMaterial({ color: shoeColor, roughness: 0.55, metalness: 0.10 });
+
+            // 註冊至 Visual3D 夜景材質管理器，日夜模式切換時自動調節夜間反光與微發光
+            if (window.Visual3D && typeof Visual3D.registerPedestrianMaterial === 'function') {
+                Visual3D.registerPedestrianMaterial(matShirt, shirtColor, false);
+                Visual3D.registerPedestrianMaterial(matPants, pantsColor, false);
+                Visual3D.registerPedestrianMaterial(matSkin, skinColor, true);
+                Visual3D.registerPedestrianMaterial(matHair, hairColor, false);
+                Visual3D.registerPedestrianMaterial(matShoes, shoeColor, false);
+            }
 
             // 比例參數 (依據身高動態調整)
             const scaleH = ped.height / 1.7; // 以 1.7m 為基準
 
             // 將行人正面建構朝向 +X 軸 (與車輛一致)
-            // 身體 (Torso) - 寬度在 Z 軸(0.4)，厚度在 X 軸(0.25)
+            // 1. 身體 (Torso) - 寬度在 Z 軸(0.4)，厚度在 X 軸(0.25)
             const bodyGeo = new THREE.BoxGeometry(0.25, 0.6 * scaleH, 0.4);
             const body = new THREE.Mesh(bodyGeo, matShirt);
             body.position.y = 0.9 * scaleH;
             body.castShadow = true;
+            body.receiveShadow = true;
             ped.mesh.add(body);
 
-            // 頭 (Head)
+            // 2. 頭部 (Head)
             const headGeo = new THREE.BoxGeometry(0.22, 0.22 * scaleH, 0.22);
             const head = new THREE.Mesh(headGeo, matSkin);
             head.position.y = 1.3 * scaleH;
             head.castShadow = true;
+            head.receiveShadow = true;
             ped.mesh.add(head);
 
-            // 雙腳 (Legs) - 寬度在 Z，厚度在 X
-            const legGeo = new THREE.BoxGeometry(0.15, 0.6 * scaleH, 0.15);
-            // 調整幾何體中心點到頂部 (髖關節)，方便沿 Z 軸旋轉擺動
-            legGeo.translate(0, -0.3 * scaleH, 0);
+            // 3. 髮型/帽子 (Hair Cap)
+            const hairGeo = new THREE.BoxGeometry(0.24, 0.09 * scaleH, 0.24);
+            const hair = new THREE.Mesh(hairGeo, matHair);
+            hair.position.y = 1.42 * scaleH;
+            hair.castShadow = true;
+            ped.mesh.add(hair);
 
-            // 左腳 (-Z 側)
+            // 4. 雙腿與鞋履 (Legs & Shoes)
+            const legGeo = new THREE.BoxGeometry(0.15, 0.52 * scaleH, 0.15);
+            legGeo.translate(0, -0.26 * scaleH, 0);
+
+            const shoeGeo = new THREE.BoxGeometry(0.18, 0.10 * scaleH, 0.15);
+            shoeGeo.translate(0.02, -0.56 * scaleH, 0);
+
+            // 左腿群組
+            const legLGroup = new THREE.Group();
+            legLGroup.position.set(0, 0.6 * scaleH, -0.1);
             const legL = new THREE.Mesh(legGeo, matPants);
-            legL.position.set(0, 0.6 * scaleH, -0.1);
             legL.castShadow = true;
-            ped.mesh.legL = legL;
-            ped.mesh.add(legL);
+            legL.receiveShadow = true;
+            const shoeL = new THREE.Mesh(shoeGeo, matShoes);
+            shoeL.castShadow = true;
+            shoeL.receiveShadow = true;
+            legLGroup.add(legL, shoeL);
+            ped.mesh.legL = legLGroup;
+            ped.mesh.add(legLGroup);
 
-            // 右腳 (+Z 側)
+            // 右腿群組
+            const legRGroup = new THREE.Group();
+            legRGroup.position.set(0, 0.6 * scaleH, 0.1);
             const legR = new THREE.Mesh(legGeo, matPants);
-            legR.position.set(0, 0.6 * scaleH, 0.1);
             legR.castShadow = true;
-            ped.mesh.legR = legR;
-            ped.mesh.add(legR);
+            legR.receiveShadow = true;
+            const shoeR = new THREE.Mesh(shoeGeo, matShoes);
+            shoeR.castShadow = true;
+            shoeR.receiveShadow = true;
+            legRGroup.add(legR, shoeR);
+            ped.mesh.legR = legRGroup;
+            ped.mesh.add(legRGroup);
 
-            // 雙臂 (Arms)
-            const armGeo = new THREE.BoxGeometry(0.12, 0.5 * scaleH, 0.12);
-            // 調整幾何體中心點到肩膀
-            armGeo.translate(0, -0.25 * scaleH, 0);
+            // 5. 雙臂 (Arms)
+            const armUpperGeo = new THREE.BoxGeometry(0.12, 0.32 * scaleH, 0.12);
+            armUpperGeo.translate(0, -0.16 * scaleH, 0);
+            const armLowerGeo = new THREE.BoxGeometry(0.10, 0.20 * scaleH, 0.10);
+            armLowerGeo.translate(0, -0.40 * scaleH, 0);
 
             // 左手 (-Z 側)
-            const armL = new THREE.Mesh(armGeo, matSkin);
-            armL.position.set(0, 1.15 * scaleH, -0.26);
-            armL.castShadow = true;
-            ped.mesh.armL = armL;
-            ped.mesh.add(armL);
+            const armLGroup = new THREE.Group();
+            armLGroup.position.set(0, 1.15 * scaleH, -0.26);
+            const armLUpper = new THREE.Mesh(armUpperGeo, matShirt);
+            armLUpper.castShadow = true;
+            const armLLower = new THREE.Mesh(armLowerGeo, matSkin);
+            armLLower.castShadow = true;
+            armLGroup.add(armLUpper, armLLower);
+            ped.mesh.armL = armLGroup;
+            ped.mesh.add(armLGroup);
 
             // 右手 (+Z 側)
-            const armR = new THREE.Mesh(armGeo, matSkin);
-            armR.position.set(0, 1.15 * scaleH, 0.26);
-            armR.castShadow = true;
-            ped.mesh.armR = armR;
-            ped.mesh.add(armR);
+            const armRGroup = new THREE.Group();
+            armRGroup.position.set(0, 1.15 * scaleH, 0.26);
+            const armRUpper = new THREE.Mesh(armUpperGeo, matShirt);
+            armRUpper.castShadow = true;
+            const armRLower = new THREE.Mesh(armLowerGeo, matSkin);
+            armRLower.castShadow = true;
+            armRGroup.add(armRUpper, armRLower);
+            ped.mesh.armR = armRGroup;
+            ped.mesh.add(armRGroup);
 
             this.group3D.add(ped.mesh);
         }
 
-        // 更新座標與旋轉 (直接使用與車輛完全相同的旋轉公式，無須額外補償)
+        // 更新座標與旋轉
         ped.mesh.position.set(ped.x, 0, ped.y);
         ped.mesh.rotation.y = -ped.angle;
 
