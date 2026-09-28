@@ -37,6 +37,7 @@ document.addEventListener('DOMContentLoaded', () => {
         parkingLots: {}, // <--- 新增此行
         parkingGates: {}, // <--- 新增此行
         roadMarkings: {}, // <--- 請務必在全域變數這裡加入這一行
+        zones: {}, // <--- 土地使用分區 (Milestone 1)
     };
     // --- 新增：Link 建立設定 ---
     let linkCreationSettings = {
@@ -611,6 +612,25 @@ document.addEventListener('DOMContentLoaded', () => {
                 // 結束時重繪以確保精確
                 drawParkingLotHandles(obj);
             });
+        } else if (obj.type === 'Zone') {
+            konvaObj = obj.konvaGroup;
+            obj.konvaGroup.draggable(true);
+            drawZoneHandles(obj);
+
+            konvaObj.on('dragmove.zone_select transform.zone_select', () => {
+                updateZoneHandlePositions(obj);
+                if (selectedObject && selectedObject.id === obj.id) {
+                    updatePropertiesPanelDynamicValues(obj);
+                }
+            });
+
+            konvaObj.on('transformend.zone_select dragend.zone_select', () => {
+                autoGenerateCentroidConnectors(obj);
+                updateZoneConnectorsVisual(obj);
+                updatePropertiesPanel(obj);
+                drawZoneHandles(obj);
+                saveState();
+            });
         } else if (obj.type === 'RoadMarking') {
             konvaObj = obj.konvaGroup;
             if (obj.markingType === 'channelization') {
@@ -749,9 +769,14 @@ document.addEventListener('DOMContentLoaded', () => {
                     destroyChannelizationHandles(obj);
                 }
                 konvaObj = obj.konvaGroup;
+            } else if (obj.type === 'Zone') {
+                obj.konvaGroup.draggable(false);
+                obj.konvaGroup.off('.zone_select');
+                destroyZoneHandles(obj);
+                konvaObj = obj.konvaGroup;
             }
 
-            if (konvaObj && obj.type !== 'Background' && obj.type !== 'Overpass' && obj.type !== 'ParkingLot') {
+            if (konvaObj && obj.type !== 'Background' && obj.type !== 'Overpass' && obj.type !== 'ParkingLot' && obj.type !== 'Zone') {
                 konvaObj.setAttr('shadowOpacity', 0);
             }
         }
@@ -2211,6 +2236,9 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         activeTool = toolName;
+        if (toolName !== 'add-zone' && window.redrawingZone) {
+            window.redrawingZone = null;
+        }
         deselectAll();
 
         document.querySelectorAll('.tool-btn').forEach(btn => {
@@ -2231,6 +2259,9 @@ document.addEventListener('DOMContentLoaded', () => {
         Object.values(network.parkingGates).forEach(g => g.konvaGroup.listening(false));
         if (network.roadMarkings) {
             Object.values(network.roadMarkings).forEach(r => r.konvaGroup.listening(false));
+        }
+        if (network.zones) {
+            Object.values(network.zones).forEach(z => z.konvaGroup.listening(false));
         }
 
         // --- [修正重點]：將所有背景預設設為不攔截事件 ---
@@ -2268,6 +2299,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (network.roadMarkings) {
                     Object.values(network.roadMarkings).forEach(r => r.konvaGroup.listening(true));
                 }
+                if (network.zones) {
+                    Object.values(network.zones).forEach(z => z.konvaGroup.listening(true));
+                }
                 Object.values(network.pushpins).forEach(p => p.konvaGroup.listening(true));
 
                 // --- [修正重點]：只有「未鎖定」的背景才開啟事件攔截，允許被點擊選取 ---
@@ -2300,6 +2334,7 @@ document.addEventListener('DOMContentLoaded', () => {
             case 'add-link':
             case 'measure':
             case 'add-pushpin':
+            case 'add-zone':
                 stage.container().style.cursor = 'crosshair';
                 break;
 
@@ -2599,6 +2634,9 @@ document.addEventListener('DOMContentLoaded', () => {
             case 'select': text += " - Click to select. Drag a link's handles to edit path. Alt+Click on a link to add a handle. Press DEL to delete."; break;
             case 'add-pushpin': text += " - Click on the canvas to place a coordinate reference pin (Max 2)."; break;
             case 'add-parking-lot': text += " - Click to add polygon points. Double-click to finish."; break; // <--- Fix: status bar text
+            case 'add-zone':
+                text += " - " + (window.redrawingZone ? I18N.t("Click to add zone polygon points. Double-click to finish, Esc to cancel.") : I18N.t("Click to add zone polygon points. Double-click to finish."));
+                break;
             case 'add-intersection': text += " - Click to draw polygon points around the intersection area. Double-click to finish."; break;
             case 'add-parking-gate': text += " - Drag to create a rectangle representing an Entrance or Exit on a Parking Lot boundary."; break;
             case 'subnetwork': text += " - Click points to enclose area. Double-click to finish. Drag blue box to move."; break;
@@ -2667,7 +2705,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const newPortScale = 1 / newScale;
 
             // 【修改】加入 .bg-setting-icon-wrapper 讓背景圖示也具有無比例尺特性
-            layer.find('.lane-port, .group-connect-port, .control-point, .waypoint-handle, .measurement-handle, .tfl-icon-wrapper, .node-setting-icon-wrapper, .node-vertex-handle, .bg-setting-icon-wrapper').forEach(p => {
+            layer.find('.lane-port, .group-connect-port, .control-point, .waypoint-handle, .measurement-handle, .tfl-icon-wrapper, .node-setting-icon-wrapper, .node-vertex-handle, .bg-setting-icon-wrapper, .zone-vertex-handle, .zone-midpoint-handle').forEach(p => {
                 p.scale({ x: newPortScale, y: newPortScale });
             });
 
@@ -2711,6 +2749,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     activeTool !== 'add-pushpin' &&
                     activeTool !== 'add-parking-lot' &&
                     activeTool !== 'add-parking-gate' &&
+                    activeTool !== 'add-zone' &&
                     activeTool !== 'add-intersection' &&
                     !(activeTool === 'add-marking' && markingMode === 'channelization') &&
                     activeTool !== 'subnetwork') {
@@ -2861,7 +2900,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 points[points.length - 1] = worldPos.y;
                 tempShape.points(points);
                 layer.batchDraw();
-            } else if ((activeTool === 'measure' || activeTool === 'add-parking-lot' || activeTool === 'add-intersection' || (activeTool === 'add-marking' && markingMode === 'channelization')) && tempShape) {
+            } else if ((activeTool === 'measure' || activeTool === 'add-parking-lot' || activeTool === 'add-zone' || activeTool === 'add-intersection' || (activeTool === 'add-marking' && markingMode === 'channelization')) && tempShape) {
                 const points = tempShape.points();
                 // 更新最後一個點為當前滑鼠位置
                 points[points.length - 2] = worldPos.x;
@@ -2992,7 +3031,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 points[points.length - 1] = localPos.y;
                 tempShape.points(points);
                 layer.batchDraw();
-            } else if ((activeTool === 'measure' || activeTool === 'add-parking-lot' || activeTool === 'add-intersection' || (activeTool === 'add-marking' && markingMode === 'channelization')) && tempShape) {
+            } else if ((activeTool === 'measure' || activeTool === 'add-parking-lot' || activeTool === 'add-zone' || activeTool === 'add-intersection' || (activeTool === 'add-marking' && markingMode === 'channelization')) && tempShape) {
                 const pos = stage.getPointerPosition();
                 const points = tempShape.points();
                 const localPos = { x: (pos.x - stage.x()) / stage.scaleX(), y: (pos.y - stage.y()) / stage.scaleY(), };
@@ -3187,7 +3226,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (activeTool !== 'select') return;
 
             // --- 在這裡插入你的檢查代碼 ---
-            if (e.target.name() === 'parking-vertex-handle') {
+            if (e.target.name() === 'parking-vertex-handle' || e.target.name() === 'zone-vertex-handle' || e.target.name() === 'zone-midpoint-handle') {
                 return;
             }
             // ---------------------------
@@ -3196,7 +3235,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
 
-            if (['lane-port', 'control-point', 'waypoint-handle', 'length-handle', 'parking-vertex-handle', 'channelization-vertex-handle'].includes(e.target.name())) {
+            if (['lane-port', 'control-point', 'waypoint-handle', 'length-handle', 'parking-vertex-handle', 'channelization-vertex-handle', 'zone-vertex-handle', 'zone-midpoint-handle'].includes(e.target.name())) {
                 return;
             }
 
@@ -3241,7 +3280,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     || network.parkingGates[group.id()]
                     || network.pushpins[group.id()]
                     // [修正] 加入這一行，讓點擊事件能找到 RoadMarking 物件
-                    || network.roadMarkings[group.id()];
+                    || network.roadMarkings[group.id()]
+                    || (network.zones && network.zones[group.id()]);
 
                 if (obj) {
                     if (e.evt.altKey && obj.type === 'Link') {
@@ -3347,6 +3387,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
         document.getElementById('exportXmlBtn').addEventListener('click', exportXML);
 
+        const simulate3DBtn = document.getElementById('simulate3DBtn');
+        if (simulate3DBtn) {
+            simulate3DBtn.addEventListener('click', () => {
+                const xml = serializeNetworkToXML();
+                try {
+                    localStorage.setItem('simTrafficFlow_exportedNetwork', xml);
+                } catch (e) {
+                    console.warn("Could not save network to localStorage:", e);
+                }
+                window.open('../simulator/main_01.html?source=editor', '_blank', 'noopener');
+            });
+        }
+
         const fileInput = document.createElement('input');
         fileInput.type = 'file';
         fileInput.accept = '.sim';
@@ -3395,9 +3448,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 case 'r': setTool('add-road-sign'); break;
                 case 'p': setTool('add-point-detector'); break;
                 case 's': setTool('add-section-detector'); break;
+                case 'z': setTool('add-zone'); break;
                 case 'escape':
                     if (tempShape) { tempShape.destroy(); tempShape = null; }
                     if (tempMeasureText) { tempMeasureText.destroy(); tempMeasureText = null; }
+                    if (window.redrawingZone) {
+                        const prevZone = window.redrawingZone;
+                        window.redrawingZone = null;
+                        setTool('select');
+                        selectObject(prevZone);
+                        break;
+                    }
                     setTool('select');
                     deselectAll(); break;
                 // 在 switch 內加入：
@@ -3436,7 +3497,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         layer.on('dragend', (e) => {
-            if (['control-point', 'waypoint-handle', 'length-handle'].includes(e.target.name())) return;
+            if (['control-point', 'waypoint-handle', 'length-handle', 'zone-vertex-handle', 'zone-midpoint-handle'].includes(e.target.name())) return;
             const sourcePort = e.target;
             const sourceName = sourcePort.name();
 
@@ -3557,7 +3618,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
 
-            if (['lane-port', 'control-point', 'waypoint-handle', 'length-handle', 'parking-vertex-handle', 'channelization-vertex-handle', 'node-vertex-handle'].includes(e.target.name())) {
+            if (['lane-port', 'control-point', 'waypoint-handle', 'length-handle', 'parking-vertex-handle', 'channelization-vertex-handle', 'node-vertex-handle', 'zone-vertex-handle', 'zone-midpoint-handle'].includes(e.target.name())) {
                 return;
             }
 
@@ -3593,7 +3654,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 const obj = network.links[group.id()]
                     || network.detectors[group.id()]
                     || network.measurements[group.id()]
-                    || network.parkingLots[group.id()];
+                    || network.parkingLots[group.id()]
+                    || (network.zones && network.zones[group.id()]);
 
                 if (obj) {
                     if (e.evt.altKey && obj.type === 'Link') {
@@ -3834,6 +3896,9 @@ document.addEventListener('DOMContentLoaded', () => {
             case 'ParkingLot':
                 deleteParkingLot(obj.id);
                 break;
+            case 'Zone':
+                deleteZone(obj.id);
+                break;
             case 'ParkingGate':
                 deleteParkingGate(obj.id);
                 break;
@@ -3862,6 +3927,14 @@ document.addEventListener('DOMContentLoaded', () => {
         Object.values(network.connections).forEach(conn => {
             if (conn.sourceLinkId === linkId || conn.destLinkId === linkId) {
                 deleteConnection(conn.id);
+            }
+        });
+
+        // Cleanup associated connection group visuals
+        layer.find('.group-connection-visual').forEach(groupVisual => {
+            const meta = groupVisual.getAttr('meta');
+            if (meta && (meta.sourceLinkId === linkId || meta.destLinkId === linkId)) {
+                groupVisual.destroy();
             }
         });
 
@@ -4321,6 +4394,26 @@ document.addEventListener('DOMContentLoaded', () => {
                 tempShape.points(currentPoints);
             }
             layer.batchDraw();
+        } else if (activeTool === 'add-zone') {
+            if (!tempShape) {
+                tempShape = new Konva.Line({
+                    points: [pos.x, pos.y, pos.x, pos.y],
+                    stroke: '#f59e0b',
+                    strokeWidth: 2.5,
+                    dash: [6, 3],
+                    closed: true,
+                    fill: 'rgba(245, 158, 11, 0.25)',
+                    listening: false
+                });
+                layer.add(tempShape);
+            } else {
+                const currentPoints = tempShape.points();
+                currentPoints[currentPoints.length - 2] = pos.x;
+                currentPoints[currentPoints.length - 1] = pos.y;
+                currentPoints.push(pos.x, pos.y);
+                tempShape.points(currentPoints);
+            }
+            layer.batchDraw();
         } else if (activeTool === 'add-marking') {
             if (markingMode === 'channelization') {
                 if (!tempShape) {
@@ -4361,7 +4454,36 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     // 監聽雙擊事件以完成多邊形繪製
     document.addEventListener('dblclick', () => {
-        if (activeTool === 'add-parking-lot' && tempShape) {
+        if (activeTool === 'add-zone' && tempShape) {
+            const rawPoints = tempShape.points();
+            if (rawPoints.length >= 4) {
+                rawPoints.pop();
+                rawPoints.pop();
+            }
+
+            if (rawPoints.length < 6) {
+                alert(I18N.t("Zone must have at least 3 points."));
+                tempShape.destroy();
+                tempShape = null;
+                return;
+            }
+
+            const targetZone = (window.redrawingZone && network.zones[window.redrawingZone.id]) ? window.redrawingZone : null;
+            window.redrawingZone = null;
+
+            tempShape.destroy();
+            tempShape = null;
+            setTool('select');
+
+            if (targetZone) {
+                applyNewBoundaryToZone(targetZone, rawPoints);
+            } else {
+                const newZone = createZone(rawPoints);
+                if (newZone) {
+                    selectObject(newZone);
+                }
+            }
+        } else if (activeTool === 'add-parking-lot' && tempShape) {
             // 完成繪製
             // 移除最後一個動態點（因為雙擊的第二次點擊通常是多餘的，或者重疊的）
             // 但為了簡單起見，我們直接拿目前所有點，過濾掉最後一組如果它太接近前一組
@@ -4469,15 +4591,15 @@ document.addEventListener('DOMContentLoaded', () => {
         return parkingLot;
     }
 
-    // --- 新增：座標轉換輔助函數 ---
-    function getLocalPoint(group, absPoint) {
-        const transform = group.getAbsoluteTransform().copy();
+    // --- 座標轉換輔助函數 (Group 相對於 Layer 的即時座標轉換) ---
+    function getLocalPoint(group, layerPoint) {
+        const transform = group.getTransform().copy();
         transform.invert();
-        return transform.point(absPoint);
+        return transform.point(layerPoint);
     }
 
     function getAbsolutePoint(group, localPoint) {
-        const transform = group.getAbsoluteTransform();
+        const transform = group.getTransform();
         return transform.point(localPoint);
     }
 
@@ -4653,6 +4775,1046 @@ document.addEventListener('DOMContentLoaded', () => {
         if (parkingLot && parkingLot.konvaHandles) {
             parkingLot.konvaHandles.forEach(handle => handle.destroy());
             parkingLot.konvaHandles = [];
+        }
+    }
+
+    // ============================================================
+    // === 土地使用分區 (Land Use Zoning System - Milestone 1) ===
+    // ============================================================
+
+    const ZONE_CONFIGS = {
+        'R1': {
+            name: '低密度住宅區',
+            enName: 'Low-Density Residential',
+            category: 'R',
+            bcr: 0.50,
+            far: 1.20,
+            unitPop: 35, // m2/人
+            unitEmp: 0,
+            fillColor: 'rgba(255, 215, 0, 0.40)',
+            strokeColor: '#d4af37',
+            textColor: '#785f00',
+            desc: '低層獨立式/透天住宅，通勤尖峰方向性強'
+        },
+        'R2': {
+            name: '中密度住宅區',
+            enName: 'Medium-Density Residential',
+            category: 'R',
+            bcr: 0.60,
+            far: 2.40,
+            unitPop: 30,
+            unitEmp: 0,
+            fillColor: 'rgba(255, 195, 0, 0.42)',
+            strokeColor: '#cda800',
+            textColor: '#785f00',
+            desc: '雙拼與中層公寓住宅，汽機車與短途步行混合'
+        },
+        'R3': {
+            name: '高密度住宅區',
+            enName: 'High-Density Residential',
+            category: 'R',
+            bcr: 0.50,
+            far: 4.00,
+            unitPop: 25,
+            unitEmp: 0,
+            fillColor: 'rgba(255, 165, 0, 0.45)',
+            strokeColor: '#b87800',
+            textColor: '#6b3c00',
+            desc: '高層集合住宅/電梯大樓，大眾運輸與步行依賴度高'
+        },
+        'C1': {
+            name: '鄰里商業區',
+            enName: 'Neighborhood Commercial',
+            category: 'C',
+            bcr: 0.60,
+            far: 2.40,
+            unitPop: 0,
+            unitEmp: 25, // m2/崗位
+            fillColor: 'rgba(240, 90, 90, 0.40)',
+            strokeColor: '#d93838',
+            textColor: '#8a1a1a',
+            desc: '街角店鋪與日常消費商場，高步行比例'
+        },
+        'C2': {
+            name: '核心商業區 (CBD)',
+            enName: 'Central Business District (CBD)',
+            category: 'C',
+            bcr: 0.70,
+            far: 6.00,
+            unitPop: 0,
+            unitEmp: 18,
+            fillColor: 'rgba(235, 55, 55, 0.45)',
+            strokeColor: '#c0392b',
+            textColor: '#78120c',
+            desc: '辦公摩天大樓，早晨強烈吸引、傍晚強烈產生'
+        },
+        'C3': {
+            name: '區域商場/娛樂',
+            enName: 'Regional Commercial / Mall',
+            category: 'C',
+            bcr: 0.60,
+            far: 3.60,
+            unitPop: 0,
+            unitEmp: 30,
+            fillColor: 'rgba(236, 72, 153, 0.40)',
+            strokeColor: '#db2777',
+            textColor: '#831843',
+            desc: '巨型購物中心/綜合娛樂城，午後與夜間吸引尖峰'
+        },
+        'I': {
+            name: '科技產業/輕工業',
+            enName: 'Industrial / Tech',
+            category: 'I',
+            bcr: 0.60,
+            far: 2.10,
+            unitPop: 0,
+            unitEmp: 40,
+            fillColor: 'rgba(168, 85, 247, 0.40)',
+            strokeColor: '#9333ea',
+            textColor: '#581c87',
+            desc: '廠辦與物流，貨客混合，固定上下工時段'
+        },
+        'G1': {
+            name: '各級學校/文教',
+            enName: 'Schools / Institutional',
+            category: 'G',
+            bcr: 0.50,
+            far: 1.50,
+            unitPop: 0,
+            unitEmp: 0,
+            unitStudent: 15,
+            fillColor: 'rgba(59, 130, 246, 0.40)',
+            strokeColor: '#2563eb',
+            textColor: '#1e3a8a',
+            desc: '早晨上學超尖峰，接送與通學步行流'
+        },
+        'G2': {
+            name: '機關/醫療院所',
+            enName: 'Government / Hospital',
+            category: 'G',
+            bcr: 0.50,
+            far: 3.00,
+            unitPop: 0,
+            unitEmp: 22,
+            fillColor: 'rgba(14, 165, 233, 0.40)',
+            strokeColor: '#0284c7',
+            textColor: '#0c4a6e',
+            desc: '全天穩定行政/門診車流，短暫停車需求大'
+        },
+        'P': {
+            name: '公園綠地/廣場',
+            enName: 'Park / Public Space',
+            category: 'P',
+            bcr: 0.10,
+            far: 0.20,
+            unitPop: 0,
+            unitEmp: 0,
+            fillColor: 'rgba(34, 197, 94, 0.40)',
+            strokeColor: '#16a34a',
+            textColor: '#14532d',
+            desc: '純休憩吸引源，主要為步行與機車慢行旅次'
+        }
+    };
+
+    /**
+     * 計算多邊形面積 (Shoelace formula，單位：平方公尺 m²)
+     */
+    function calculatePolygonArea(points) {
+        if (!points || points.length < 6) return 0;
+        let area = 0;
+        const n = points.length / 2;
+        for (let i = 0; i < n; i++) {
+            const x0 = points[i * 2];
+            const y0 = points[i * 2 + 1];
+            const nextIdx = (i + 1) % n;
+            const x1 = points[nextIdx * 2];
+            const y1 = points[nextIdx * 2 + 1];
+            area += (x0 * y1 - x1 * y0);
+        }
+        return Math.abs(area * 0.5);
+    }
+
+    /**
+     * 計算多邊形形心 (Centroid Cx, Cy)
+     */
+    function calculateCentroid(points) {
+        if (!points || points.length < 6) {
+            return { x: (points && points[0]) || 0, y: (points && points[1]) || 0 };
+        }
+        let signedArea = 0;
+        let cx = 0;
+        let cy = 0;
+        const n = points.length / 2;
+
+        for (let i = 0; i < n; i++) {
+            const x0 = points[i * 2];
+            const y0 = points[i * 2 + 1];
+            const nextIdx = (i + 1) % n;
+            const x1 = points[nextIdx * 2];
+            const y1 = points[nextIdx * 2 + 1];
+            const cross = (x0 * y1 - x1 * y0);
+            signedArea += cross;
+            cx += (x0 + x1) * cross;
+            cy += (y0 + y1) * cross;
+        }
+
+        signedArea = signedArea * 0.5;
+        if (Math.abs(signedArea) < 1e-4) {
+            let sumX = 0, sumY = 0;
+            for (let i = 0; i < points.length; i += 2) {
+                sumX += points[i];
+                sumY += points[i + 1];
+            }
+            return { x: sumX / n, y: sumY / n };
+        }
+
+        return {
+            x: cx / (6 * signedArea),
+            y: cy / (6 * signedArea)
+        };
+    }
+
+    /**
+     * 推估常住人口與就業崗位規模 (Socio-Economic Engine)
+     */
+    function estimateSocioEconomic(zoneType, gfa) {
+        const cfg = ZONE_CONFIGS[zoneType] || ZONE_CONFIGS['R1'];
+        let pop = 0;
+        let emp = 0;
+
+        if (cfg.category === 'R') {
+            const etaRes = 0.85;
+            pop = Math.round((gfa * etaRes) / (cfg.unitPop || 30));
+        } else if (cfg.category === 'C' || cfg.category === 'I') {
+            const etaJob = 0.80;
+            emp = Math.round((gfa * etaJob) / (cfg.unitEmp || 25));
+        } else if (zoneType === 'G1') {
+            const etaRes = 0.85;
+            pop = Math.round((gfa * etaRes) / 15); // 学生人數
+        } else if (zoneType === 'G2') {
+            const etaJob = 0.80;
+            emp = Math.round((gfa * etaJob) / 22);
+        }
+        return { pop, emp };
+    }
+
+    /**
+     * 推估尖離峰產生量與吸引量 (Trip Generation Engine)
+     */
+    function estimatePeakTrips(zoneType, pop, emp, gfa) {
+        const cfg = ZONE_CONFIGS[zoneType] || ZONE_CONFIGS['R1'];
+        let amP = 0, amA = 0, pmP = 0, pmA = 0, offP = 0, offA = 0;
+
+        if (cfg.category === 'R') {
+            const base = pop;
+            const amTrips = base * 0.45;
+            amP = Math.round(amTrips * 0.85);
+            amA = Math.round(amTrips * 0.15);
+            const pmTrips = base * 0.50;
+            pmP = Math.round(pmTrips * 0.20);
+            pmA = Math.round(pmTrips * 0.80);
+            const offTrips = base * 0.12;
+            offP = Math.round(offTrips * 0.50);
+            offA = Math.round(offTrips * 0.50);
+        } else if (zoneType === 'C2') {
+            const base = emp;
+            const amTrips = base * 0.65;
+            amP = Math.round(amTrips * 0.10);
+            amA = Math.round(amTrips * 0.90);
+            const pmTrips = base * 0.70;
+            pmP = Math.round(pmTrips * 0.85);
+            pmA = Math.round(pmTrips * 0.15);
+            const offTrips = base * 0.15;
+            offP = Math.round(offTrips * 0.45);
+            offA = Math.round(offTrips * 0.55);
+        } else if (zoneType === 'C1') {
+            const base = emp;
+            const amTrips = base * 0.40;
+            amP = Math.round(amTrips * 0.30);
+            amA = Math.round(amTrips * 0.70);
+            const pmTrips = base * 0.60;
+            pmP = Math.round(pmTrips * 0.60);
+            pmA = Math.round(pmTrips * 0.40);
+            const offTrips = base * 0.15;
+            offP = Math.round(offTrips * 0.50);
+            offA = Math.round(offTrips * 0.50);
+        } else if (zoneType === 'C3') {
+            const base = gfa / 100;
+            const amTrips = base * 1.20;
+            amP = Math.round(amTrips * 0.30);
+            amA = Math.round(amTrips * 0.70);
+            const pmTrips = base * 3.50;
+            pmP = Math.round(pmTrips * 0.45);
+            pmA = Math.round(pmTrips * 0.55);
+            const offTrips = base * 1.80;
+            offP = Math.round(offTrips * 0.50);
+            offA = Math.round(offTrips * 0.50);
+        } else if (cfg.category === 'I') {
+            const base = emp;
+            const amTrips = base * 0.55;
+            amP = Math.round(amTrips * 0.15);
+            amA = Math.round(amTrips * 0.85);
+            const pmTrips = base * 0.60;
+            pmP = Math.round(pmTrips * 0.85);
+            pmA = Math.round(pmTrips * 0.15);
+            const offTrips = base * 0.12;
+            offP = Math.round(offTrips * 0.50);
+            offA = Math.round(offTrips * 0.50);
+        } else if (zoneType === 'G1') {
+            const base = pop; // 学生
+            const amTrips = base * 0.80;
+            amP = Math.round(amTrips * 0.15);
+            amA = Math.round(amTrips * 0.85);
+            const pmTrips = base * 0.75;
+            pmP = Math.round(pmTrips * 0.85);
+            pmA = Math.round(pmTrips * 0.15);
+            const offTrips = base * 0.05;
+            offP = Math.round(offTrips * 0.50);
+            offA = Math.round(offTrips * 0.50);
+        } else if (zoneType === 'G2') {
+            const base = emp;
+            const amTrips = base * 0.50;
+            amP = Math.round(amTrips * 0.25);
+            amA = Math.round(amTrips * 0.75);
+            const pmTrips = base * 0.50;
+            pmP = Math.round(pmTrips * 0.70);
+            pmA = Math.round(pmTrips * 0.30);
+            const offTrips = base * 0.10;
+            offP = Math.round(offTrips * 0.50);
+            offA = Math.round(offTrips * 0.50);
+        } else if (cfg.category === 'P') {
+            const base = gfa / 100;
+            const amTrips = base * 0.05;
+            amP = Math.round(amTrips * 0.50);
+            amA = Math.round(amTrips * 0.50);
+            const pmTrips = base * 0.10;
+            pmP = Math.round(pmTrips * 0.50);
+            pmA = Math.round(pmTrips * 0.50);
+            const offTrips = base * 0.05;
+            offP = Math.round(offTrips * 0.50);
+            offA = Math.round(offTrips * 0.50);
+        }
+
+        return { amP, amA, pmP, pmA, offP, offA };
+    }
+
+    /**
+     * 產出分區畫布標籤文字
+     */
+    function getZoneDisplayText(zone) {
+        const polygon = zone.konvaGroup ? zone.konvaGroup.findOne('.zone-shape') : null;
+        const pts = polygon ? polygon.points() : (zone.points || []);
+        const siteArea = calculatePolygonArea(pts);
+        const bcr = zone.bcr !== undefined ? zone.bcr : 0.5;
+        const far = zone.far !== undefined ? zone.far : 1.2;
+        const floors = Math.max(1, Math.ceil(far / bcr));
+        const gfa = siteArea * far;
+        const { pop: autoPop, emp: autoEmp } = estimateSocioEconomic(zone.zoneType, gfa);
+        const effPop = (zone.customPop !== null && zone.customPop !== undefined && zone.customPop !== '' && !isNaN(zone.customPop)) ? zone.customPop : autoPop;
+        const effEmp = (zone.customEmp !== null && zone.customEmp !== undefined && zone.customEmp !== '' && !isNaN(zone.customEmp)) ? zone.customEmp : autoEmp;
+        const trips = estimatePeakTrips(zone.zoneType, effPop, effEmp, gfa);
+
+        const lines = [];
+        lines.push(`${zone.name || zone.id} [${zone.zoneType}]`);
+        lines.push(`FAR: ${(far * 100).toFixed(0)}% | BCR: ${(bcr * 100).toFixed(0)}%`);
+        lines.push(`Floors: ${floors}F (${siteArea.toFixed(0)} m²)`);
+        if (effPop > 0) lines.push(`Pop: ${effPop}`);
+        if (effEmp > 0) lines.push(`Jobs: ${effEmp}`);
+        lines.push(`AM: P${trips.amP}/A${trips.amA} | PM: P${trips.pmP}/A${trips.pmA}`);
+        return lines.join('\n');
+    }
+
+    /**
+     * 建立土地使用分區物件
+     */
+    function createZone(points, autoSelect = true, customId = null) {
+        const cleanedPoints = [];
+        for (let i = 0; i < points.length; i += 2) {
+            const px = parseFloat(points[i]);
+            const py = parseFloat(points[i + 1]);
+            if (!isNaN(px) && !isNaN(py)) {
+                cleanedPoints.push(px, py);
+            }
+        }
+        if (cleanedPoints.length < 6) return null;
+
+        const id = customId || window.generateId('zone');
+        const defaultType = 'R1';
+        const config = ZONE_CONFIGS[defaultType] || ZONE_CONFIGS['R1'];
+
+        const xs = [];
+        const ys = [];
+        for (let i = 0; i < cleanedPoints.length; i += 2) {
+            xs.push(cleanedPoints[i]);
+            ys.push(cleanedPoints[i + 1]);
+        }
+        const minX = Math.min(...xs);
+        const minY = Math.min(...ys);
+
+        const localPoints = [];
+        for (let i = 0; i < cleanedPoints.length; i += 2) {
+            localPoints.push(cleanedPoints[i] - minX, cleanedPoints[i + 1] - minY);
+        }
+
+        const zone = {
+            id,
+            name: `Zone ${id.replace(/[^0-9]/g, '') || idCounter}`,
+            type: 'Zone',
+            zoneType: defaultType,
+            points: [...localPoints],
+            bcr: config.bcr,
+            far: config.far,
+            customPop: null,
+            customEmp: null,
+            autoCalculateTraffic: true,
+            accessNodes: [],
+            konvaHandles: [],
+            konvaGroup: new Konva.Group({
+                id,
+                x: minX,
+                y: minY,
+                draggable: false,
+                name: 'zone-group'
+            })
+        };
+
+        const polygon = new Konva.Line({
+            points: localPoints,
+            stroke: config.strokeColor,
+            strokeWidth: 2.5,
+            closed: true,
+            fill: config.fillColor,
+            listening: true,
+            name: 'zone-shape'
+        });
+
+        const centroid = calculateCentroid(localPoints);
+        const label = new Konva.Text({
+            text: getZoneDisplayText(zone),
+            fontSize: 13,
+            fontFamily: 'Inter, sans-serif',
+            fontStyle: 'bold',
+            fill: config.textColor,
+            align: 'center',
+            name: 'zone-label',
+            listening: false,
+            shadowColor: 'white',
+            shadowBlur: 3,
+            shadowOpacity: 0.9,
+            x: centroid.x,
+            y: centroid.y
+        });
+        label.offsetX(label.width() / 2);
+        label.offsetY(label.height() / 2);
+
+        zone.konvaGroup.add(polygon);
+        zone.konvaGroup.add(label);
+
+        network.zones[id] = zone;
+        layer.add(zone.konvaGroup);
+
+        // 土地分區置於路網下方，但保持在背景圖片之上
+        zone.konvaGroup.moveToBottom();
+        if (network.backgrounds) {
+            Object.values(network.backgrounds).forEach(bg => {
+                if (bg.konvaGroup) bg.konvaGroup.moveToBottom();
+            });
+        }
+
+        // ★★★ [Milestone 3] 自動產生形心聯絡道並繪製 ★★★
+        autoGenerateCentroidConnectors(zone);
+        updateZoneConnectorsVisual(zone);
+
+        if (autoSelect) {
+            selectObject(zone);
+        }
+        saveState();
+        layer.batchDraw();
+        return zone;
+    }
+
+    /**
+     * ★★★ [Milestone 3] 自動搜尋最近道路並建立形心聯絡道拓撲 (Centroid Connector Projection) ★★★
+     */
+    function autoGenerateCentroidConnectors(zone) {
+        if (!zone) return;
+        if (!network.links || Object.keys(network.links).length === 0) {
+            zone.accessNodes = [];
+            return;
+        }
+
+        const group = zone.konvaGroup;
+        const gx = group ? group.x() : 0;
+        const gy = group ? group.y() : 0;
+        const sx = group ? (group.scaleX() || 1) : 1;
+        const sy = group ? (group.scaleY() || 1) : 1;
+
+        const polygon = group ? group.findOne('.zone-shape') : null;
+        const localPts = polygon ? polygon.points() : (zone.points || []);
+        if (!localPts || localPts.length < 6) return;
+
+        // 計算絕對座標多邊形頂點
+        const absVertices = [];
+        for (let i = 0; i < localPts.length; i += 2) {
+            absVertices.push({
+                x: gx + localPts[i] * sx,
+                y: gy + localPts[i + 1] * sy
+            });
+        }
+
+        // 沿邊界採樣測試點 (以約 10~15m 間距採樣)
+        const sampledPoints = [];
+        const n = absVertices.length;
+        for (let i = 0; i < n; i++) {
+            const p1 = absVertices[i];
+            const p2 = absVertices[(i + 1) % n];
+            const segLen = vecLen(getVector(p1, p2));
+            const steps = Math.max(1, Math.min(10, Math.ceil(segLen / 12)));
+            for (let s = 0; s < steps; s++) {
+                const t = s / steps;
+                sampledPoints.push({
+                    x: p1.x + t * (p2.x - p1.x),
+                    y: p1.y + t * (p2.y - p1.y)
+                });
+            }
+        }
+
+        let minDist = Infinity;
+        let bestLink = null;
+        let bestAccessPt = null;
+        let bestProjDist = 0;
+
+        // 搜尋周邊道路 Link
+        Object.values(network.links).forEach(link => {
+            if (!link.waypoints || link.waypoints.length < 2) return;
+            sampledPoints.forEach(bp => {
+                const proj = projectPointOnPolyline(bp, link.waypoints);
+                if (proj.pointDist < minDist) {
+                    minDist = proj.pointDist;
+                    bestLink = link;
+                    bestAccessPt = bp;
+                    bestProjDist = proj.dist;
+                }
+            });
+        });
+
+        if (bestLink) {
+            const linkLen = getPolylineLength(bestLink.waypoints);
+            const offsetRatio = Math.max(0, Math.min(1, bestProjDist / Math.max(0.001, linkLen)));
+            const connId = (zone.accessNodes && zone.accessNodes[0] && zone.accessNodes[0].id) || `conn_${zone.id}_1`;
+            zone.accessNodes = [{
+                id: connId,
+                linkId: bestLink.id,
+                offsetRatio: offsetRatio,
+                gateType: 'bidirectional',
+                accessPoint: { x: bestAccessPt.x, y: bestAccessPt.y }
+            }];
+        } else {
+            zone.accessNodes = [];
+        }
+    }
+
+    /**
+     * ★★★ [Milestone 3] 繪製與更新分區形心聯絡道視覺 (橘色形心、邊界開口與道路投影虛線) ★★★
+     */
+    function updateZoneConnectorsVisual(zone) {
+        if (!zone || !zone.konvaGroup) return;
+        const group = zone.konvaGroup;
+        // 清理現存聯絡道視覺物件
+        group.find('.zone-connector').forEach(node => node.destroy());
+
+        if (!zone.accessNodes || zone.accessNodes.length === 0) {
+            autoGenerateCentroidConnectors(zone);
+        }
+
+        const polygon = group.findOne('.zone-shape');
+        const localPts = polygon ? polygon.points() : (zone.points || []);
+        if (!localPts || localPts.length < 6) return;
+
+        const gx = group.x();
+        const gy = group.y();
+        const sx = group.scaleX() || 1;
+        const sy = group.scaleY() || 1;
+
+        const localCentroid = calculateCentroid(localPts);
+
+        // 1. 繪製形心點 (橘色圓形)
+        const centroidCircle = new Konva.Circle({
+            x: localCentroid.x,
+            y: localCentroid.y,
+            radius: 5 / sx,
+            fill: '#f59e0b',
+            stroke: '#ffffff',
+            strokeWidth: 2 / sx,
+            name: 'zone-connector',
+            listening: false,
+            shadowColor: 'rgba(0,0,0,0.5)',
+            shadowBlur: 3
+        });
+        group.add(centroidCircle);
+
+        // 2. 繪製聯絡道至道路
+        if (zone.accessNodes && zone.accessNodes.length > 0) {
+            zone.accessNodes.forEach(conn => {
+                const targetLink = network.links[conn.linkId];
+                if (!targetLink || !targetLink.waypoints || targetLink.waypoints.length < 2) return;
+
+                const linkLen = getPolylineLength(targetLink.waypoints);
+                const alongDist = (conn.offsetRatio !== undefined ? conn.offsetRatio : 0.5) * linkLen;
+                const roadPtAbs = getPointAlongPolyline(targetLink.waypoints, alongDist).point;
+
+                const roadPtLocal = {
+                    x: (roadPtAbs.x - gx) / sx,
+                    y: (roadPtAbs.y - gy) / sy
+                };
+
+                const accPtAbs = conn.accessPoint || {
+                    x: gx + localCentroid.x * sx,
+                    y: gy + localCentroid.y * sy
+                };
+                const accPtLocal = {
+                    x: (accPtAbs.x - gx) / sx,
+                    y: (accPtAbs.y - gy) / sy
+                };
+
+                // 形心 -> 邊界出入口 (橘色虛線)
+                const line1 = new Konva.Line({
+                    points: [localCentroid.x, localCentroid.y, accPtLocal.x, accPtLocal.y],
+                    stroke: '#f59e0b',
+                    strokeWidth: 2 / sx,
+                    dash: [5 / sx, 4 / sx],
+                    name: 'zone-connector',
+                    listening: false
+                });
+                group.add(line1);
+
+                // 邊界出入口標記 (圓點)
+                const accessDot = new Konva.Circle({
+                    x: accPtLocal.x,
+                    y: accPtLocal.y,
+                    radius: 4 / sx,
+                    fill: '#f59e0b',
+                    stroke: '#ffffff',
+                    strokeWidth: 1.5 / sx,
+                    name: 'zone-connector',
+                    listening: false
+                });
+                group.add(accessDot);
+
+                // 邊界出入口 -> 道路投影點 (深橘色/紅色虛線)
+                const line2 = new Konva.Line({
+                    points: [accPtLocal.x, accPtLocal.y, roadPtLocal.x, roadPtLocal.y],
+                    stroke: '#ea580c',
+                    strokeWidth: 2.2 / sx,
+                    dash: [6 / sx, 3 / sx],
+                    name: 'zone-connector',
+                    listening: false
+                });
+                group.add(line2);
+
+                // 道路接入點標記 (實心圓)
+                const roadDot = new Konva.Circle({
+                    x: roadPtLocal.x,
+                    y: roadPtLocal.y,
+                    radius: 5 / sx,
+                    fill: '#ea580c',
+                    stroke: '#ffffff',
+                    strokeWidth: 2 / sx,
+                    name: 'zone-connector',
+                    listening: false
+                });
+                group.add(roadDot);
+            });
+        }
+    }
+
+    /**
+     * 更新分區視覺呈現 (填色、邊線、標籤、中心點)
+     */
+    function updateZoneVisuals(zone, updateHandles = true) {
+        if (!zone || !zone.konvaGroup) return;
+        const config = ZONE_CONFIGS[zone.zoneType] || ZONE_CONFIGS['R1'];
+        const polygon = zone.konvaGroup.findOne('.zone-shape');
+        const label = zone.konvaGroup.findOne('.zone-label');
+
+        if (polygon) {
+            polygon.fill(config.fillColor);
+            polygon.stroke(config.strokeColor);
+        }
+
+        if (label && polygon) {
+            const pts = polygon.points();
+            const centroid = calculateCentroid(pts);
+            label.text(getZoneDisplayText(zone));
+            label.fill(config.textColor);
+            label.position({ x: centroid.x, y: centroid.y });
+            label.offsetX(label.width() / 2);
+            label.offsetY(label.height() / 2);
+        }
+
+        if (updateHandles && zone.konvaHandles && zone.konvaHandles.length > 0) {
+            updateZoneHandlePositions(zone);
+        }
+
+        // ★ [Milestone 3] 同步更新形心聯絡道視覺
+        updateZoneConnectorsVisual(zone);
+
+        layer.batchDraw();
+    }
+
+    /**
+     * 繪製分區頂點錨點控制點 (放置於 Layer 確保精確操作)
+     * - 橘色圓點：既有頂點，可拖曳移動，連按兩下可刪除頂點 (至少保留 3 頂點)
+     * - 黃色小點：邊的中點，拖曳即可在該位置插入新頂點
+     */
+    function drawZoneHandles(zone) {
+        destroyZoneHandles(zone);
+
+        const group = zone.konvaGroup;
+        if (!group) return;
+        const polygon = group.findOne('.zone-shape');
+        if (!polygon) return;
+
+        const points = polygon.points();
+        zone.konvaHandles = [];
+
+        const scale = 1 / stage.scaleX();
+
+        // 1. 繪製各頂點控制點 (橘色圓形，半徑 8)
+        for (let i = 0; i < points.length; i += 2) {
+            const localX = points[i];
+            const localY = points[i + 1];
+            const absPos = getAbsolutePoint(group, { x: localX, y: localY });
+
+            const handle = new Konva.Circle({
+                x: absPos.x,
+                y: absPos.y,
+                radius: 8,
+                fill: '#f59e0b',
+                stroke: 'white',
+                strokeWidth: 2 * scale,
+                draggable: true,
+                name: 'zone-vertex-handle',
+                scaleX: scale,
+                scaleY: scale,
+                shadowColor: 'rgba(0,0,0,0.3)',
+                shadowBlur: 4,
+                shadowOffset: { x: 0, y: 1 }
+            });
+
+            handle.setAttr('vertexIndex', i);
+
+            handle.on('mouseenter', () => { stage.container().style.cursor = 'move'; });
+            handle.on('mouseleave', () => {
+                if (activeTool === 'select') stage.container().style.cursor = 'default';
+            });
+
+            handle.on('dragmove', (e) => {
+                const node = e.target;
+                const newLocal = getLocalPoint(group, { x: node.x(), y: node.y() });
+
+                const currentPoints = polygon.points();
+                const idx = node.getAttr('vertexIndex');
+                currentPoints[idx] = newLocal.x;
+                currentPoints[idx + 1] = newLocal.y;
+
+                polygon.points(currentPoints);
+                zone.points = [...currentPoints];
+
+                updateZoneVisuals(zone, false);
+
+                if (selectedObject && selectedObject.id === zone.id) {
+                    updatePropertiesPanelDynamicValues(zone);
+                }
+            });
+
+            handle.on('dragend', () => {
+                autoGenerateCentroidConnectors(zone);
+                updateZoneVisuals(zone, true);
+                drawZoneHandles(zone);
+                if (selectedObject && selectedObject.id === zone.id) {
+                    updatePropertiesPanel(zone);
+                }
+                saveState();
+            });
+
+            // 雙擊頂點以刪除該頂點 (維持至少 3 個頂點 / 6 個座標值)
+            handle.on('dblclick', (e) => {
+                e.cancelBubble = true;
+                const currentPoints = polygon.points();
+                if (currentPoints.length <= 6) {
+                    alert(I18N.t("Zone must have at least 3 points."));
+                    return;
+                }
+                const idx = handle.getAttr('vertexIndex');
+                currentPoints.splice(idx, 2);
+                polygon.points(currentPoints);
+                zone.points = [...currentPoints];
+
+                autoGenerateCentroidConnectors(zone);
+                updateZoneVisuals(zone, true);
+                drawZoneHandles(zone);
+                if (selectedObject && selectedObject.id === zone.id) {
+                    updatePropertiesPanel(zone);
+                }
+                saveState();
+            });
+
+            layer.add(handle);
+            zone.konvaHandles.push(handle);
+        }
+
+        // 2. 繪製邊的中點控制點 (黃色小圓形，半徑 5，拖曳即可新增頂點)
+        for (let i = 0; i < points.length; i += 2) {
+            const nextIdx = (i + 2 < points.length) ? i + 2 : 0;
+            const x1 = points[i];
+            const y1 = points[i + 1];
+            const x2 = points[nextIdx];
+            const y2 = points[nextIdx + 1];
+
+            const mx = (x1 + x2) / 2;
+            const my = (y1 + y2) / 2;
+            const midAbsPos = getAbsolutePoint(group, { x: mx, y: my });
+
+            const midHandle = new Konva.Circle({
+                x: midAbsPos.x,
+                y: midAbsPos.y,
+                radius: 5,
+                fill: '#fbbf24',
+                stroke: 'white',
+                strokeWidth: 1.5 * scale,
+                draggable: true,
+                name: 'zone-midpoint-handle',
+                scaleX: scale,
+                scaleY: scale,
+                opacity: 0.85
+            });
+
+            midHandle.setAttr('edgeStartIndex', i);
+
+            midHandle.on('mouseenter', () => { stage.container().style.cursor = 'crosshair'; });
+            midHandle.on('mouseleave', () => {
+                if (activeTool === 'select') stage.container().style.cursor = 'default';
+            });
+
+            midHandle.on('dragstart', (e) => {
+                const currentPoints = polygon.points();
+                const insertIdx = (i + 2 <= currentPoints.length) ? i + 2 : currentPoints.length;
+                const newLocal = getLocalPoint(group, { x: e.target.x(), y: e.target.y() });
+                currentPoints.splice(insertIdx, 0, newLocal.x, newLocal.y);
+                polygon.points(currentPoints);
+                zone.points = [...currentPoints];
+                e.target.setAttr('vertexIndex', insertIdx);
+            });
+
+            midHandle.on('dragmove', (e) => {
+                const node = e.target;
+                const newLocal = getLocalPoint(group, { x: node.x(), y: node.y() });
+                const currentPoints = polygon.points();
+                const idx = node.getAttr('vertexIndex');
+                currentPoints[idx] = newLocal.x;
+                currentPoints[idx + 1] = newLocal.y;
+                polygon.points(currentPoints);
+                zone.points = [...currentPoints];
+                updateZoneVisuals(zone, false);
+                if (selectedObject && selectedObject.id === zone.id) {
+                    updatePropertiesPanelDynamicValues(zone);
+                }
+            });
+
+            midHandle.on('dragend', () => {
+                autoGenerateCentroidConnectors(zone);
+                updateZoneVisuals(zone, true);
+                drawZoneHandles(zone);
+                if (selectedObject && selectedObject.id === zone.id) {
+                    updatePropertiesPanel(zone);
+                }
+                saveState();
+            });
+
+            layer.add(midHandle);
+            zone.konvaHandles.push(midHandle);
+        }
+
+        zone.konvaHandles.forEach(h => h.moveToTop());
+        layer.batchDraw();
+    }
+
+    /**
+     * 更新分區頂點控制點位置 (當 Group 整體移動時同步)
+     */
+    function updateZoneHandlePositions(zone) {
+        if (!zone || !zone.konvaHandles || !zone.konvaGroup) return;
+        const group = zone.konvaGroup;
+        const polygon = group.findOne('.zone-shape');
+        if (!polygon) return;
+
+        const points = polygon.points();
+        zone.konvaHandles.forEach(handle => {
+            if (handle.name() === 'zone-vertex-handle') {
+                const idx = handle.getAttr('vertexIndex');
+                if (idx !== undefined && idx < points.length) {
+                    const localX = points[idx];
+                    const localY = points[idx + 1];
+                    const absPos = getAbsolutePoint(group, { x: localX, y: localY });
+                    handle.position(absPos);
+                }
+            } else if (handle.name() === 'zone-midpoint-handle') {
+                const segStart = handle.getAttr('edgeStartIndex');
+                if (segStart !== undefined && segStart < points.length) {
+                    const nextIdx = (segStart + 2 < points.length) ? segStart + 2 : 0;
+                    const mx = (points[segStart] + points[nextIdx]) / 2;
+                    const my = (points[segStart + 1] + points[nextIdx + 1]) / 2;
+                    const absPos = getAbsolutePoint(group, { x: mx, y: my });
+                    handle.position(absPos);
+                }
+            }
+        });
+    }
+
+    /**
+     * 移除分區頂點控制點
+     */
+    function destroyZoneHandles(zone) {
+        if (zone && zone.konvaHandles) {
+            zone.konvaHandles.forEach(handle => handle.destroy());
+            zone.konvaHandles = [];
+        }
+    }
+
+    /**
+     * 開始重繪土地分區多邊形外框
+     */
+    function startRedrawingZone(zone) {
+        if (!zone) return;
+        const target = zone;
+        setTool('add-zone');
+        window.redrawingZone = target;
+        updateStatusBar();
+        if (typeof updatePropertiesPanel === 'function') {
+            updatePropertiesPanel(null);
+        }
+    }
+
+    /**
+     * 將重繪的新多邊形頂點套用至現存分區 (保留所有既有分區屬性與 ID)
+     */
+    function applyNewBoundaryToZone(zone, rawPoints) {
+        const cleanedPoints = [];
+        for (let i = 0; i < rawPoints.length; i += 2) {
+            const px = parseFloat(rawPoints[i]);
+            const py = parseFloat(rawPoints[i + 1]);
+            if (!isNaN(px) && !isNaN(py)) {
+                cleanedPoints.push(px, py);
+            }
+        }
+        if (cleanedPoints.length < 6) {
+            alert(I18N.t("Zone must have at least 3 points."));
+            return;
+        }
+
+        const xs = [];
+        const ys = [];
+        for (let i = 0; i < cleanedPoints.length; i += 2) {
+            xs.push(cleanedPoints[i]);
+            ys.push(cleanedPoints[i + 1]);
+        }
+        const minX = Math.min(...xs);
+        const minY = Math.min(...ys);
+
+        const localPoints = [];
+        for (let i = 0; i < cleanedPoints.length; i += 2) {
+            localPoints.push(cleanedPoints[i] - minX, cleanedPoints[i + 1] - minY);
+        }
+
+        zone.points = [...localPoints];
+        if (zone.konvaGroup) {
+            zone.konvaGroup.position({ x: minX, y: minY });
+            const polygon = zone.konvaGroup.findOne('.zone-shape');
+            if (polygon) {
+                polygon.points(localPoints);
+            }
+            const label = zone.konvaGroup.findOne('.zone-label');
+            if (label) {
+                const centroid = calculateCentroid(localPoints);
+                label.position({ x: centroid.x, y: centroid.y });
+                label.offsetX(label.width() / 2);
+                label.offsetY(label.height() / 2);
+            }
+        }
+
+        autoGenerateCentroidConnectors(zone);
+        updateZoneVisuals(zone, true);
+        selectObject(zone);
+        saveState();
+        layer.batchDraw();
+    }
+
+    /**
+     * 刪除分區物件
+     */
+    function deleteZone(id) {
+        const zone = network.zones[id];
+        if (!zone) return;
+        destroyZoneHandles(zone);
+        if (zone.konvaTransformer) {
+            zone.konvaTransformer.destroy();
+        }
+        if (zone.konvaGroup) {
+            zone.konvaGroup.destroy();
+        }
+        delete network.zones[id];
+    }
+
+    /**
+     * 動態更新屬性面板中的分區計算數值 (不重新渲染整個面板，維持滑鼠或輸入焦點)
+     */
+    function updatePropertiesPanelDynamicValues(zone) {
+        if (!zone) return;
+        const polygon = zone.konvaGroup ? zone.konvaGroup.findOne('.zone-shape') : null;
+        const pts = polygon ? polygon.points() : (zone.points || []);
+        const siteArea = calculatePolygonArea(pts);
+        const bcr = zone.bcr !== undefined ? zone.bcr : 0.6;
+        const far = zone.far !== undefined ? zone.far : 2.0;
+        const gfa = siteArea * far;
+        const footprint = siteArea * bcr;
+        const floors = Math.max(1, Math.ceil(far / bcr));
+
+        const siteAreaEl = document.getElementById('prop-zone-site-area');
+        if (siteAreaEl) siteAreaEl.textContent = `${siteArea.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} m²`;
+
+        const footprintEl = document.getElementById('prop-zone-footprint');
+        if (footprintEl) footprintEl.textContent = `${footprint.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} m²`;
+
+        const gfaEl = document.getElementById('prop-zone-gfa');
+        if (gfaEl) gfaEl.textContent = `${gfa.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} m²`;
+
+        const floorsEl = document.getElementById('prop-zone-floors');
+        if (floorsEl) floorsEl.textContent = `${floors} F`;
+
+        const { pop: autoPop, emp: autoEmp } = estimateSocioEconomic(zone.zoneType, gfa);
+        const isAuto = zone.autoCalculateTraffic !== false;
+        const effPop = (!isAuto && zone.customPop !== null && zone.customPop !== undefined && !isNaN(zone.customPop)) ? zone.customPop : autoPop;
+        const effEmp = (!isAuto && zone.customEmp !== null && zone.customEmp !== undefined && !isNaN(zone.customEmp)) ? zone.customEmp : autoEmp;
+
+        const popInput = document.getElementById('prop-zone-pop');
+        if (popInput && isAuto) popInput.value = effPop;
+
+        const empInput = document.getElementById('prop-zone-emp');
+        if (empInput && isAuto) empInput.value = effEmp;
+
+        const trips = estimatePeakTrips(zone.zoneType, effPop, effEmp, gfa);
+        const amEl = document.getElementById('prop-zone-trips-am');
+        if (amEl) amEl.textContent = `P: ${trips.amP.toLocaleString()} / A: ${trips.amA.toLocaleString()} trips/h`;
+
+        const pmEl = document.getElementById('prop-zone-trips-pm');
+        if (pmEl) pmEl.textContent = `P: ${trips.pmP.toLocaleString()} / A: ${trips.pmA.toLocaleString()} trips/h`;
+
+        const offEl = document.getElementById('prop-zone-trips-off');
+        if (offEl) {
+            const offP = trips.offP !== undefined ? trips.offP : 0;
+            const offA = trips.offA !== undefined ? trips.offA : 0;
+            offEl.textContent = `P: ${offP.toLocaleString()} / A: ${offA.toLocaleString()} trips/h`;
         }
     }
 
@@ -5429,9 +6591,29 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         // --- 2. Redraw connection group visuals ---
-        // The visual shape for groups will automatically update
-        // because its sceneFunc depends on the link waypoints which have changed.
-        // We just need to ensure the layer is redrawn.
+        layer.find('.group-connection-visual').forEach(groupVisual => {
+            const meta = groupVisual.getAttr('meta');
+            if (meta && meta.nodeId === nodeId) {
+                const srcLink = network.links[meta.sourceLinkId];
+                const dstLink = network.links[meta.destLinkId];
+                if (srcLink && dstLink && srcLink.waypoints.length > 1 && dstLink.waypoints.length > 1) {
+                    const pStart = srcLink.waypoints[srcLink.waypoints.length - 1];
+                    const pEnd = dstLink.waypoints[0];
+                    const vStart = normalize(getVector(srcLink.waypoints[srcLink.waypoints.length - 2], pStart));
+                    const vEnd = normalize(getVector(pEnd, dstLink.waypoints[1]));
+
+                    const turnDir = getTurnDirection(srcLink, dstLink);
+                    const bezierPts = calculateBezierPoints(pStart, vStart, pEnd, vEnd, turnDir, getLinkTotalWidth(srcLink) + getLinkTotalWidth(dstLink));
+
+                    const spline = typeof groupVisual.findOne === 'function' ? groupVisual.findOne('.trajectory-spline') : null;
+                    if (spline) {
+                        spline.points(bezierPts.flatMap(p => [p.x, p.y]));
+                    } else if (typeof groupVisual.points === 'function') {
+                        groupVisual.points(bezierPts.flatMap(p => [p.x, p.y]));
+                    }
+                }
+            }
+        });
 
         console.log(`Connections for node ${nodeId} have been redrawn.`);
         // Trigger a single batch draw to render all changes
@@ -6466,6 +7648,23 @@ document.addEventListener('DOMContentLoaded', () => {
     // 完整替換 updatePropertiesPanel 函數
     function updatePropertiesPanel(obj) {
         propertiesContent.innerHTML = '';
+
+        if (activeTool === 'add-zone' && !obj) {
+            const _t = (key) => (window.I18N && window.I18N.t ? window.I18N.t(key) : key);
+            const isRedraw = !!window.redrawingZone;
+            const zoneName = isRedraw ? (window.redrawingZone.name || window.redrawingZone.id) : '';
+            propertiesContent.innerHTML = `
+            <div class="prop-section-header">${isRedraw ? _t('Redraw Boundary') : _t('Land Use Zoning')}</div>
+            <div class="prop-group">
+                <div class="prop-hint" style="margin-top:5px; line-height: 1.6;">
+                    <i class="fa-solid fa-draw-polygon" style="color: #ea580c; margin-right: 5px;"></i>
+                    <strong>${isRedraw ? `${_t('Redraw Boundary')}: ${zoneName}` : _t('Land Use Zone (Z)')}</strong><br>
+                    • ${_t('Click to add zone polygon points. Double-click to finish, Esc to cancel.')}<br>
+                    • Press <kbd style="background:#e2e8f0; padding:1px 5px; border-radius:3px;">Esc</kbd> to cancel.
+                </div>
+            </div>`;
+            return;
+        }
 
         if (activeTool === 'add-marking' && !obj) {
             propertiesContent.innerHTML = `
@@ -8066,6 +9265,173 @@ document.addEventListener('DOMContentLoaded', () => {
                             <i class="fa-solid fa-trash-can"></i> Delete Parking Lot
                         </button>`;
                 break;
+
+            case 'Zone': {
+                const _t = (key) => (window.I18N && window.I18N.t ? window.I18N.t(key) : key);
+                const polygon = obj.konvaGroup.findOne('.zone-shape');
+                const pts = polygon ? polygon.points() : (obj.points || []);
+                const siteArea = calculatePolygonArea(pts);
+                const bcr = obj.bcr !== undefined ? obj.bcr : 0.6;
+                const far = obj.far !== undefined ? obj.far : 2.0;
+                const gfa = siteArea * far;
+                const footprint = siteArea * bcr;
+                const floors = Math.max(1, Math.ceil(far / bcr));
+                const { pop: autoPop, emp: autoEmp } = estimateSocioEconomic(obj.zoneType, gfa);
+                const isAuto = obj.autoCalculateTraffic !== false;
+                const effPop = (!isAuto && obj.customPop !== null && obj.customPop !== undefined && !isNaN(obj.customPop)) ? obj.customPop : autoPop;
+                const effEmp = (!isAuto && obj.customEmp !== null && obj.customEmp !== undefined && !isNaN(obj.customEmp)) ? obj.customEmp : autoEmp;
+                const trips = estimatePeakTrips(obj.zoneType, effPop, effEmp, gfa);
+
+                // --- SECTION: GENERAL ---
+                content += `<div class="prop-section-header">${_t('General')}</div>`;
+                content += `<div class="prop-row">
+                            <span class="prop-label">${_t('Name')}</span>
+                            <input type="text" id="prop-zone-name" class="prop-input" value="${obj.name || ''}">
+                        </div>`;
+                content += `<div class="prop-row">
+                            <span class="prop-label">ID</span>
+                            <input type="text" class="prop-input" value="${obj.id}" disabled>
+                        </div>`;
+
+                // --- SECTION: ZONING CLASSIFICATION ---
+                content += `<div class="prop-section-header">${_t('Zoning Classification')}</div>`;
+                content += `<div class="prop-row">
+                            <span class="prop-label">${_t('Zoning Type')}</span>
+                            <select id="prop-zone-type" class="prop-input" style="flex:1.5;">
+                                <option value="R1" ${obj.zoneType === 'R1' ? 'selected' : ''}>${_t('R1 - Low-Density Residential')}</option>
+                                <option value="R2" ${obj.zoneType === 'R2' ? 'selected' : ''}>${_t('R2 - Medium-Density Residential')}</option>
+                                <option value="R3" ${obj.zoneType === 'R3' ? 'selected' : ''}>${_t('R3 - High-Density Residential')}</option>
+                                <option value="C1" ${obj.zoneType === 'C1' ? 'selected' : ''}>${_t('C1 - Neighborhood Commercial')}</option>
+                                <option value="C2" ${obj.zoneType === 'C2' ? 'selected' : ''}>${_t('C2 - Central Business District (CBD)')}</option>
+                                <option value="C3" ${obj.zoneType === 'C3' ? 'selected' : ''}>${_t('C3 - Regional Commercial / Mall')}</option>
+                                <option value="I" ${obj.zoneType === 'I' ? 'selected' : ''}>${_t('I - Industrial / Tech')}</option>
+                                <option value="G1" ${obj.zoneType === 'G1' ? 'selected' : ''}>${_t('G1 - Schools / Institutional')}</option>
+                                <option value="G2" ${obj.zoneType === 'G2' ? 'selected' : ''}>${_t('G2 - Government / Hospital')}</option>
+                                <option value="P" ${obj.zoneType === 'P' ? 'selected' : ''}>${_t('P - Park / Green Space')}</option>
+                            </select>
+                        </div>`;
+
+                const curCfg = ZONE_CONFIGS[obj.zoneType] || ZONE_CONFIGS['R1'];
+                content += `<div class="prop-hint" style="margin-top: 4px; margin-bottom: 8px;">
+                            <i class="fa-solid fa-circle-info"></i> ${curCfg.desc || ''}
+                        </div>`;
+
+                // --- SECTION: REGULATIONS (BCR & FAR) ---
+                content += `<div class="prop-section-header">${_t('Regulations')}</div>`;
+                content += `<div class="prop-row">
+                            <span class="prop-label">${_t('Building Coverage Ratio (BCR)')}</span>
+                            <div style="display:flex; align-items:center; gap:6px; flex:1.2;">
+                                <input type="range" id="prop-zone-bcr-slider" min="5" max="100" step="1" value="${Math.round(bcr * 100)}" style="flex:1; cursor:pointer;">
+                                <input type="number" id="prop-zone-bcr" class="prop-input" min="5" max="100" step="1" value="${Math.round(bcr * 100)}" style="width:50px; text-align:right;">
+                                <span style="font-size:0.8rem; color:#6b7280;">%</span>
+                            </div>
+                        </div>`;
+
+                content += `<div class="prop-row">
+                            <span class="prop-label">${_t('Floor Area Ratio (FAR)')}</span>
+                            <div style="display:flex; align-items:center; gap:6px; flex:1.2;">
+                                <input type="range" id="prop-zone-far-slider" min="10" max="2500" step="5" value="${Math.round(far * 100)}" style="flex:1; cursor:pointer;">
+                                <input type="number" id="prop-zone-far" class="prop-input" min="10" max="2500" step="5" value="${Math.round(far * 100)}" style="width:55px; text-align:right;">
+                                <span style="font-size:0.8rem; color:#6b7280;">%</span>
+                            </div>
+                        </div>`;
+
+                // --- SECTION: GEOMETRY & MASSING INDICATORS ---
+                content += `<div class="prop-section-header">${_t('Site Area')} & ${_t('Gross Floor Area (GFA)')}</div>`;
+                content += `<div class="prop-row">
+                            <span class="prop-label">${_t('Site Area')}</span>
+                            <span id="prop-zone-site-area" style="font-weight:600; color:#1f2937;">${siteArea.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} m²</span>
+                        </div>`;
+                content += `<div class="prop-row">
+                            <span class="prop-label">${_t('Footprint Area')}</span>
+                            <span id="prop-zone-footprint" style="font-weight:600; color:#1f2937;">${footprint.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} m²</span>
+                        </div>`;
+                content += `<div class="prop-row">
+                            <span class="prop-label">${_t('Gross Floor Area (GFA)')}</span>
+                            <span id="prop-zone-gfa" style="font-weight:600; color:#2563eb;">${gfa.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} m²</span>
+                        </div>`;
+                content += `<div class="prop-row">
+                            <span class="prop-label">${_t('Equivalent Floors')}</span>
+                            <span id="prop-zone-floors" style="font-weight:bold; color:#d97706;">${floors} F</span>
+                        </div>`;
+
+                // --- SECTION: DEMANDS ESTIMATION ---
+                content += `<div class="prop-section-header">${_t('Demands Estimation')}</div>`;
+                content += `<div class="prop-row">
+                            <label style="display:flex; align-items:center; gap:8px; cursor:pointer; width:100%;">
+                                <input type="checkbox" id="prop-zone-autocalc" ${isAuto ? 'checked' : ''}>
+                                <span class="prop-label" style="flex:1;">${_t('Auto Calculate Demands')}</span>
+                            </label>
+                        </div>`;
+
+                content += `<div class="prop-row">
+                            <span class="prop-label">${_t('Estimated Population')}</span>
+                            <input type="number" id="prop-zone-pop" class="prop-input" value="${effPop}" min="0" ${isAuto ? 'disabled' : ''}>
+                        </div>`;
+
+                content += `<div class="prop-row">
+                            <span class="prop-label">${_t('Estimated Employment')}</span>
+                            <input type="number" id="prop-zone-emp" class="prop-input" value="${effEmp}" min="0" ${isAuto ? 'disabled' : ''}>
+                        </div>`;
+
+                content += `<div class="prop-row">
+                            <span class="prop-label" style="font-size:0.75rem;">${_t('AM Peak Trips')}</span>
+                            <span id="prop-zone-trips-am" style="font-size:0.8rem; font-weight:600; color:#059669;">P: ${trips.amP.toLocaleString()} / A: ${trips.amA.toLocaleString()} trips/h</span>
+                        </div>`;
+
+                content += `<div class="prop-row">
+                            <span class="prop-label" style="font-size:0.75rem;">${_t('PM Peak Trips')}</span>
+                            <span id="prop-zone-trips-pm" style="font-size:0.8rem; font-weight:600; color:#dc2626;">P: ${trips.pmP.toLocaleString()} / A: ${trips.pmA.toLocaleString()} trips/h</span>
+                        </div>`;
+
+                const offP = trips.offP !== undefined ? trips.offP : 0;
+                const offA = trips.offA !== undefined ? trips.offA : 0;
+                content += `<div class="prop-row">
+                            <span class="prop-label" style="font-size:0.75rem;">Off-Peak Trips</span>
+                            <span id="prop-zone-trips-off" style="font-size:0.8rem; font-weight:600; color:#6b7280;">P: ${offP.toLocaleString()} / A: ${offA.toLocaleString()} trips/h</span>
+                        </div>`;
+
+                // --- SECTION: CENTROID CONNECTOR ---
+                content += `<div class="prop-section-header">${_t('Centroid Connector')}</div>`;
+                const conn = (obj.accessNodes && obj.accessNodes[0]) || null;
+                const targetLink = conn ? network.links[conn.linkId] : null;
+                if (conn && targetLink) {
+                    const totalLen = getPolylineLength(targetLink.waypoints);
+                    const distOnLink = (conn.offsetRatio || 0) * totalLen;
+                    content += `<div class="prop-status-indicator success" style="margin-bottom:6px;">
+                                <i class="fa-solid fa-link"></i>
+                                <div>
+                                    <div style="font-weight:600;">${_t('Linked')}: ${targetLink.name || targetLink.id}</div>
+                                    <div style="font-size:0.75rem; opacity:0.85;">Offset: ${((conn.offsetRatio || 0) * 100).toFixed(1)}% (${distOnLink.toFixed(1)}m / ${totalLen.toFixed(1)}m)</div>
+                                </div>
+                            </div>`;
+                } else {
+                    content += `<div class="prop-status-indicator error" style="margin-bottom:6px;">
+                                <i class="fa-solid fa-link-slash"></i>
+                                <div>
+                                    <div style="font-weight:600;">${_t('Not Linked')}</div>
+                                    <div style="font-size:0.75rem; opacity:0.85;">No nearby road link found within 300m.</div>
+                                </div>
+                            </div>`;
+                }
+                content += `<div class="prop-row" style="margin-top:4px; margin-bottom:8px;">
+                            <button id="btn-zone-reproject-conn" class="tool-btn" style="width:100%; justify-content:center; gap:6px;">
+                                <i class="fa-solid fa-arrows-rotate"></i> ${_t('Re-project Connector')}
+                            </button>
+                        </div>`;
+
+                // --- SECTION: ACTIONS ---
+                content += `<div class="prop-section-header">Actions</div>`;
+                content += `<div style="display:flex; flex-direction:column; gap:8px;">
+                                <button id="btn-zone-reset-defaults" class="tool-btn" style="width:100%; justify-content:center;">
+                                    <i class="fa-solid fa-rotate-left"></i> ${_t('Reset to Defaults')}
+                                </button>
+                                <button id="btn-delete-zone" class="btn-danger-outline" style="width:100%; justify-content:center;">
+                                    <i class="fa-solid fa-trash-can"></i> ${_t('Delete Zone')}
+                                </button>
+                            </div>`;
+                break;
+            }
 
             case 'ParkingGate':
                 // --- SECTION: STATUS ---
@@ -9952,6 +11318,161 @@ document.addEventListener('DOMContentLoaded', () => {
                 deselectAll();
                 layer.batchDraw();
             });
+        }
+
+        // --- LAND USE ZONE ---
+        if (obj.type === 'Zone') {
+            const nameInput = document.getElementById('prop-zone-name');
+            const typeSelect = document.getElementById('prop-zone-type');
+            const bcrSlider = document.getElementById('prop-zone-bcr-slider');
+            const bcrInput = document.getElementById('prop-zone-bcr');
+            const farSlider = document.getElementById('prop-zone-far-slider');
+            const farInput = document.getElementById('prop-zone-far');
+            const autoCalcCheck = document.getElementById('prop-zone-autocalc');
+            const popInput = document.getElementById('prop-zone-pop');
+            const empInput = document.getElementById('prop-zone-emp');
+            const resetBtn = document.getElementById('btn-zone-reset-defaults');
+            const delBtn = document.getElementById('btn-delete-zone');
+
+            if (nameInput) {
+                nameInput.addEventListener('input', (e) => {
+                    obj.name = e.target.value;
+                    updateZoneVisuals(obj, false);
+                });
+                nameInput.addEventListener('change', () => {
+                    saveState();
+                });
+            }
+
+            if (typeSelect) {
+                typeSelect.addEventListener('change', (e) => {
+                    const newType = e.target.value;
+                    obj.zoneType = newType;
+                    const cfg = ZONE_CONFIGS[newType] || ZONE_CONFIGS['R1'];
+                    obj.bcr = cfg.bcr;
+                    obj.far = cfg.far;
+                    obj.customPop = null;
+                    obj.customEmp = null;
+                    updateZoneVisuals(obj, false);
+                    updatePropertiesPanel(obj);
+                    saveState();
+                });
+            }
+
+            // Sync BCR slider & input
+            const updateBcr = (newVal) => {
+                const bcrVal = Math.max(5, Math.min(100, newVal));
+                obj.bcr = bcrVal / 100;
+                if (bcrSlider) bcrSlider.value = bcrVal;
+                if (bcrInput) bcrInput.value = bcrVal;
+                updateZoneVisuals(obj, false);
+                updatePropertiesPanelDynamicValues(obj);
+            };
+
+            if (bcrSlider) {
+                bcrSlider.addEventListener('input', (e) => updateBcr(parseInt(e.target.value, 10)));
+                bcrSlider.addEventListener('change', () => saveState());
+            }
+            if (bcrInput) {
+                bcrInput.addEventListener('change', (e) => {
+                    updateBcr(parseInt(e.target.value, 10) || 50);
+                    saveState();
+                });
+            }
+
+            // Sync FAR slider & input
+            const updateFar = (newVal) => {
+                const farVal = Math.max(10, Math.min(2500, newVal));
+                obj.far = farVal / 100;
+                if (farSlider) farSlider.value = farVal;
+                if (farInput) farInput.value = farVal;
+                updateZoneVisuals(obj, false);
+                updatePropertiesPanelDynamicValues(obj);
+            };
+
+            if (farSlider) {
+                farSlider.addEventListener('input', (e) => updateFar(parseInt(e.target.value, 10)));
+                farSlider.addEventListener('change', () => saveState());
+            }
+            if (farInput) {
+                farInput.addEventListener('change', (e) => {
+                    updateFar(parseInt(e.target.value, 10) || 100);
+                    saveState();
+                });
+            }
+
+            // Auto calculate checkbox
+            if (autoCalcCheck) {
+                autoCalcCheck.addEventListener('change', (e) => {
+                    obj.autoCalculateTraffic = e.target.checked;
+                    if (popInput) popInput.disabled = obj.autoCalculateTraffic;
+                    if (empInput) empInput.disabled = obj.autoCalculateTraffic;
+                    if (obj.autoCalculateTraffic) {
+                        obj.customPop = null;
+                        obj.customEmp = null;
+                    }
+                    updateZoneVisuals(obj, false);
+                    updatePropertiesPanelDynamicValues(obj);
+                    saveState();
+                });
+            }
+
+            // Custom pop / emp
+            if (popInput) {
+                popInput.addEventListener('change', (e) => {
+                    const val = parseInt(e.target.value, 10);
+                    obj.customPop = isNaN(val) ? null : Math.max(0, val);
+                    updateZoneVisuals(obj, false);
+                    updatePropertiesPanelDynamicValues(obj);
+                    saveState();
+                });
+            }
+            if (empInput) {
+                empInput.addEventListener('change', (e) => {
+                    const val = parseInt(e.target.value, 10);
+                    obj.customEmp = isNaN(val) ? null : Math.max(0, val);
+                    updateZoneVisuals(obj, false);
+                    updatePropertiesPanelDynamicValues(obj);
+                    saveState();
+                });
+            }
+
+            // Reset defaults
+            if (resetBtn) {
+                resetBtn.addEventListener('click', () => {
+                    const cfg = ZONE_CONFIGS[obj.zoneType] || ZONE_CONFIGS['R1'];
+                    obj.bcr = cfg.bcr;
+                    obj.far = cfg.far;
+                    obj.customPop = null;
+                    obj.customEmp = null;
+                    obj.autoCalculateTraffic = true;
+                    updateZoneVisuals(obj, false);
+                    updatePropertiesPanel(obj);
+                    saveState();
+                });
+            }
+
+            // Re-project connector
+            const reprojectBtn = document.getElementById('btn-zone-reproject-conn');
+            if (reprojectBtn) {
+                reprojectBtn.addEventListener('click', () => {
+                    autoGenerateCentroidConnectors(obj);
+                    updateZoneVisuals(obj, false);
+                    updatePropertiesPanel(obj);
+                    saveState();
+                });
+            }
+
+            // Delete zone
+            if (delBtn) {
+                delBtn.addEventListener('click', () => {
+                    const zoneId = obj.id;
+                    deselectAll();
+                    deleteZone(zoneId);
+                    layer.batchDraw();
+                    saveState();
+                });
+            }
         }
 
         // --- PARKING GATE ---
@@ -12175,7 +13696,7 @@ document.addEventListener('DOMContentLoaded', () => {
             vehicleProfiles: {},
             trafficLights: {}, measurements: {}, backgrounds: {}, // <--- 替換
             overpasses: {}, pushpins: {}, parkingLots: {}, parkingGates: {},
-            roadSigns: {}, origins: {}, destinations: {}, roadMarkings: {}
+            roadSigns: {}, origins: {}, destinations: {}, roadMarkings: {}, zones: {}
         };
 
         // 【關鍵修正】: 必須更新 window.network，讓外部工具 (SubNetworkTool) 能讀取到新的路網資料
@@ -13321,6 +14842,80 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
 
+        // --- 10. Land Use Zones ---
+        const zonesContainer = xmlDoc.getElementsByTagName("LandUseZones")[0] || xmlDoc.getElementsByTagName("tm:LandUseZones")[0];
+        if (zonesContainer) {
+            getChildrenByLocalName(zonesContainer, "Zone").forEach(zoneEl => {
+                const id = getChildValue(zoneEl, "id");
+                const name = getChildValue(zoneEl, "name");
+                const zoneType = getChildValue(zoneEl, "zoneType") || 'R1';
+
+                let bcr = null, far = null, customPop = null, customEmp = null, autoCalculateTraffic = true;
+                const paramEl = getChildrenByLocalName(zoneEl, "parameters")[0];
+                if (paramEl) {
+                    const bcrStr = getChildValue(paramEl, "bcr");
+                    const farStr = getChildValue(paramEl, "far");
+                    const popStr = getChildValue(paramEl, "customPop");
+                    const empStr = getChildValue(paramEl, "customEmp");
+                    const autoStr = getChildValue(paramEl, "autoCalculateTraffic");
+                    if (bcrStr !== null && bcrStr !== '') bcr = parseFloat(bcrStr);
+                    if (farStr !== null && farStr !== '') far = parseFloat(farStr);
+                    if (popStr !== null && popStr !== '' && popStr !== 'null') customPop = parseFloat(popStr);
+                    if (empStr !== null && empStr !== '' && empStr !== 'null') customEmp = parseFloat(empStr);
+                    if (autoStr !== null && autoStr !== '') autoCalculateTraffic = (autoStr === 'true');
+                }
+
+                const points = [];
+                const boundEl = getChildrenByLocalName(zoneEl, "Boundary")[0];
+                if (boundEl) {
+                    getChildrenByLocalName(boundEl, "Point").forEach(pEl => {
+                        points.push(parseFloat(getChildValue(pEl, "x")));
+                        points.push(parseFloat(getChildValue(pEl, "y")) * C_SYSTEM_Y_INVERT);
+                    });
+                }
+
+                if (points.length >= 6) {
+                    const newZone = createZone(points, false, id);
+                    if (newZone) {
+                        newZone.name = (window.importPrefix || "") + (name || newZone.name);
+                        newZone.zoneType = zoneType;
+                        if (bcr !== null && !isNaN(bcr)) newZone.bcr = bcr;
+                        if (far !== null && !isNaN(far)) newZone.far = far;
+                        newZone.customPop = customPop;
+                        newZone.customEmp = customEmp;
+                        newZone.autoCalculateTraffic = autoCalculateTraffic;
+                        syncIdCounter(newZone.id);
+
+                        // Connectors (if present)
+                        const connContainer = getChildrenByLocalName(zoneEl, "Connectors")[0];
+                        if (connContainer) {
+                            getChildrenByLocalName(connContainer, "Connector").forEach(cEl => {
+                                const cId = getChildValue(cEl, "id");
+                                const targetLinkId = getChildValue(cEl, "targetLinkId");
+                                const offsetRatio = parseFloat(getChildValue(cEl, "offsetRatio") || 0.5);
+                                const gateType = getChildValue(cEl, "gateType") || 'bidirectional';
+                                const accessX = parseFloat(getChildValue(cEl, "accessX") || 0);
+                                const accessY = parseFloat(getChildValue(cEl, "accessY") || 0) * C_SYSTEM_Y_INVERT;
+                                newZone.accessNodes.push({
+                                    id: cId,
+                                    linkId: targetLinkId,
+                                    offsetRatio,
+                                    gateType,
+                                    accessPoint: { x: accessX, y: accessY }
+                                });
+                            });
+                        }
+
+                        // ★ [Milestone 3] 若 XML 未包含 Connectors，自動投影最近道路建立聯絡道
+                        if (!newZone.accessNodes || newZone.accessNodes.length === 0) {
+                            autoGenerateCentroidConnectors(newZone);
+                        }
+                        updateZoneVisuals(newZone, false);
+                    }
+                }
+            });
+        }
+
         layer.batchDraw();
         updateStatusBar();
         setTool('select');
@@ -14181,6 +15776,56 @@ document.addEventListener('DOMContentLoaded', () => {
             xml += '  </tm:UnlinkedParkingGates>\n';
         }
 
+        // --- 11. Land Use Zones ---
+        if (network.zones && Object.keys(network.zones).length > 0) {
+            xml += '  <tm:LandUseZones>\n';
+            Object.values(network.zones).forEach(zone => {
+                xml += '    <tm:Zone>\n';
+                xml += `      <tm:id>${zone.id}</tm:id>\n`;
+                xml += `      <tm:name>${zone.name || zone.id}</tm:name>\n`;
+                xml += `      <tm:zoneType>${zone.zoneType || 'R1'}</tm:zoneType>\n`;
+                xml += '      <tm:parameters>\n';
+                xml += `        <tm:bcr>${(zone.bcr !== undefined ? zone.bcr : 0.6).toFixed(4)}</tm:bcr>\n`;
+                xml += `        <tm:far>${(zone.far !== undefined ? zone.far : 2.0).toFixed(4)}</tm:far>\n`;
+                xml += `        <tm:customPop>${zone.customPop !== null && zone.customPop !== undefined ? zone.customPop : ''}</tm:customPop>\n`;
+                xml += `        <tm:customEmp>${zone.customEmp !== null && zone.customEmp !== undefined ? zone.customEmp : ''}</tm:customEmp>\n`;
+                xml += `        <tm:autoCalculateTraffic>${zone.autoCalculateTraffic !== false}</tm:autoCalculateTraffic>\n`;
+                xml += '      </tm:parameters>\n';
+                xml += '      <tm:Boundary>\n';
+                const polygon = zone.konvaGroup.findOne('.zone-shape');
+                if (polygon) {
+                    const flatPoints = polygon.points();
+                    for (let i = 0; i < flatPoints.length; i += 2) {
+                        const lx = flatPoints[i];
+                        const ly = flatPoints[i + 1];
+                        const absX = zone.konvaGroup.x() + lx * zone.konvaGroup.scaleX();
+                        const absY = zone.konvaGroup.y() + ly * zone.konvaGroup.scaleY();
+                        xml += `        <tm:Point><tm:x>${absX.toFixed(4)}</tm:x><tm:y>${(absY * C_SYSTEM_Y_INVERT).toFixed(4)}</tm:y></tm:Point>\n`;
+                    }
+                }
+                xml += '      </tm:Boundary>\n';
+                if (zone.accessNodes && zone.accessNodes.length > 0) {
+                    xml += '      <tm:Connectors>\n';
+                    zone.accessNodes.forEach(conn => {
+                        xml += '        <tm:Connector>\n';
+                        xml += `          <tm:id>${conn.id}</tm:id>\n`;
+                        const mappedTarget = (typeof linkIdMap !== 'undefined' && linkIdMap.get(conn.linkId) !== undefined) ? linkIdMap.get(conn.linkId) : conn.linkId;
+                        xml += `          <tm:targetLinkId>${mappedTarget}</tm:targetLinkId>\n`;
+                        xml += `          <tm:offsetRatio>${(conn.offsetRatio || 0.5).toFixed(4)}</tm:offsetRatio>\n`;
+                        xml += `          <tm:gateType>${conn.gateType || 'bidirectional'}</tm:gateType>\n`;
+                        const ax = conn.accessPoint ? conn.accessPoint.x : 0;
+                        const ay = conn.accessPoint ? conn.accessPoint.y * C_SYSTEM_Y_INVERT : 0;
+                        xml += `          <tm:accessX>${ax.toFixed(4)}</tm:accessX>\n`;
+                        xml += `          <tm:accessY>${ay.toFixed(4)}</tm:accessY>\n`;
+                        xml += '        </tm:Connector>\n';
+                    });
+                    xml += '      </tm:Connectors>\n';
+                }
+                xml += '    </tm:Zone>\n';
+            });
+            xml += '  </tm:LandUseZones>\n';
+        }
+
         xml += '</tm:TrafficModel>';
 
         return xml; // <--- 修改這裡：直接回傳字串
@@ -14189,6 +15834,11 @@ document.addEventListener('DOMContentLoaded', () => {
     // 2. 覆蓋舊的 exportXML 函數 (用於按鈕點擊)
     function exportXML() {
         const xml = serializeNetworkToXML();
+        try {
+            localStorage.setItem('simTrafficFlow_exportedNetwork', xml);
+        } catch (e) {
+            console.warn("Could not save network to localStorage:", e);
+        }
         const blob = new Blob([xml], { type: 'application/xml' });
         const link = document.createElement('a');
         link.href = URL.createObjectURL(blob);
@@ -15118,6 +16768,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const newNode = createNode(cx, cy);
         const linksToRemove = [];
         const linksToAdd = [];
+        const linkReplacements = {}; // 記錄母路段與切割後子路段的對應關係
 
         Object.values(network.links).forEach(link => {
             const intersections = [];
@@ -15157,28 +16808,166 @@ document.addEventListener('DOMContentLoaded', () => {
             intersections.sort((a, b) => (a.segIndex - b.segIndex) || (a.dist - b.dist));
 
             if (intersections.length === 0) {
-                if (startInside && endInside) linksToRemove.push(link.id);
+                if (startInside && endInside) {
+                    linksToRemove.push(link.id);
+                    linkReplacements[link.id] = { subLinkIn: null, subLinkOut: null };
+                }
             } else {
                 if (!startInside && !endInside && intersections.length >= 2) {
                     const entry = intersections[0];
                     const exit = intersections[intersections.length - 1];
                     const p1 = [...link.waypoints.slice(0, entry.segIndex + 1), entry.point];
-                    linksToAdd.push(createSubLink(link, p1, link.startNodeId, newNode.id, "_In"));
+                    const subLinkIn = createSubLink(link, p1, link.startNodeId, newNode.id, "_In");
                     const p2 = [exit.point, ...link.waypoints.slice(exit.segIndex + 1)];
-                    linksToAdd.push(createSubLink(link, p2, newNode.id, link.endNodeId, "_Out"));
+                    const subLinkOut = createSubLink(link, p2, newNode.id, link.endNodeId, "_Out");
+                    linksToAdd.push(subLinkIn, subLinkOut);
                     linksToRemove.push(link.id);
+                    linkReplacements[link.id] = { subLinkIn, subLinkOut };
                 }
                 else if (!startInside && endInside) {
                     const entry = intersections[0];
                     const p = [...link.waypoints.slice(0, entry.segIndex + 1), entry.point];
-                    linksToAdd.push(createSubLink(link, p, link.startNodeId, newNode.id, "_In"));
+                    const subLinkIn = createSubLink(link, p, link.startNodeId, newNode.id, "_In");
+                    linksToAdd.push(subLinkIn);
                     linksToRemove.push(link.id);
+                    linkReplacements[link.id] = { subLinkIn, subLinkOut: null };
                 }
                 else if (startInside && !endInside) {
                     const exit = intersections[intersections.length - 1];
                     const p = [exit.point, ...link.waypoints.slice(exit.segIndex + 1)];
-                    linksToAdd.push(createSubLink(link, p, newNode.id, link.endNodeId, "_Out"));
+                    const subLinkOut = createSubLink(link, p, newNode.id, link.endNodeId, "_Out");
+                    linksToAdd.push(subLinkOut);
                     linksToRemove.push(link.id);
+                    linkReplacements[link.id] = { subLinkIn: null, subLinkOut };
+                }
+            }
+        });
+
+        // 收集受影響的既有外部節點 (以便稍後重新更新幾何與視覺)
+        const affectedNodeIds = new Set();
+
+        // 轉移連線、視覺群組、轉向比例與附屬資產至分割後的新子路段
+        Object.entries(linkReplacements).forEach(([oldLinkId, { subLinkIn, subLinkOut }]) => {
+            const oldLink = network.links[oldLinkId];
+            if (!oldLink) return;
+
+            if (subLinkIn && oldLink.startNodeId) {
+                affectedNodeIds.add(oldLink.startNodeId);
+            }
+            if (subLinkOut && oldLink.endNodeId) {
+                affectedNodeIds.add(oldLink.endNodeId);
+            }
+
+            // 1. 轉移單車道連線 (Connections)
+            Object.values(network.connections).forEach(conn => {
+                // 原本流入 oldLink 的連線 (在 oldLink.startNode 處)，轉接至 subLinkIn
+                if (subLinkIn && conn.destLinkId === oldLinkId) {
+                    conn.destLinkId = subLinkIn.id;
+                }
+                // 原本從 oldLink 流出的連線 (在 oldLink.endNode 處)，轉接至 subLinkOut
+                if (subLinkOut && conn.sourceLinkId === oldLinkId) {
+                    conn.sourceLinkId = subLinkOut.id;
+                }
+            });
+
+            // 2. 轉移群組視覺連線 (Group Connection Visuals)
+            layer.find('.group-connection-visual').forEach(groupVisual => {
+                const meta = groupVisual.getAttr('meta');
+                if (!meta) return;
+
+                let updated = false;
+                if (subLinkIn && meta.destLinkId === oldLinkId) {
+                    meta.destLinkId = subLinkIn.id;
+                    updated = true;
+                }
+                if (subLinkOut && meta.sourceLinkId === oldLinkId) {
+                    meta.sourceLinkId = subLinkOut.id;
+                    updated = true;
+                }
+                if (updated) {
+                    groupVisual.setAttr('meta', meta);
+                }
+            });
+
+            // 3. 轉移轉向比例 (Turning Ratios)
+            if (subLinkIn && oldLink.startNodeId && network.nodes[oldLink.startNodeId]) {
+                const sNode = network.nodes[oldLink.startNodeId];
+                if (sNode.turningRatios) {
+                    Object.keys(sNode.turningRatios).forEach(fromId => {
+                        if (sNode.turningRatios[fromId][oldLinkId] !== undefined) {
+                            sNode.turningRatios[fromId][subLinkIn.id] = sNode.turningRatios[fromId][oldLinkId];
+                            delete sNode.turningRatios[fromId][oldLinkId];
+                        }
+                    });
+                }
+            }
+            if (subLinkOut && oldLink.endNodeId && network.nodes[oldLink.endNodeId]) {
+                const eNode = network.nodes[oldLink.endNodeId];
+                if (eNode.turningRatios && eNode.turningRatios[oldLinkId] !== undefined) {
+                    eNode.turningRatios[subLinkOut.id] = eNode.turningRatios[oldLinkId];
+                    delete eNode.turningRatios[oldLinkId];
+                }
+            }
+
+            // 4. 轉移路段上的附屬資產 (Detectors, Road Signs, Origins, Destinations)
+            const origLen = getPolylineLength(oldLink.waypoints);
+            const inLen = subLinkIn ? getPolylineLength(subLinkIn.waypoints) : 0;
+            const outLen = subLinkOut ? getPolylineLength(subLinkOut.waypoints) : 0;
+
+            Object.values(network.detectors).forEach(det => {
+                if (det.linkId === oldLinkId) {
+                    if (subLinkIn && det.position <= inLen) {
+                        det.linkId = subLinkIn.id;
+                    } else if (subLinkOut && det.position >= origLen - outLen) {
+                        det.linkId = subLinkOut.id;
+                        det.position = Math.max(0, det.position - (origLen - outLen));
+                    }
+                }
+            });
+
+            Object.values(network.roadSigns).forEach(sign => {
+                if (sign.linkId === oldLinkId) {
+                    if (subLinkIn && sign.position <= inLen) {
+                        sign.linkId = subLinkIn.id;
+                    } else if (subLinkOut && sign.position >= origLen - outLen) {
+                        sign.linkId = subLinkOut.id;
+                        sign.position = Math.max(0, sign.position - (origLen - outLen));
+                    }
+                }
+            });
+
+            Object.values(network.origins).forEach(o => {
+                if (o.linkId === oldLinkId) {
+                    if (subLinkIn && o.position <= inLen) {
+                        o.linkId = subLinkIn.id;
+                    } else if (subLinkOut && o.position >= origLen - outLen) {
+                        o.linkId = subLinkOut.id;
+                        o.position = Math.max(0, o.position - (origLen - outLen));
+                    }
+                }
+            });
+
+            Object.values(network.destinations).forEach(d => {
+                if (d.linkId === oldLinkId) {
+                    if (subLinkIn && d.position <= inLen) {
+                        d.linkId = subLinkIn.id;
+                    } else if (subLinkOut && d.position >= origLen - outLen) {
+                        d.linkId = subLinkOut.id;
+                        d.position = Math.max(0, d.position - (origLen - outLen));
+                    }
+                }
+            });
+
+            // 5. 雙向配對資訊 (pairInfo) 轉移
+            if (oldLink.pairInfo && oldLink.pairInfo.pairId) {
+                const pairRepl = linkReplacements[oldLink.pairInfo.pairId];
+                if (pairRepl) {
+                    if (subLinkIn && pairRepl.subLinkOut) {
+                        subLinkIn.pairInfo = { pairId: pairRepl.subLinkOut.id, type: oldLink.pairInfo.type, medianWidth: oldLink.pairInfo.medianWidth };
+                    }
+                    if (subLinkOut && pairRepl.subLinkIn) {
+                        subLinkOut.pairInfo = { pairId: pairRepl.subLinkIn.id, type: oldLink.pairInfo.type, medianWidth: oldLink.pairInfo.medianWidth };
+                    }
                 }
             }
         });
@@ -15198,6 +16987,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
             layer.add(link.konvaGroup);
             drawLink(link);
+        });
+
+        // 更新新路段上繼承的連線端點與資產視覺
+        linksToAdd.forEach(link => {
+            updateConnectionEndpoints(link.id);
+            updateAllDetectorsOnLink(link.id);
+            updateFlowPointsOnLink(link.id);
+            updateRoadSignsOnLink(link.id);
+        });
+
+        // 重新計算並繪製受影響既有節點的連線幾何與視覺
+        affectedNodeIds.forEach(nodeId => {
+            if (nodeId && nodeId !== newNode.id) {
+                redrawNodeConnections(nodeId);
+            }
         });
 
         // --- 這裡呼叫修正後的函數 ---
@@ -15781,4 +17585,29 @@ document.addEventListener('DOMContentLoaded', () => {
             return null;
         }
     };
+
+    // Expose editor helpers on window for automation & testing
+    window.setTool = setTool;
+    window.createZone = createZone;
+    window.deleteZone = deleteZone;
+    window.updateZoneVisuals = updateZoneVisuals;
+    window.calculatePolygonArea = calculatePolygonArea;
+    window.calculateCentroid = calculateCentroid;
+    window.autoGenerateCentroidConnectors = autoGenerateCentroidConnectors;
+    window.updateZoneConnectorsVisual = updateZoneConnectorsVisual;
+    window.serializeNetworkToXML = serializeNetworkToXML;
+    window.createAndLoadNetworkFromXML = createAndLoadNetworkFromXML;
+    window.selectObject = selectObject;
+    window.deselectAll = deselectAll;
+    window.updatePropertiesPanel = updatePropertiesPanel;
+    Object.defineProperty(window, 'activeTool', {
+        get: () => activeTool,
+        set: (val) => setTool(val),
+        configurable: true
+    });
+    Object.defineProperty(window, 'selectedObject', {
+        get: () => selectedObject,
+        set: (val) => selectObject(val),
+        configurable: true
+    });
 });
