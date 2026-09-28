@@ -12,13 +12,14 @@
         rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 
-    <link rel="stylesheet" href="style01.css">
+    <link rel="stylesheet" href="style01.css?v=20260926_3">
 
     <!-- 函式庫 -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://unpkg.com/three@0.147.0/build/three.min.js"></script>
     <script src="https://unpkg.com/three@0.147.0/examples/js/loaders/GLTFLoader.js"></script>
     <script src="https://unpkg.com/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://unpkg.com/three@0.147.0/examples/js/utils/BufferGeometryUtils.js"></script>
     <script src="https://unpkg.com/three@0.147.0/examples/js/shaders/CopyShader.js"></script>
     <script src="https://unpkg.com/three@0.147.0/examples/js/shaders/LuminosityHighPassShader.js"></script>
     <script src="https://unpkg.com/three@0.147.0/examples/js/shaders/VignetteShader.js"></script>
@@ -56,12 +57,19 @@
                 </label>
 
                 <!-- ★★★ 新增：數位孿生選項 ★★★ -->
-                <label class="mini-switch" title="與真實時間同步的數位孿生模擬"
-                    style="background: rgba(0,0,0,0.2); padding: 5px 10px; border-radius: 4px; margin-left: 10px;">
+                <label class="mini-switch digital-twin-pill" title="與真實時間同步的數位孿生模擬">
                     <input type="checkbox" id="digitalTwinToggle">
-                    <span class="switch-label" style="color: #06b6d4; font-weight: bold;"><i
-                            class="fa-solid fa-clock"></i> 數位孿生</span>
+                    <span class="switch-label"><i class="fa-solid fa-clock"></i> 數位孿生</span>
                 </label>
+            </div>
+
+            <div class="separator"></div>
+
+            <!-- ★★★ 多執行緒 Web Worker 狀態指示器 (Architecture A) ★★★ -->
+            <div id="workerStatusBadge" class="worker-status-badge" title="架構 A：模擬核心運行於專屬獨立背景執行緒 (Web Worker)，渲染恆定 60 FPS">
+                <span class="status-dot"></span>
+                <i class="fa-solid fa-microchip"></i>
+                <span id="workerStatusText">多執行緒 (Worker)</span>
             </div>
 
             <div class="separator"></div>
@@ -87,7 +95,7 @@
 
     <!-- 2. 工具列：模擬控制、視角、圖層 -->
     <div class="app-toolbar">
-        <!-- 左：播放與時間 -->
+        <!-- 左側：播放與時間控制 -->
         <div class="toolbar-section playback-controls">
             <button id="startStopButton" class="play-btn" disabled>
                 <i class="fa-solid fa-play"></i>
@@ -95,22 +103,46 @@
             </button>
 
             <div class="slider-wrapper">
-                <i class="fa-solid fa-gauge-high icon-muted"></i>
+                <i class="fa-solid fa-gauge-high icon-muted" title="模擬速度"></i>
                 <input type="range" id="speedSlider" min="1" max="50" value="3">
                 <span id="speedValue" class="value-badge">3x</span>
             </div>
 
-            <div class="time-display">
+            <div class="time-display" title="當前模擬時間">
+                <i class="fa-regular fa-clock clock-icon"></i>
                 <span class="label" data-i18n="simTimeLabel">TIME</span>
                 <span id="simulationTime" class="time-value">0.00</span>
                 <span class="unit">s</span>
             </div>
         </div>
 
-        <!-- 中：視圖切換 (關鍵功能) -->
-        <div class="toolbar-section view-controls">
+        <div class="divider-v"></div>
+
+        <!-- 中間：LUTI 都市規劃與交通指標時段切換 -->
+        <div class="toolbar-section luti-controls">
+            <div class="luti-control-group" id="lutiPeriodContainer" title="LUTI 土地使用旅次時段切換 (Land-Use Trip Generation Period)">
+                <span class="luti-tag">
+                    <i class="fa-solid fa-city"></i> LUTI
+                </span>
+                <select id="lutiPeriodSelector" class="luti-select">
+                    <option value="AM" selected>上午尖峰 (AM)</option>
+                    <option value="OFF">日間離峰 (OFF)</option>
+                    <option value="PM">下午尖峰 (PM)</option>
+                </select>
+                <button type="button" id="lutiHudToggleBtn" class="tool-btn-luti" title="開啟/關閉 都市規劃與交通指標儀表板 (LUTI Analytics HUD)">
+                    <i class="fa-solid fa-chart-line"></i>
+                    <span>都市儀表板</span>
+                </button>
+            </div>
+        </div>
+
+        <div class="divider-v"></div>
+
+        <!-- 右側：視圖切換與圖層工具 -->
+        <div class="toolbar-section view-tools-controls">
+            <!-- 視圖切換 (Segmented Control) -->
             <div id="displayModeToggle" class="segment-control" role="group">
-                <button type="button" id="displayStatsBtn" class="segment-btn is-active" data-mode="stats">
+                <button type="button" id="displayStatsBtn" class="segment-btn is-active" data-mode="stats" title="顯示/隱藏統計面板">
                     <i class="fa-solid fa-chart-pie"></i>
                 </button>
                 <button type="button" id="display2DBtn" class="segment-btn is-active" data-mode="2d">
@@ -128,9 +160,9 @@
                     <i class="fa-solid fa-sync"></i>
                 </label>
             </div>
-        </div>
 
-        <div class="control-group">
+            <div class="divider-v"></div>
+
             <!-- 隱藏原有的下拉選單，保留給後台 JS 與翻譯邏輯使用 -->
             <select id="layerSelector" style="display: none;">
                 <option value="both" data-i18n="layerBoth">建築 + 底圖</option>
@@ -139,21 +171,12 @@
                 <option value="none" data-i18n="layerNone">無背景</option>
             </select>
 
-
-        </div>
-
-        <!-- 1. 圖層 (下拉選單) -->
-        <div class="control-group">
-            <select id="layerSelector" style="display: none;">
-                <option value="both" data-i18n="layerBoth">建築 + 底圖</option>
-                <option value="buildings" data-i18n="layerBuildings">僅建築</option>
-                <option value="basemap" data-i18n="layerBasemap">僅底圖</option>
-                <option value="none" data-i18n="layerNone">無背景</option>
-            </select>
-
+            <!-- 1. 圖層 (下拉選單) -->
             <div class="dropdown-hover" id="layerDropdown">
                 <button type="button" class="dropdown-btn">
-                    <i class="fa-solid fa-layer-group"></i> <span data-i18n="layerLabel">圖層</span>
+                    <i class="fa-solid fa-layer-group"></i>
+                    <span data-i18n="layerLabel">圖層</span>
+                    <i class="fa-solid fa-chevron-down dd-arrow"></i>
                 </button>
                 <div class="dropdown-content">
                     <label class="radio-label">
@@ -174,82 +197,86 @@
                     </label>
                 </div>
             </div>
-        </div>
 
-        <!-- 2. 遊戲 (下拉選單) -->
-        <div class="dropdown-hover" id="viewModeGrid">
-            <button type="button" class="dropdown-btn">
-                <i class="fa-solid fa-gamepad"></i> <span>遊戲</span>
-            </button>
-            <div class="dropdown-content">
-                <label class="mini-switch" title="Flyover Mode">
-                    <input type="checkbox" id="flyoverToggle">
-                    <span class="switch-label" data-i18n="lblFlyover">鳥瞰</span>
-                </label>
-                <label class="mini-switch" title="Drone View">
-                    <input type="checkbox" id="droneToggle">
-                    <span class="switch-label" data-i18n="lblDrone">無人機</span>
-                </label>
-                <label class="mini-switch" title="Drive Mode">
-                    <input type="checkbox" id="driveToggle">
-                    <span class="switch-label">駕駛</span>
-                </label>
-                <label class="mini-switch" title="Police Manual">
-                    <input type="checkbox" id="policeToggle">
-                    <span class="switch-label">員警</span>
-                </label>
-                <label class="mini-switch ai-switch" title="AI Reinforcement Learning">
-                    <input type="checkbox" id="aiToggle">
-                    <span class="switch-label">AI控制</span>
-                </label>
-                <label class="mini-switch" title="Signal Optimization (Webster)">
-                    <input type="checkbox" id="optToggle">
-                    <span class="switch-label">優化</span>
-                </label>
-                <label class="mini-switch" title="Night View (夜景效果)">
-                    <input type="checkbox" id="nightToggle">
-                    <span class="switch-label" data-i18n="lblNight">夜景</span>
-                </label>
+            <!-- 2. 遊戲/功能 (下拉選單) -->
+            <div class="dropdown-hover" id="viewModeGrid">
+                <button type="button" class="dropdown-btn">
+                    <i class="fa-solid fa-gamepad"></i>
+                    <span>功能</span>
+                    <i class="fa-solid fa-chevron-down dd-arrow"></i>
+                </button>
+                <div class="dropdown-content">
+                    <label class="mini-switch" title="Flyover Mode">
+                        <input type="checkbox" id="flyoverToggle">
+                        <span class="switch-label" data-i18n="lblFlyover">鳥瞰</span>
+                    </label>
+                    <label class="mini-switch" title="Drone View">
+                        <input type="checkbox" id="droneToggle">
+                        <span class="switch-label" data-i18n="lblDrone">無人機</span>
+                    </label>
+                    <label class="mini-switch" title="Drive Mode">
+                        <input type="checkbox" id="driveToggle">
+                        <span class="switch-label">駕駛</span>
+                    </label>
+                    <label class="mini-switch" title="Police Manual">
+                        <input type="checkbox" id="policeToggle">
+                        <span class="switch-label">員警</span>
+                    </label>
+                    <label class="mini-switch ai-switch" title="AI Reinforcement Learning">
+                        <input type="checkbox" id="aiToggle">
+                        <span class="switch-label">AI控制</span>
+                    </label>
+                    <label class="mini-switch" title="Signal Optimization (Webster)">
+                        <input type="checkbox" id="optToggle">
+                        <span class="switch-label">優化</span>
+                    </label>
+                    <label class="mini-switch" title="Night View (夜景效果)">
+                        <input type="checkbox" id="nightToggle">
+                        <span class="switch-label" data-i18n="lblNight">夜景</span>
+                    </label>
+                </div>
+            </div>
+
+            <!-- 3. 偵測器 (下拉選單) -->
+            <div class="dropdown-hover" id="detectorDropdown">
+                <button type="button" class="dropdown-btn">
+                    <i class="fa-solid fa-tower-broadcast"></i>
+                    <span data-i18n="lblDetector">偵測器</span>
+                    <i class="fa-solid fa-chevron-down dd-arrow"></i>
+                </button>
+                <div class="dropdown-content">
+                    <label class="mini-switch" title="Point Detectors">
+                        <input type="checkbox" id="showPointMetersToggle" checked>
+                        <span class="switch-label" data-i18n="lblPoint">定點</span>
+                    </label>
+                    <label class="mini-switch" title="Section Detectors">
+                        <input type="checkbox" id="showSectionMetersToggle" checked>
+                        <span class="switch-label" data-i18n="lblSection">區間</span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="divider-v"></div>
+
+            <!-- 4. 路口燈號 (獨立開關按鈕外觀) -->
+            <label class="dropdown-btn toggle-btn" title="切換路口號誌燈顯示" style="user-select: none;">
+                <input type="checkbox" id="showPathsToggle" checked
+                    style="accent-color: var(--primary); margin: 0; cursor: pointer;">
+                <i class="fa-solid fa-traffic-light" style="color: #ef4444; font-size: 0.85rem;"></i>
+                <span data-i18n="lblLights">燈號</span>
+            </label>
+
+            <!-- 5. 數位孿生資料更新頻率選單 (維持原樣預設隱藏) -->
+            <div id="vdUpdateFreqContainer" style="display: none; align-items: center; gap: 6px; margin-left: 6px;">
+                <label style="font-size: 0.75rem; color: #64748b; font-weight: 700; white-space: nowrap;">更新頻率:</label>
+                <select id="vdUpdateFreqSelector" class="dropdown-light" style="font-weight: 600; color: #06b6d4; height: 30px; border-radius: 6px;">
+                    <option value="10">10 分鐘</option>
+                    <option value="15">15 分鐘</option>
+                    <option value="30">30 分鐘</option>
+                    <option value="60">60 分鐘</option>
+                </select>
             </div>
         </div>
-
-        <!-- 3. 偵測器 (下拉選單) -->
-        <div class="dropdown-hover" id="detectorDropdown">
-            <button type="button" class="dropdown-btn">
-                <i class="fa-solid fa-tower-broadcast"></i> <span data-i18n="lblDetector">偵測器</span>
-            </button>
-            <div class="dropdown-content">
-                <label class="mini-switch" title="Point Detectors">
-                    <input type="checkbox" id="showPointMetersToggle" checked>
-                    <span class="switch-label" data-i18n="lblPoint">定點</span>
-                </label>
-                <label class="mini-switch" title="Section Detectors">
-                    <input type="checkbox" id="showSectionMetersToggle" checked>
-                    <span class="switch-label" data-i18n="lblSection">區間</span>
-                </label>
-            </div>
-        </div>
-
-        <div class="divider-v"></div>
-
-        <!-- 4. 路口燈號 (獨立按鈕外觀) -->
-        <label class="dropdown-btn" title="Traffic Lights" style="padding-left: 8px; user-select: none;">
-            <input type="checkbox" id="showPathsToggle"
-                style="accent-color: var(--primary); margin: 0; cursor: pointer;">
-            <span data-i18n="lblLights" style="margin-left: 4px;">燈號</span>
-        </label>
-
-        <!-- ★★★ 數位孿生資料更新頻率選單 (維持原樣預設隱藏) ★★★ -->
-        <div id="vdUpdateFreqContainer" style="display: none; align-items: center; gap: 8px; margin-left: 10px;">
-            <label style="font-size: 0.75rem; color: #64748b; font-weight: bold;">更新頻率:</label>
-            <select id="vdUpdateFreqSelector" class="dropdown-light" style="font-weight: bold; color: #06b6d4;">
-                <option value="10">10 分鐘</option>
-                <option value="15">15 分鐘</option>
-                <option value="30">30 分鐘</option>
-                <option value="60">60 分鐘</option>
-            </select>
-        </div>
-    </div>
     </div>
 
     <!-- 3. 主內容區 -->
@@ -422,6 +449,204 @@
                     </label>
                 </div>
             </div>
+
+            <!-- ★★★ [Milestone 4] 懸浮式都市規劃與交通指標儀表板 (LUTI Analytics HUD) ★★★ -->
+            <div id="luti-hud" class="floating-panel luti-hud-panel" style="display: none;">
+                <div class="luti-hud-header" id="lutiHudHeader">
+                    <div class="luti-hud-title">
+                        <i class="fa-solid fa-city" style="color: #f59e0b;"></i>
+                        <span>LUTI 都市規劃與交通儀表板</span>
+                        <span id="lutiHudPeriodBadge" class="luti-hud-title-badge">AM 尖峰</span>
+                    </div>
+                    <div class="luti-hud-header-actions">
+                        <span id="lutiHudClockBadge" class="luti-clock-badge">08:00</span>
+                        <button id="lutiHudMinimizeBtn" class="hud-icon-btn" title="最小化/展開"><i class="fa-solid fa-minus"></i></button>
+                        <button id="lutiHudCloseBtn" class="hud-icon-btn" title="關閉"><i class="fa-solid fa-xmark"></i></button>
+                    </div>
+                </div>
+
+                <div class="luti-hud-body">
+                    <!-- 1. 時段控制與 24 小時晝夜動態演繹 -->
+                    <div class="luti-section">
+                        <div class="luti-section-hdr">
+                            <span><i class="fa-solid fa-clock-rotate-left"></i> 時段控制與 24H 動態演繹</span>
+                            <span id="lutiDiurnalStatus" style="color: #38bdf8; font-family: monospace;">1.00x Demand</span>
+                        </div>
+                        <div class="luti-periods-grid">
+                            <button type="button" class="luti-period-btn active" data-period="AM" id="btnPeriodAM">
+                                <i class="fa-solid fa-sun" style="color: #f59e0b;"></i>
+                                <span>上午尖峰 (AM)</span>
+                            </button>
+                            <button type="button" class="luti-period-btn" data-period="OFF" id="btnPeriodOFF">
+                                <i class="fa-solid fa-cloud-sun" style="color: #38bdf8;"></i>
+                                <span>日間離峰 (OFF)</span>
+                            </button>
+                            <button type="button" class="luti-period-btn" data-period="PM" id="btnPeriodPM">
+                                <i class="fa-solid fa-mountain-sun" style="color: #ea580c;"></i>
+                                <span>下午尖峰 (PM)</span>
+                            </button>
+                        </div>
+                        <div class="luti-24h-row">
+                            <button type="button" id="luti24hToggleBtn" class="luti-play-btn">
+                                <i class="fa-solid fa-play"></i> <span>24H 演繹</span>
+                            </button>
+                            <input type="range" id="lutiTimeSlider" min="0" max="24" step="0.1" value="8.0" style="flex: 1;" title="拖曳時間滑桿調整 24 小時時段">
+                            <select id="luti24hSpeedSelector" class="dropdown-dark" style="padding: 2px 4px; font-size: 0.72rem; border-radius: 4px; background: #0f172a; color: #38bdf8; border: 1px solid #0284c7; cursor: pointer;">
+                                <option value="1" selected>1x 速</option>
+                                <option value="10">10x 速</option>
+                                <option value="30">30x 速</option>
+                                <option value="60">60x 速</option>
+                            </select>
+                        </div>
+                        <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 6px; padding: 4px 6px; background: rgba(15, 23, 42, 0.6); border-radius: 4px; border: 1px solid rgba(56, 189, 248, 0.2);">
+                            <span style="font-size: 0.72rem; color: #cbd5e1;"><i class="fa-solid fa-gauge-high" style="color: #38bdf8;"></i> 車流生成密度:</span>
+                            <select id="lutiScaleFactorSelector" class="dropdown-dark" style="padding: 2px 6px; font-size: 0.72rem; border-radius: 4px; background: #0f172a; color: #38bdf8; border: 1px solid #0284c7; cursor: pointer;">
+                                <option value="0.05">標準 (5% 抽樣 / 1:20)</option>
+                                <option value="0.15">適中 (15% 抽樣)</option>
+                                <option value="0.30">生動沙盒 (30% 抽樣)</option>
+                                <option value="0.60">密集 (60% 抽樣)</option>
+                                <option value="1.00" selected>全量原始 (100%)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- 2. 土地利用指標 (Land-Use Metrics) -->
+                    <div class="luti-section">
+                        <div class="luti-section-hdr">
+                            <span><i class="fa-solid fa-vector-square"></i> 土地利用規模指標</span>
+                            <span id="lutiTotalZonesCount" style="color: #94a3b8;">0 分區</span>
+                        </div>
+                        <div class="luti-kpi-grid luti-kpi-grid-3">
+                            <div class="luti-kpi-box">
+                                <div class="val" id="lutiMetricSiteArea">--</div>
+                                <div class="lbl">總基地面積 (ha)</div>
+                            </div>
+                            <div class="luti-kpi-box">
+                                <div class="val" id="lutiMetricGFA">--</div>
+                                <div class="lbl">總樓地板 (m²)</div>
+                            </div>
+                            <div class="luti-kpi-box highlight-green">
+                                <div class="val" id="lutiMetricGreen">--%</div>
+                                <div class="lbl">平均綠覆率</div>
+                            </div>
+                        </div>
+                        <div class="luti-kpi-grid" style="margin-top: 6px;">
+                            <div class="luti-kpi-box highlight-amber">
+                                <div class="val" id="lutiMetricPop">--</div>
+                                <div class="lbl">推估居住人口 (人)</div>
+                            </div>
+                            <div class="luti-kpi-box highlight-blue">
+                                <div class="val" id="lutiMetricEmp">--</div>
+                                <div class="lbl">推估就業崗位 (崗)</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 3. 交通運作與服務水準指標 (Traffic Operations & LOS) -->
+                    <div class="luti-section">
+                        <div class="luti-section-hdr">
+                            <span><i class="fa-solid fa-gauge-high"></i> 交通運作與服務水準</span>
+                            <span id="lutiActiveVehiclesCount" style="color: #38bdf8;">0 動態車輛</span>
+                        </div>
+                        <div class="luti-kpi-grid luti-kpi-grid-3">
+                            <div class="luti-kpi-box highlight-orange">
+                                <div class="val" id="lutiMetricTrips">--</div>
+                                <div class="lbl">尖峰旅次 (trips/h)</div>
+                            </div>
+                            <div class="luti-kpi-box">
+                                <div class="val" id="lutiMetricSpeed">--</div>
+                                <div class="lbl">平均車速 (km/h)</div>
+                            </div>
+                            <div class="luti-kpi-box" style="display: flex; flex-direction: column; justify-content: center; align-items: center;">
+                                <span id="lutiMetricLOS" class="los-badge los-a">LOS A</span>
+                                <div class="lbl" style="margin-top: 3px;">服務水準</div>
+                            </div>
+                        </div>
+
+                        <!-- 壅塞瓶頸路段警示 -->
+                        <div id="lutiCongestionWarning" class="luti-alert-box" style="display: none;">
+                            <i class="fa-solid fa-triangle-exclamation"></i>
+                            <span id="lutiCongestionText">路網出現嚴重瓶頸壅塞警示 (LOS E/F)</span>
+                        </div>
+
+                        <!-- 運具分擔率圖表 -->
+                        <div style="font-size: 0.72rem; font-weight: 700; color: #94a3b8; margin-top: 8px;">
+                            多運具分擔率 (Mode Split):
+                        </div>
+                        <div class="luti-chart-container">
+                            <canvas id="lutiModeChart" width="105" height="105"></canvas>
+                            <div class="luti-legend">
+                                <div class="luti-legend-item">
+                                    <span class="luti-legend-dot" style="background: #3b82f6;"></span>
+                                    <span>小客車: <strong id="lutiShareAutoVal">--%</strong></span>
+                                </div>
+                                <div class="luti-legend-item">
+                                    <span class="luti-legend-dot" style="background: #f59e0b;"></span>
+                                    <span>機車: <strong id="lutiShareMotoVal">--%</strong></span>
+                                </div>
+                                <div class="luti-legend-item">
+                                    <span class="luti-legend-dot" style="background: #10b981;"></span>
+                                    <span>短途步行: <strong id="lutiShareWalkVal">--%</strong></span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 4. 分區土地使用快調沙盒 (Interactive Zone Sandbox) -->
+                    <div class="luti-section">
+                        <div class="luti-section-hdr">
+                            <span><i class="fa-solid fa-sliders"></i> 分區土地使用快調沙盒</span>
+                            <span style="color: #f59e0b; font-size: 0.68rem;">即時聯動車流</span>
+                        </div>
+                        <div style="display: flex; gap: 6px; margin-bottom: 6px;">
+                            <select id="lutiZoneSelector" class="dropdown-dark" style="flex: 1; padding: 4px 6px; font-size: 0.74rem; background: #0f172a; color: #f8fafc; border: 1px solid #334155; border-radius: 4px;">
+                                <option value="">(選擇分區)</option>
+                            </select>
+                            <select id="lutiZoneTypeSelect" class="dropdown-dark" style="width: 110px; padding: 4px 6px; font-size: 0.74rem; background: #0f172a; color: #f59e0b; border: 1px solid #d97706; border-radius: 4px;">
+                                <option value="R1">R1 低密住宅</option>
+                                <option value="R2">R2 中密住宅</option>
+                                <option value="R3">R3 高密住宅</option>
+                                <option value="C1">C1 鄰里商業</option>
+                                <option value="C2">C2 核心商務</option>
+                                <option value="C3">C3 綜合商場</option>
+                                <option value="I">I 科技產業</option>
+                                <option value="G1">G1 文教學校</option>
+                                <option value="G2">G2 行政醫療</option>
+                                <option value="P">P 公園綠地</option>
+                            </select>
+                        </div>
+                        <div class="luti-slider-row">
+                            <label>建蔽 BCR</label>
+                            <input type="range" id="lutiBcrSlider" min="10" max="80" step="5" value="50">
+                            <span id="lutiBcrVal">50%</span>
+                        </div>
+                        <div class="luti-slider-row">
+                            <label>容積 FAR</label>
+                            <input type="range" id="lutiFarSlider" min="50" max="1000" step="10" value="400">
+                            <span id="lutiFarVal">400%</span>
+                        </div>
+
+                        <!-- 關鍵驗收情境快速切換按鈕 -->
+                        <div class="luti-quick-buttons">
+                            <button type="button" id="btnQuickSurgeC2" class="btn-scenario surge" title="將住宅區變更為 CBD 核心商貿區 (C2)，測試就業與尖峰旅次暴增引發壅塞警示">
+                                <i class="fa-solid fa-arrow-trend-up" style="color: #ef4444;"></i> 住宅變更為 CBD (C2)
+                            </button>
+                            <button type="button" id="btnQuickQuietR1" class="btn-scenario" title="將分區變更為低密度住宅區 (R1)，測試旅次驟降恢復順暢">
+                                <i class="fa-solid fa-arrow-trend-down" style="color: #10b981;"></i> 商業變更為住宅 (R1)
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="luti-hud-footer">
+                    <button type="button" id="lutiHeatmapToggleBtn" class="btn-hud-tool" title="在路網上以綠黃紅視覺化標示各路段當前服務水準 (LOS)">
+                        <i class="fa-solid fa-fire"></i> <span>壅塞等級 (LOS)</span>
+                    </button>
+                    <button type="button" id="lutiOpenTiaReportBtn" class="btn-hud-tool btn-primary-hud" title="產生並匯出都市土地使用效益與交通衝擊評估報告">
+                        <i class="fa-solid fa-file-invoice"></i> <span>TIA 評估報告</span>
+                    </button>
+                </div>
+            </div>
         </div>
 
         <div id="drive-hud" style="display: none;">
@@ -461,13 +686,43 @@
     <script src="script_digital_twin.js"></script>
     <!-- ★★★ 3D 視覺渲染模組 ★★★ -->
     <script src="script_visual3d.js"></script>
-    <script src="script02.js"></script>
+    <!-- ★★★ 交通影響評估報告 (TIA Report Generator) ★★★ -->
     <script src="script_report.js"></script>
+    <!-- ★★★ 多執行緒微觀交通模擬通訊代理 (Architecture A: Simulation Bridge) ★★★ -->
+    <script src="script_sim_bridge.js"></script>
+    <script src="script02.js"></script>
     <script>
         window.ENABLE_LEFT_TURN_YIELD = true;
         window.MANDATORY_LC_MAX_START_BASE = 1200;
         window.MANDATORY_LC_MAX_START_PER_SHIFT = 400;
         window.MANDATORY_LC_SHORT_LINK_THRESHOLD = 150;
+
+        // Auto-load helper for testing and rapid preview
+        if (new URLSearchParams(window.location.search).has('autoload')) {
+            window.addEventListener('DOMContentLoaded', () => {
+                setTimeout(() => {
+                    const simPath = '/traffic_network_%E5%AE%8C%E6%95%B4%E8%B7%AF%E5%8F%A3.sim';
+                    fetch(simPath)
+                        .then(r => r.text())
+                        .then(xml => {
+                            if (typeof window.loadTrafficModelFromXML === 'function') {
+                                return window.loadTrafficModelFromXML(xml);
+                            }
+                        })
+                        .then(() => {
+                            console.log('[Autoload] Network model loaded successfully via autoload!');
+                            setTimeout(() => {
+                                const btn = document.getElementById('startStopButton');
+                                if (btn && !btn.disabled) {
+                                    btn.click();
+                                    console.log('[Autoload] Simulation started automatically!');
+                                }
+                            }, 600);
+                        })
+                        .catch(err => console.error('[Autoload] Failed to autoload simulation model:', err));
+                }, 400);
+            });
+        }
     </script>
 </body>
 

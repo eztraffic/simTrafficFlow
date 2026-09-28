@@ -50,7 +50,7 @@ document.addEventListener('DOMContentLoaded', () => {
             dragPegmanHint: '拖曳小人至道路以進入街景',
             flyoverLabel: '鳥瞰:', // 新增
             droneLabel: '無人機:',
-            layerLabel: '顯示:',
+            layerLabel: '圖層',
             layerBoth: '建築 + 底圖',
             layerBuildings: '僅建築',
             layerBasemap: '僅底圖',
@@ -107,7 +107,7 @@ document.addEventListener('DOMContentLoaded', () => {
             dragPegmanHint: 'Drag Pegman to road for Street View',
             flyoverLabel: 'Auto Flyover:', // 新增
             droneLabel: 'Drone:',
-            layerLabel: 'Display:',
+            layerLabel: 'Layers',
             layerBoth: 'Builds + Map',
             layerBuildings: 'Buildings Only',
             layerBasemap: 'Basemap Only',
@@ -748,7 +748,49 @@ document.addEventListener('DOMContentLoaded', () => {
     speedSlider.addEventListener('input', (e) => {
         simulationSpeed = parseInt(e.target.value, 10);
         speedValueSpan.textContent = `${simulationSpeed}x`;
+        if (window.simBridge && simulation === simBridge) {
+            simBridge.setSpeed(simulationSpeed);
+        }
     });
+
+    // ★★★ [Architecture A] 多執行緒 Web Worker 狀態切換與提示 ★★★
+    const workerBadge = document.getElementById('workerStatusBadge');
+    const workerText = document.getElementById('workerStatusText');
+    const isFileProtocol = window.location.protocol === 'file:';
+
+    if (workerBadge) {
+        if (isFileProtocol) {
+            if (window.simBridge) simBridge.useMultiThreading = false;
+            workerBadge.style.borderColor = 'rgba(245, 158, 11, 0.4)';
+            workerBadge.style.color = '#f59e0b';
+            workerBadge.style.background = 'rgba(245, 158, 11, 0.15)';
+            if (workerText) workerText.textContent = '單執行緒 (本機 file://)';
+            workerBadge.title = '以 file:// 本機開啟時，瀏覽器安全性限制（CORS）停用 Worker。已自動啟用單執行緒引擎。若需啟用多執行緒，請以本機 HTTP 伺服器開啟 (如 http://localhost:8000)';
+        }
+
+        workerBadge.addEventListener('click', () => {
+            if (window.location.protocol === 'file:') {
+                alert('【瀏覽器安全政策提示 (CORS)】\n\n以 file:// 雙擊開啟 HTML 時，所有現代瀏覽器基於安全性考量，禁止頁面建立 Web Worker 背景執行緒。\n\n如需啟用多執行緒 Web Worker（解耦物理運算與 60 FPS 渲染）：\n請開啟終端機執行本機 HTTP 伺服器：\n  cd "Urban Planning"\n  python3 -m http.server 8000\n並在瀏覽器訪問：http://localhost:8000/simulator/main_01.html\n\n目前系統已自動為您切換至「單執行緒完整引擎」，所有車輛物理、號誌、LUTI 與 3D 渲染皆正常運行！');
+                return;
+            }
+            if (!window.simBridge) return;
+            const newMode = !simBridge.useMultiThreading;
+            simBridge.useMultiThreading = newMode;
+            if (newMode) {
+                workerBadge.style.borderColor = 'rgba(16, 185, 129, 0.4)';
+                workerBadge.style.color = '#10b981';
+                workerBadge.style.background = 'rgba(16, 185, 129, 0.15)';
+                if (workerText) workerText.textContent = '多執行緒 (Worker)';
+                alert('已切換至「多執行緒 Worker 模式」：IDM/MOBIL 物理運算獨立於背景執行緒，3D 渲染維持恆定 60 FPS！\n（若已載入路網，請重新點擊開始模擬以套用）');
+            } else {
+                workerBadge.style.borderColor = 'rgba(245, 158, 11, 0.4)';
+                workerBadge.style.color = '#f59e0b';
+                workerBadge.style.background = 'rgba(245, 158, 11, 0.15)';
+                if (workerText) workerText.textContent = '單執行緒 (Local)';
+                alert('已切換至「單執行緒模式」：物理運算與渲染在同一執行緒執行。');
+            }
+        });
+    }
     showPathsToggle.addEventListener('change', (e) => {
         showTurnPaths = e.target.checked;
         if (isDisplay2D && !isRunning) redraw2D();
@@ -764,6 +806,17 @@ document.addEventListener('DOMContentLoaded', () => {
         if (isDisplay2D && !isRunning) redraw2D();
         if (isDisplay3D) update3DVisibility();
     });
+
+    const lutiSelector = document.getElementById('lutiPeriodSelector');
+    if (lutiSelector) {
+        lutiSelector.addEventListener('change', (e) => {
+            const period = e.target.value;
+            if (simulation && simulation.lutiEngine) {
+                simulation.lutiEngine.setTimePeriod(period);
+                console.log(`[LUTI] Switch time period to ${period}`);
+            }
+        });
+    }
 
     canvas2D.addEventListener('wheel', handleZoom2D);
     canvas2D.addEventListener('mousedown', (e) => {
@@ -2657,6 +2710,113 @@ document.addEventListener('DOMContentLoaded', () => {
             ctx2D.restore();
         }
 
+        // --- Draw Land Use Zones (2D) ---
+        if (netData.zones) {
+            const zoneColorMap = {
+                'R1': 'rgba(255, 215, 0, 0.35)', 'R2': 'rgba(255, 195, 0, 0.38)', 'R3': 'rgba(255, 165, 0, 0.42)',
+                'C1': 'rgba(240, 90, 90, 0.35)', 'C2': 'rgba(235, 55, 55, 0.42)', 'C3': 'rgba(236, 72, 153, 0.38)',
+                'I': 'rgba(168, 85, 247, 0.38)', 'G1': 'rgba(59, 130, 246, 0.38)', 'G2': 'rgba(14, 165, 233, 0.38)',
+                'P': 'rgba(46, 204, 113, 0.40)'
+            };
+            const zoneBorderMap = {
+                'R1': '#d4af37', 'R2': '#cda800', 'R3': '#b87800',
+                'C1': '#d93838', 'C2': '#c0392b', 'C3': '#db2777',
+                'I': '#9333ea', 'G1': '#2563eb', 'G2': '#0284c7',
+                'P': '#27ae60'
+            };
+
+            Object.values(netData.zones).forEach(zone => {
+                if (!zone.boundary || zone.boundary.length < 3) return;
+                ctx2D.save();
+                ctx2D.fillStyle = zoneColorMap[zone.zoneType] || 'rgba(200, 200, 200, 0.35)';
+                ctx2D.strokeStyle = zoneBorderMap[zone.zoneType] || '#999999';
+                ctx2D.lineWidth = 2.0 / scale;
+
+                ctx2D.beginPath();
+                ctx2D.moveTo(zone.boundary[0].x, zone.boundary[0].y);
+                for (let i = 1; i < zone.boundary.length; i++) {
+                    ctx2D.lineTo(zone.boundary[i].x, zone.boundary[i].y);
+                }
+                ctx2D.closePath();
+                ctx2D.fill();
+                ctx2D.stroke();
+
+                // Draw centroid & label
+                let cx = 0, cy = 0;
+                zone.boundary.forEach(p => { cx += p.x; cy += p.y; });
+                cx /= zone.boundary.length; cy /= zone.boundary.length;
+
+                const fontSize = Math.max(10, Math.min(16, 13 / scale));
+                ctx2D.font = `bold ${fontSize}px sans-serif`;
+                ctx2D.fillStyle = '#ffffff';
+                ctx2D.textAlign = 'center';
+                ctx2D.textBaseline = 'middle';
+                ctx2D.shadowColor = 'rgba(0,0,0,0.8)';
+                ctx2D.shadowBlur = 4;
+                ctx2D.fillText(`${zone.name || zone.id} (${zone.zoneType})`, cx, cy - fontSize * 0.6);
+                ctx2D.font = `${fontSize * 0.85}px sans-serif`;
+                const bcrVal = (zone.bcr !== undefined && zone.bcr !== null) ? (zone.bcr * 100).toFixed(0) : '--';
+                const farVal = (zone.far !== undefined && zone.far !== null) ? (zone.far * 100).toFixed(0) : '--';
+                ctx2D.fillText(`BCR ${bcrVal}% | FAR ${farVal}%`, cx, cy + fontSize * 0.6);
+
+                // Draw centroid marker (orange dot)
+                ctx2D.fillStyle = '#f59e0b';
+                ctx2D.beginPath();
+                ctx2D.arc(cx, cy, 4.5 / scale, 0, Math.PI * 2);
+                ctx2D.fill();
+
+                // Draw connectors
+                if (zone.accessNodes) {
+                    zone.accessNodes.forEach(conn => {
+                        const accPt = conn.accessPoint || { x: cx, y: cy };
+                        let roadPt = conn.roadPoint;
+                        if (!roadPt && conn.linkId && netData.links && netData.links[conn.linkId]) {
+                            const lk = netData.links[conn.linkId];
+                            const pts = lk.waypoints || lk.centerline || [];
+                            if (pts.length > 0) {
+                                const ratio = (conn.offsetRatio !== undefined) ? conn.offsetRatio : 0.5;
+                                const idx = Math.min(pts.length - 1, Math.floor(ratio * (pts.length - 1)));
+                                roadPt = pts[idx];
+                            }
+                        }
+
+                        // Centroid -> Access point (dashed orange)
+                        ctx2D.strokeStyle = '#f59e0b';
+                        ctx2D.lineWidth = 1.5 / scale;
+                        ctx2D.setLineDash([4 / scale, 3 / scale]);
+                        ctx2D.beginPath();
+                        ctx2D.moveTo(cx, cy);
+                        ctx2D.lineTo(accPt.x, accPt.y);
+                        ctx2D.stroke();
+
+                        // Access point marker (purple/pink)
+                        ctx2D.fillStyle = '#8b5cf6';
+                        ctx2D.beginPath();
+                        ctx2D.arc(accPt.x, accPt.y, 3 / scale, 0, Math.PI * 2);
+                        ctx2D.fill();
+
+                        // Access point -> Road attachment point (solid orange-red)
+                        if (roadPt) {
+                            ctx2D.strokeStyle = '#ea580c';
+                            ctx2D.lineWidth = 1.5 / scale;
+                            ctx2D.setLineDash([]);
+                            ctx2D.beginPath();
+                            ctx2D.moveTo(accPt.x, accPt.y);
+                            ctx2D.lineTo(roadPt.x, roadPt.y);
+                            ctx2D.stroke();
+
+                            // Road attachment point marker (orange-red)
+                            ctx2D.fillStyle = '#ea580c';
+                            ctx2D.beginPath();
+                            ctx2D.arc(roadPt.x, roadPt.y, 3.5 / scale, 0, Math.PI * 2);
+                            ctx2D.fill();
+                        }
+                    });
+                }
+                ctx2D.restore();
+            });
+        }
+
         // --- Draw Parking Lots (2D) ---
         if (netData.parkingLots) {
             netData.parkingLots.forEach(lot => {
@@ -2815,12 +2975,14 @@ document.addEventListener('DOMContentLoaded', () => {
         // Draw Nodes
         if (netData.nodes) {
             Object.values(netData.nodes).forEach(node => {
-                if (node.polygon) {
+                if (node.polygon && node.polygon.length > 0 && node.polygon[0]) {
                     ctx2D.fillStyle = '#666666';
                     ctx2D.strokeStyle = '#666'; ctx2D.lineWidth = 1 / scale;
                     ctx2D.beginPath();
                     ctx2D.moveTo(node.polygon[0].x, node.polygon[0].y);
-                    for (let i = 1; i < node.polygon.length; i++) ctx2D.lineTo(node.polygon[i].x, node.polygon[i].y);
+                    for (let i = 1; i < node.polygon.length; i++) {
+                        if (node.polygon[i]) ctx2D.lineTo(node.polygon[i].x, node.polygon[i].y);
+                    }
                     ctx2D.closePath(); ctx2D.fill(); ctx2D.stroke();
                 }
             });
@@ -2831,6 +2993,16 @@ document.addEventListener('DOMContentLoaded', () => {
             // Apply Highlight Color if this link is being hovered by Pegman
             if (currentHoveredLink && link.id === currentHoveredLink.id) {
                 ctx2D.fillStyle = '#32CD32'; // Lime Green Highlight
+            } else if (simulation && simulation.lutiEngine && simulation.lutiEngine.showHeatmap && link.currentLOS) {
+                const losColors = {
+                    'A': '#27ae60', // 綠色 (自由流)
+                    'B': '#2980b9', // 藍色 (穩定流)
+                    'C': '#f39c12', // 黃色 (穩定但受限)
+                    'D': '#e67e22', // 橙色 (接近不穩定)
+                    'E': '#e74c3c', // 淺紅 (極度不穩定/容量上限)
+                    'F': '#962d22'  // 深紅 (強制停等/嚴重過飽和)
+                };
+                ctx2D.fillStyle = losColors[link.currentLOS] || '#666666';
             } else {
                 ctx2D.fillStyle = '#666666';
             }
@@ -2911,6 +3083,40 @@ document.addEventListener('DOMContentLoaded', () => {
 
             }
             // =================================================================
+
+            // ★★★ [Milestone 4] 2D 繪製熱區圖壅塞瓶頸路段標籤 (LOS E/F Warning Badge) ★★★
+            if (simulation && simulation.lutiEngine && simulation.lutiEngine.showHeatmap && (link.currentLOS === 'E' || link.currentLOS === 'F')) {
+                let badgePt = null;
+                if (link.geometryType === 'lane-based' && link.strokes && link.strokes.length > 0) {
+                    const midStroke = link.strokes[Math.floor(link.strokes.length / 2)];
+                    if (midStroke && midStroke.points && midStroke.points.length > 0) {
+                        badgePt = midStroke.points[Math.floor(midStroke.points.length / 2)];
+                    }
+                } else if (link.geometry && link.geometry.length > 0 && link.geometry[0].points) {
+                    badgePt = link.geometry[0].points[Math.floor(link.geometry[0].points.length / 2)];
+                } else if (link.waypoints && link.waypoints.length > 0) {
+                    badgePt = link.waypoints[Math.floor(link.waypoints.length / 2)];
+                } else if (link.centerline && link.centerline.length > 0) {
+                    badgePt = link.centerline[Math.floor(link.centerline.length / 2)];
+                }
+                if (badgePt) {
+                    ctx2D.save();
+                    ctx2D.translate(badgePt.x, badgePt.y);
+                    const tagW = 28 / scale;
+                    const tagH = 12 / scale;
+                    ctx2D.fillStyle = link.currentLOS === 'F' ? 'rgba(231, 76, 60, 0.95)' : 'rgba(230, 126, 34, 0.95)';
+                    ctx2D.fillRect(-tagW / 2, -tagH / 2, tagW, tagH);
+                    ctx2D.strokeStyle = '#ffffff';
+                    ctx2D.lineWidth = 1 / scale;
+                    ctx2D.strokeRect(-tagW / 2, -tagH / 2, tagW, tagH);
+                    ctx2D.fillStyle = '#ffffff';
+                    ctx2D.font = `bold ${Math.max(7, 8 / scale)}px sans-serif`;
+                    ctx2D.textAlign = 'center';
+                    ctx2D.textBaseline = 'middle';
+                    ctx2D.fillText(`LOS ${link.currentLOS}`, 0, 0);
+                    ctx2D.restore();
+                }
+            }
 
         });
 
@@ -6625,14 +6831,599 @@ document.addEventListener('DOMContentLoaded', () => {
         };
     }
 
-    // 2. 城市生成主函式 (修正版：包含遊樂園與招牌)
+    // =========================================================================
+    // ★★★ [LUTI Sandbox] Milestone 2: 3D 參數化真實量體長成與幾何演算法 ★★★
+    // =========================================================================
+
+    /**
+     * 高效能 BufferGeometry 合併器 (含自我實現 Fallback，保證離線無依賴 60 FPS)
+     */
+    function mergeBufferGeometries(geometries) {
+        if (!geometries || geometries.length === 0) return null;
+        if (geometries.length === 1) return geometries[0];
+        if (window.THREE && THREE.BufferGeometryUtils && typeof THREE.BufferGeometryUtils.mergeBufferGeometries === 'function') {
+            try {
+                const merged = THREE.BufferGeometryUtils.mergeBufferGeometries(geometries, false);
+                if (merged) return merged;
+            } catch (err) { }
+        }
+        // Self-contained fallback
+        let totalPos = 0;
+        let totalIdx = 0;
+        let hasColor = false;
+        for (let i = 0; i < geometries.length; i++) {
+            const g = geometries[i];
+            if (!g.attributes || !g.attributes.position) continue;
+            totalPos += g.attributes.position.count;
+            if (g.attributes.color) hasColor = true;
+            if (g.index) totalIdx += g.index.count;
+            else totalIdx += g.attributes.position.count;
+        }
+        if (totalPos === 0) return null;
+
+        const posArray = new Float32Array(totalPos * 3);
+        const normArray = new Float32Array(totalPos * 3);
+        const uvArray = new Float32Array(totalPos * 2);
+        const colorArray = hasColor ? new Float32Array(totalPos * 3) : null;
+        const idxArray = new (totalPos > 65535 ? Uint32Array : Uint16Array)(totalIdx);
+
+        let vOffset = 0;
+        let iOffset = 0;
+
+        for (let i = 0; i < geometries.length; i++) {
+            const g = geometries[i];
+            if (!g.attributes || !g.attributes.position) continue;
+            const count = g.attributes.position.count;
+
+            posArray.set(g.attributes.position.array, vOffset * 3);
+            if (g.attributes.normal) {
+                normArray.set(g.attributes.normal.array, vOffset * 3);
+            } else {
+                for (let k = 0; k < count; k++) normArray[(vOffset + k) * 3 + 1] = 1.0;
+            }
+            if (g.attributes.uv) {
+                uvArray.set(g.attributes.uv.array, vOffset * 2);
+            }
+            if (hasColor && colorArray) {
+                if (g.attributes.color) {
+                    colorArray.set(g.attributes.color.array, vOffset * 3);
+                } else {
+                    for (let k = 0; k < count * 3; k++) colorArray[vOffset * 3 + k] = 1.0;
+                }
+            }
+
+            if (g.index) {
+                const indices = g.index.array;
+                for (let j = 0; j < indices.length; j++) {
+                    idxArray[iOffset + j] = indices[j] + vOffset;
+                }
+                iOffset += indices.length;
+            } else {
+                for (let j = 0; j < count; j++) {
+                    idxArray[iOffset + j] = vOffset + j;
+                }
+                iOffset += count;
+            }
+            vOffset += count;
+        }
+
+        const merged = new THREE.BufferGeometry();
+        merged.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
+        merged.setAttribute('normal', new THREE.BufferAttribute(normArray, 3));
+        merged.setAttribute('uv', new THREE.BufferAttribute(uvArray, 2));
+        if (colorArray) {
+            merged.setAttribute('color', new THREE.BufferAttribute(colorArray, 3));
+        }
+        merged.setIndex(new THREE.BufferAttribute(idxArray, 1));
+        return merged;
+    }
+
+    /**
+     * 計算多邊形有向面積
+     */
+    function getPolygonSignedArea(pts) {
+        let sum = 0;
+        for (let i = 0; i < pts.length; i++) {
+            const p1 = pts[i];
+            const p2 = pts[(i + 1) % pts.length];
+            sum += (p1.x * p2.y - p2.x * p1.y);
+        }
+        return sum / 2;
+    }
+
+    /**
+     * 計算多邊形重心 (Centroid)
+     */
+    function getPolygonCentroid(pts, signedArea) {
+        let cx = 0, cy = 0;
+        const factor = 1 / (6 * signedArea);
+        for (let i = 0; i < pts.length; i++) {
+            const p1 = pts[i];
+            const p2 = pts[(i + 1) % pts.length];
+            const cross = (p1.x * p2.y - p2.x * p1.y);
+            cx += (p1.x + p2.x) * cross;
+            cy += (p1.y + p2.y) * cross;
+        }
+        return { x: cx * factor, y: cy * factor };
+    }
+
+    /**
+     * 多邊形法定退縮內縮演算法 (Parcel Setback Inset)
+     */
+    function offsetPolygonInward(pts, d) {
+        if (!pts || pts.length < 3) return null;
+        const n = pts.length;
+        let sArea = getPolygonSignedArea(pts);
+        let poly = pts.slice();
+        if (sArea < 0) {
+            poly.reverse();
+            sArea = -sArea;
+        }
+
+        const shiftedLines = [];
+        for (let i = 0; i < n; i++) {
+            const p1 = poly[i];
+            const p2 = poly[(i + 1) % n];
+            const dx = p2.x - p1.x;
+            const dy = p2.y - p1.y;
+            const len = Math.hypot(dx, dy);
+            if (len < 1e-4) continue;
+            const nx = -dy / len;
+            const ny = dx / len;
+            shiftedLines.push({
+                p: { x: p1.x + nx * d, y: p1.y + ny * d },
+                dir: { x: dx / len, y: dy / len }
+            });
+        }
+
+        if (shiftedLines.length < 3) return null;
+
+        const newPts = [];
+        const m = shiftedLines.length;
+        for (let i = 0; i < m; i++) {
+            const l1 = shiftedLines[(i - 1 + m) % m];
+            const l2 = shiftedLines[i];
+            const cross = l1.dir.x * l2.dir.y - l1.dir.y * l2.dir.x;
+            if (Math.abs(cross) < 1e-4) {
+                newPts.push({ x: (l1.p.x + l2.p.x) / 2, y: (l1.p.y + l2.p.y) / 2 });
+            } else {
+                const dx = l2.p.x - l1.p.x;
+                const dy = l2.p.y - l1.p.y;
+                const t1 = (dx * l2.dir.y - dy * l2.dir.x) / cross;
+                const ix = l1.p.x + t1 * l1.dir.x;
+                const iy = l1.p.y + t1 * l1.dir.y;
+                const origP = poly[i];
+                const distFromOrig = Math.hypot(ix - origP.x, iy - origP.y);
+                if (distFromOrig > d * 2.5) {
+                    const scale = (d * 2.5) / distFromOrig;
+                    newPts.push({
+                        x: origP.x + (ix - origP.x) * scale,
+                        y: origP.y + (iy - origP.y) * scale
+                    });
+                } else {
+                    newPts.push({ x: ix, y: iy });
+                }
+            }
+        }
+
+        const newArea = Math.abs(getPolygonSignedArea(newPts));
+        if (newArea < sArea * 0.1 || isNaN(newArea)) {
+            const C = getPolygonCentroid(poly, sArea);
+            const approxRadius = Math.sqrt(sArea / Math.PI);
+            const scale = Math.max(0.2, (approxRadius - d) / approxRadius);
+            return poly.map(p => ({
+                x: C.x + (p.x - C.x) * scale,
+                y: C.y + (p.y - C.y) * scale
+            }));
+        }
+        return newPts;
+    }
+
+    /**
+     * 建蔽率向心收縮 (BCR Shrinkage Matching)
+     * 精確將建築底面積匹配至 A_site * BCR
+     */
+    function matchBCRFootprint(insetPts, siteArea, bcr, centroid) {
+        const insetArea = Math.abs(getPolygonSignedArea(insetPts));
+        const targetArea = siteArea * bcr;
+        let k = Math.sqrt(targetArea / Math.max(insetArea, 1e-3));
+        if (k > 0.95) k = 0.95; // 保持與地界線清晰的可見間距
+
+        return insetPts.map(p => ({
+            x: centroid.x + (p.x - centroid.x) * k,
+            y: centroid.y + (p.y - centroid.y) * k
+        }));
+    }
+
+    /**
+     * 樓層高度與等效高度換算 (Floors & Height Engine)
+     */
+    function calculateBuildingFloorsAndHeight(zoneType, bcr, far) {
+        const preset = (window.Visual3D && Visual3D.ZONE_PRESETS && Visual3D.ZONE_PRESETS[zoneType])
+            ? Visual3D.ZONE_PRESETS[zoneType]
+            : { floorH: 3.5, firstFloorH: 4.0 };
+
+        if (zoneType === 'P' || far <= 0.05) {
+            return { floors: 0, totalHeight: 0, firstFloorH: 0, floorH: 0 };
+        }
+
+        const floors = Math.max(1, Math.ceil(far / Math.max(bcr, 0.05)));
+        const firstFloorH = preset.firstFloorH || 4.0;
+        const floorH = preset.floorH || 3.5;
+        let totalHeight = firstFloorH + (floors - 1) * floorH;
+
+        if (zoneType === 'I') {
+            totalHeight = floors * 6.0;
+        } else if (zoneType === 'C2') {
+            totalHeight = Math.max(20.0, firstFloorH + (floors - 1) * floorH);
+        } else if (zoneType === 'R1') {
+            totalHeight = Math.min(12.0, firstFloorH + (floors - 1) * floorH);
+        }
+
+        return { floors, totalHeight, firstFloorH, floorH };
+    }
+
+    /**
+     * 幾何擠出並賦予頂點色彩 (THREE.ExtrudeGeometry)
+     */
+    function createExtrudedMesh(polygon, totalHeight, color) {
+        if (!polygon || polygon.length < 3 || totalHeight <= 0) return null;
+        const shape = new THREE.Shape();
+        shape.moveTo(polygon[0].x, -polygon[0].y);
+        for (let i = 1; i < polygon.length; i++) {
+            shape.lineTo(polygon[i].x, -polygon[i].y);
+        }
+        shape.closePath();
+
+        const extrudeSettings = {
+            depth: totalHeight,
+            bevelEnabled: true,
+            bevelSegments: 2,
+            steps: 1,
+            bevelSize: 0.25,
+            bevelThickness: 0.25
+        };
+        const geom = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+        geom.rotateX(-Math.PI / 2);
+
+        if (color) {
+            const count = geom.attributes.position.count;
+            const colorArr = new Float32Array(count * 3);
+            for (let i = 0; i < count; i++) {
+                colorArr[i * 3] = color.r;
+                colorArr[i * 3 + 1] = color.g;
+                colorArr[i * 3 + 2] = color.b;
+            }
+            geom.setAttribute('color', new THREE.BufferAttribute(colorArr, 3));
+        }
+        return geom;
+    }
+
+    /**
+     * 基地基底鋪面生成 (1 - BCR 空地基底)
+     */
+    function createParcelGroundPad(boundary, zoneType) {
+        if (!boundary || boundary.length < 3) return null;
+        const shape = new THREE.Shape();
+        shape.moveTo(boundary[0].x, -boundary[0].y);
+        for (let i = 1; i < boundary.length; i++) {
+            shape.lineTo(boundary[i].x, -boundary[i].y);
+        }
+        shape.closePath();
+
+        const padSettings = { depth: 0.08, bevelEnabled: false };
+        const geom = new THREE.ExtrudeGeometry(shape, padSettings);
+        geom.rotateX(-Math.PI / 2);
+        geom.translate(0, 0.03, 0);
+        return geom;
+    }
+
+    /**
+     * 分區專屬天際線屋頂細節 (Helipad, Spire, Beacon, Skylights)
+     */
+    function addRooftopFeatures(zoneType, centroid, totalHeight, footprintSpan, group, animatedObjects, rng) {
+        const cx = centroid.x;
+        const cy = centroid.y;
+        const H = totalHeight;
+
+        if (zoneType === 'C2') {
+            // CBD 摩天大樓：頂部機房 + 停機坪 (Helipad) + 避雷塔針 (Spire) + 夜間防撞閃爍紅燈
+            const boxW = Math.max(6, footprintSpan * 0.35);
+            const boxH = 4.0;
+            const boxGeo = new THREE.BoxGeometry(boxW, boxH, boxW);
+            const boxMat = new THREE.MeshStandardMaterial({
+                color: 0x7c8a99, roughness: 0.35, metalness: 0.20
+            });
+            const penthouse = new THREE.Mesh(boxGeo, boxMat);
+            penthouse.position.set(cx, H + boxH / 2, cy);
+            penthouse.castShadow = true;
+            group.add(penthouse);
+
+            // 停機坪外圈與降落停機坪
+            const heliGeo = new THREE.CircleGeometry(boxW * 0.40, 24);
+            const heliMat = new THREE.MeshBasicMaterial({ color: 0xf59e0b });
+            const helipad = new THREE.Mesh(heliGeo, heliMat);
+            helipad.rotation.x = -Math.PI / 2;
+            helipad.position.set(cx, H + boxH + 0.05, cy);
+            group.add(helipad);
+
+            // 停機坪內圈灰色停機台
+            const padInnerGeo = new THREE.CircleGeometry(boxW * 0.35, 24);
+            const padInnerMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.8 });
+            const padInner = new THREE.Mesh(padInnerGeo, padInnerMat);
+            padInner.rotation.x = -Math.PI / 2;
+            padInner.position.set(cx, H + boxH + 0.06, cy);
+            group.add(padInner);
+
+            // 停機坪 H 標線 (鮮明白色標線)
+            const hBarGeo1 = new THREE.PlaneGeometry(boxW * 0.065, boxW * 0.30);
+            const hBarGeo2 = new THREE.PlaneGeometry(boxW * 0.065, boxW * 0.30);
+            const hBarGeo3 = new THREE.PlaneGeometry(boxW * 0.18, boxW * 0.065);
+            const hMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+            const h1 = new THREE.Mesh(hBarGeo1, hMat); h1.rotation.x = -Math.PI / 2; h1.position.set(cx - boxW * 0.08, H + boxH + 0.07, cy);
+            const h2 = new THREE.Mesh(hBarGeo2, hMat); h2.rotation.x = -Math.PI / 2; h2.position.set(cx + boxW * 0.08, H + boxH + 0.07, cy);
+            const h3 = new THREE.Mesh(hBarGeo3, hMat); h3.rotation.x = -Math.PI / 2; h3.position.set(cx, H + boxH + 0.07, cy);
+            group.add(h1); group.add(h2); group.add(h3);
+
+            // 避雷塔針 (Spire Antenna)
+            const spireH = Math.max(9, totalHeight * 0.22);
+            const spireGeo = new THREE.CylinderGeometry(0.12, 0.45, spireH, 8);
+            const spireMat = new THREE.MeshStandardMaterial({ color: 0xdde2e6, metalness: 0.85, roughness: 0.2 });
+            const spire = new THREE.Mesh(spireGeo, spireMat);
+            spire.position.set(cx, H + boxH + spireH / 2, cy);
+            group.add(spire);
+
+            // 夜間航空防撞紅光信標球 (Blinking Aviation Beacon)
+            const beaconGeo = new THREE.SphereGeometry(0.55, 12, 12);
+            const beaconMat = new THREE.MeshBasicMaterial({ color: 0xff0022 });
+            const beacon = new THREE.Mesh(beaconGeo, beaconMat);
+            beacon.position.set(cx, H + boxH + spireH + 0.3, cy);
+            group.add(beacon);
+
+            const beaconLight = new THREE.PointLight(0xff0022, 1.2, 45);
+            beaconLight.position.set(cx, H + boxH + spireH + 0.4, cy);
+            group.add(beaconLight);
+
+            if (animatedObjects) {
+                animatedObjects.push({
+                    update: () => {
+                        const blink = (Math.floor(Date.now() / 650) % 2 === 0);
+                        beacon.visible = blink;
+                        beaconLight.intensity = blink ? ((window.Visual3D && Visual3D.state && Visual3D.state.isNight) ? 2.0 : 0.8) : 0;
+                    }
+                });
+            }
+        } else if (zoneType === 'C3') {
+            // 區域商場：大型透光玻璃採光穹頂 (Glass Skylight Dome)
+            const domeR = Math.max(4, footprintSpan * 0.18);
+            const domeGeo = new THREE.SphereGeometry(domeR, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2);
+            const domeMat = new THREE.MeshStandardMaterial({
+                color: 0x88ccff, roughness: 0.1, metalness: 0.6, transparent: true, opacity: 0.75
+            });
+            const dome = new THREE.Mesh(domeGeo, domeMat);
+            dome.position.set(cx, H, cy);
+            group.add(dome);
+
+            // 空調冷卻水塔群
+            const hvacGeo = new THREE.BoxGeometry(3.5, 2, 2.5);
+            const hvacMat = new THREE.MeshStandardMaterial({ color: 0x777777, metalness: 0.5, roughness: 0.5 });
+            const hvac1 = new THREE.Mesh(hvacGeo, hvacMat);
+            hvac1.position.set(cx + domeR + 3, H + 1, cy);
+            group.add(hvac1);
+        } else if (zoneType === 'R1') {
+            // 低密度別墅：斜屋頂 (Pitched Hip Roof)
+            const roofH = 2.6;
+            const roofR = footprintSpan * 0.42;
+            const roofGeo = new THREE.ConeGeometry(roofR, roofH, 4);
+            const roofMat = new THREE.MeshStandardMaterial({
+                color: rng.pick([0xa8422b, 0x8b3a2b, 0x5c4d3c, 0x3d405b]),
+                roughness: 0.85
+            });
+            const roof = new THREE.Mesh(roofGeo, roofMat);
+            roof.rotation.y = Math.PI / 4;
+            roof.position.set(cx, H + roofH / 2, cy);
+            group.add(roof);
+        } else if (zoneType === 'R2' || zoneType === 'R3') {
+            // 中高層集合住宅：樓梯間機房 + 藍色水塔 + 頂樓圍欄
+            const tankGeo = new THREE.CylinderGeometry(1.2, 1.2, 2.2, 16);
+            const tankMat = new THREE.MeshStandardMaterial({ color: 0x2563eb, metalness: 0.35, roughness: 0.5 });
+            const tank = new THREE.Mesh(tankGeo, tankMat);
+            tank.position.set(cx + 2.5, H + 1.1, cy);
+            group.add(tank);
+
+            const shaftGeo = new THREE.BoxGeometry(3.6, 3.2, 3.6);
+            const shaftMat = new THREE.MeshStandardMaterial({ color: 0xd6ccc2, roughness: 0.7 });
+            const shaft = new THREE.Mesh(shaftGeo, shaftMat);
+            shaft.position.set(cx - 2, H + 1.6, cy);
+            group.add(shaft);
+        } else if (zoneType === 'I') {
+            // 科技產業/工廠：雙排不鏽鋼排氣煙囪
+            const pipeGeo = new THREE.CylinderGeometry(0.4, 0.5, 6.0, 12);
+            const pipeMat = new THREE.MeshStandardMaterial({ color: 0x475569, metalness: 0.7, roughness: 0.3 });
+            const p1 = new THREE.Mesh(pipeGeo, pipeMat); p1.position.set(cx + 2, H + 3.0, cy);
+            const p2 = new THREE.Mesh(pipeGeo, pipeMat); p2.position.set(cx + 4, H + 3.0, cy + 1.2);
+            group.add(p1); group.add(p2);
+        }
+    }
+
+    /**
+     * 空地綠美化與人行造景 (1 - BCR 退縮綠帶、行道樹與路燈)
+     */
+    function addParcelLandscaping(boundary, footprint, zoneType, centroid, rng, treesData, lampData) {
+        const numPts = boundary.length;
+        for (let i = 0; i < numPts; i++) {
+            const p1 = boundary[i];
+            const p2 = boundary[(i + 1) % numPts];
+            const edgeLen = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+            const steps = Math.max(1, Math.floor(edgeLen / 11)); // 每 11m 一棵綠美化喬木
+            for (let s = 1; s <= steps; s++) {
+                const t = s / (steps + 1);
+                const bx = p1.x + (p2.x - p1.x) * t;
+                const bz = p1.y + (p2.y - p1.y) * t;
+                const inwardX = bx + (centroid.x - bx) * 0.09;
+                const inwardZ = bz + (centroid.y - bz) * 0.09;
+
+                if (zoneType === 'P' || rng.next() < 0.70) {
+                    const scale = rng.range(0.9, 1.4);
+                    treesData.push({
+                        x: inwardX,
+                        z: inwardZ,
+                        y: 2.0 * scale,
+                        sx: scale, sy: scale, sz: scale
+                    });
+                }
+
+                if (s % 2 === 0 && lampData) {
+                    lampData.push({
+                        x: inwardX,
+                        z: inwardZ,
+                        ry: Math.atan2(centroid.x - inwardX, centroid.y - inwardZ)
+                    });
+                }
+            }
+        }
+    }
+
+    /**
+     * 單一分區量體生成核心管線 (createParametricBuilding)
+     */
+    function createParametricBuilding(zone, rng, netData, cityGroup, animatedCityObjects, treesData, lampData, buildingGeomsByType, groundPadGeomsByType) {
+        if (!zone || !zone.boundary || zone.boundary.length < 3) return;
+
+        let boundary = zone.boundary.slice();
+        let sArea = getPolygonSignedArea(boundary);
+        if (Math.abs(sArea) < 10) return;
+
+        if (sArea < 0) {
+            boundary.reverse();
+            sArea = -sArea;
+        }
+        const siteArea = sArea;
+        const centroid = getPolygonCentroid(boundary, siteArea);
+
+        const zType = zone.zoneType || 'R1';
+        const preset = (window.Visual3D && Visual3D.ZONE_PRESETS && Visual3D.ZONE_PRESETS[zType])
+            ? Visual3D.ZONE_PRESETS[zType]
+            : { defaultBcr: 0.60, defaultFar: 2.40, category: 'R', colors: [0xffffff] };
+
+        const bcr = (zone.bcr !== undefined && zone.bcr !== null && !isNaN(zone.bcr))
+            ? Math.max(0.05, Math.min(0.95, zone.bcr))
+            : (preset.defaultBcr || 0.60);
+        const far = (zone.far !== undefined && zone.far !== null && !isNaN(zone.far))
+            ? Math.max(0.05, zone.far)
+            : (preset.defaultFar || 2.40);
+
+        let maxDist = 0;
+        boundary.forEach(p => {
+            maxDist = Math.max(maxDist, Math.hypot(p.x - centroid.x, p.y - centroid.y));
+        });
+        const footprintSpan = maxDist * 1.6;
+
+        // --- 特殊案例：公園綠地 (P) ---
+        if (zType === 'P' || far <= 0.05) {
+            const grassPadGeom = createParcelGroundPad(boundary, 'P');
+            if (grassPadGeom) {
+                groundPadGeomsByType['P'] = groundPadGeomsByType['P'] || [];
+                groundPadGeomsByType['P'].push(grassPadGeom);
+            }
+
+            const pondRadius = Math.max(6, Math.min(18, maxDist * 0.35));
+            const pondData = { x: centroid.x, z: centroid.y, r: pondRadius };
+            if (window.Visual3D && Visual3D.createWaterMesh) {
+                cityGroup.add(Visual3D.createWaterMesh(pondData));
+            }
+
+            addParcelLandscaping(boundary, null, 'P', centroid, rng, treesData, lampData);
+            return;
+        }
+
+        // --- 一般都市分區 (R, C, I, G) ---
+
+        // 1. 基底鋪面 (1 - BCR 空地)
+        const groundGeom = createParcelGroundPad(boundary, zType);
+        if (groundGeom) {
+            groundPadGeomsByType[zType] = groundPadGeomsByType[zType] || [];
+            groundPadGeomsByType[zType].push(groundGeom);
+        }
+
+        // 2. 法定退縮 (2.5m Inset)
+        const setbackDist = Math.min(2.5, maxDist * 0.20);
+        const insetPoly = offsetPolygonInward(boundary, setbackDist) || boundary;
+
+        // 3. 建蔽率向心收縮 (嚴格匹配 A_site * BCR)
+        const footprintPoly = matchBCRFootprint(insetPoly, siteArea, bcr, centroid);
+
+        // 4. 樓層高度換算
+        const { floors, totalHeight, firstFloorH, floorH } = calculateBuildingFloorsAndHeight(zType, bcr, far);
+
+        // 個別建築頂點顏色
+        const colorsList = preset.colors || [0xffffff];
+        const buildingColor = new THREE.Color(rng.pick(colorsList));
+
+        buildingGeomsByType[zType] = buildingGeomsByType[zType] || [];
+
+        // 5. 大基地量體細分 (Superblock Subdivision)
+        if (siteArea > 3500 && (zType.startsWith('C') || zType.startsWith('R'))) {
+            if (zType.startsWith('C')) {
+                // 商業區：低樓層裙樓商場 (Podium) + 核心挺拔塔樓 (Tower)
+                const podiumH = Math.min(8.8, totalHeight * 0.4);
+                const podiumGeom = createExtrudedMesh(footprintPoly, podiumH, buildingColor);
+                if (podiumGeom) buildingGeomsByType[zType].push(podiumGeom);
+
+                const towerInset = matchBCRFootprint(footprintPoly, siteArea * bcr, 0.55, centroid);
+                const towerGeom = createExtrudedMesh(towerInset, totalHeight, buildingColor);
+                if (towerGeom) buildingGeomsByType[zType].push(towerGeom);
+
+                addRooftopFeatures(zType, centroid, totalHeight, footprintSpan * 0.65, cityGroup, animatedCityObjects, rng);
+            } else {
+                // 住宅區：拆分為雙拼/組團量體，留出中央景觀中庭
+                const p0 = boundary[0], p1 = boundary[1];
+                const angle = Math.atan2(p1.y - p0.y, p1.x - p0.x);
+                const offsetDist = maxDist * 0.28;
+
+                const c1 = { x: centroid.x + Math.cos(angle) * offsetDist, y: centroid.y + Math.sin(angle) * offsetDist };
+                const c2 = { x: centroid.x - Math.cos(angle) * offsetDist, y: centroid.y - Math.sin(angle) * offsetDist };
+
+                const poly1 = matchBCRFootprint(footprintPoly, siteArea * bcr * 0.48, 0.45, c1);
+                const poly2 = matchBCRFootprint(footprintPoly, siteArea * bcr * 0.48, 0.45, c2);
+
+                const h1 = totalHeight;
+                const h2 = Math.max(firstFloorH + floorH, totalHeight * 0.85);
+
+                const geom1 = createExtrudedMesh(poly1, h1, buildingColor);
+                const geom2 = createExtrudedMesh(poly2, h2, new THREE.Color(rng.pick(colorsList)));
+
+                if (geom1) buildingGeomsByType[zType].push(geom1);
+                if (geom2) buildingGeomsByType[zType].push(geom2);
+
+                addRooftopFeatures(zType, c1, h1, footprintSpan * 0.45, cityGroup, animatedCityObjects, rng);
+                addRooftopFeatures(zType, c2, h2, footprintSpan * 0.45, cityGroup, animatedCityObjects, rng);
+            }
+        } else {
+            // 標準基地：單一實體量體擠出
+            const geom = createExtrudedMesh(footprintPoly, totalHeight, buildingColor);
+            if (geom) buildingGeomsByType[zType].push(geom);
+
+            addRooftopFeatures(zType, centroid, totalHeight, footprintSpan, cityGroup, animatedCityObjects, rng);
+        }
+
+        // 6. 空地綠化與植栽
+        addParcelLandscaping(boundary, footprintPoly, zType, centroid, rng, treesData, lampData);
+    }
+
+    // =========================================================================
+    // 2. 城市生成主函式 (支援 LUTI Sandbox 分區量體長成與舊版相容模式)
+    // =========================================================================
     function generateCity(netData, seed) {
         // 清除舊城市與雲朵
         cityGroup.clear();
         cloudGroup.clear();
 
-        // ★★★ 新增：清除舊的動畫物件 ★★★
+        // ★★★ 新增：清除舊的動畫物件與分區材質 ★★★
         animatedCityObjects = [];
+        if (window.Visual3D && typeof Visual3D.cleanBuildingMaterials === 'function') {
+            Visual3D.cleanBuildingMaterials();
+        }
 
         const rng = new PseudoRandom(seed);
 
@@ -6814,6 +7605,34 @@ document.addEventListener('DOMContentLoaded', () => {
         const parkingPolygons = [];
         if (netData.parkingLots) { netData.parkingLots.forEach(lot => { if (lot.boundary.length >= 3) parkingPolygons.push(lot.boundary); }); }
 
+        // ★★★ [新增] A-4. 處理土地使用分區 (Land Use Zones) ★★★
+        const zonePolygons = [];
+        if (netData.zones) {
+            Object.values(netData.zones).forEach(zone => {
+                if (zone.boundary && zone.boundary.length >= 3) {
+                    zonePolygons.push(zone.boundary);
+
+                    let zMinX = Infinity, zMaxX = -Infinity, zMinZ = Infinity, zMaxZ = -Infinity;
+                    zone.boundary.forEach(p => {
+                        zMinX = Math.min(zMinX, p.x); zMaxX = Math.max(zMaxX, p.x);
+                        zMinZ = Math.min(zMinZ, p.y); zMaxZ = Math.max(zMaxZ, p.y);
+                    });
+                    const zCx = (zMinX + zMaxX) / 2;
+                    const zCz = (zMinZ + zMaxZ) / 2;
+                    const zRadius = Math.hypot(zMaxX - zMinX, zMaxZ - zMinZ) / 2 + 6.0;
+
+                    const gridSpan = Math.ceil(zRadius / gridSize);
+                    for (let gx = -gridSpan; gx <= gridSpan; gx++) {
+                        for (let gz = -gridSpan; gz <= gridSpan; gz++) {
+                            addToHash(zCx + gx * gridSize, zCz + gz * gridSize, {
+                                type: 'restricted_zone', x: zCx, z: zCz, r: zRadius
+                            });
+                        }
+                    }
+                }
+            });
+        }
+
         function distToSegmentSquared(px, pz, x1, z1, x2, z2) {
             const l2 = (x1 - x2) ** 2 + (z1 - z2) ** 2;
             if (l2 === 0) return (px - x1) ** 2 + (pz - z1) ** 2;
@@ -6822,9 +7641,15 @@ document.addEventListener('DOMContentLoaded', () => {
             return (px - (x1 + t * (x2 - x1))) ** 2 + (pz - (z1 + t * (z2 - z1))) ** 2;
         }
 
-        // ★★★ [修正] 安全位置檢查：加入 custom_obstacle 判斷 ★★★
+        // ★★★ [修正] 安全位置檢查：加入 custom_obstacle 與土地使用分區判斷 (絕不侵入分區) ★★★
         function isPositionSafe(x, z, radius) {
             for (const poly of parkingPolygons) { if (Geom.Utils.isPointInPolygon({ x: x, y: z }, poly)) return false; }
+            for (const poly of zonePolygons) {
+                if (Geom.Utils.isPointInPolygon({ x: x, y: z }, poly)) return false;
+                for (let a = 0; a < 6.28; a += 1.57) {
+                    if (Geom.Utils.isPointInPolygon({ x: x + Math.cos(a) * (radius + 4), y: z + Math.sin(a) * (radius + 4) }, poly)) return false;
+                }
+            }
             const cx = Math.floor(x / gridSize); const cz = Math.floor(z / gridSize);
             for (let i = -2; i <= 2; i++) {
                 for (let j = -2; j <= 2; j++) {
@@ -6881,8 +7706,73 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
 
-        // --- 步驟 B: 生成建築資料 (徹底修復 Lane-based 不生成建築的問題) ---
+        // =================================================================
+        // ★★★ [LUTI Sandbox] 核心步驟：分區真實量體長成 (Zone-Driven Extrusion) ★★★
+        // =================================================================
+        const hasZones = !!(netData.zones && Object.keys(netData.zones).length > 0);
+
+        if (hasZones) {
+            const buildingGeomsByType = {};
+            const groundPadGeomsByType = {};
+
+            Object.values(netData.zones).forEach(zone => {
+                createParametricBuilding(
+                    zone, rng, netData, cityGroup, animatedCityObjects,
+                    treesData, lampData, buildingGeomsByType, groundPadGeomsByType
+                );
+            });
+
+            // 批次合併各分區建築量體 (Draw Call 壓低至 10 次以內)
+            Object.keys(buildingGeomsByType).forEach(zType => {
+                const geoms = buildingGeomsByType[zType];
+                if (geoms && geoms.length > 0) {
+                    const mergedGeom = mergeBufferGeometries(geoms);
+                    if (mergedGeom) {
+                        const zoneMat = (window.Visual3D && typeof Visual3D.createZoneMaterial === 'function')
+                            ? Visual3D.createZoneMaterial(zType)
+                            : buildMat;
+                        const bMesh = new THREE.Mesh(mergedGeom, zoneMat);
+                        bMesh.castShadow = true;
+                        bMesh.receiveShadow = true;
+                        cityGroup.add(bMesh);
+                    }
+                }
+            });
+
+            // 批次合併各分區基底鋪面 (1 - BCR 空地基底)
+            Object.keys(groundPadGeomsByType).forEach(zType => {
+                const geoms = groundPadGeomsByType[zType];
+                if (geoms && geoms.length > 0) {
+                    const mergedPad = mergeBufferGeometries(geoms);
+                    if (mergedPad) {
+                        let padMat;
+                        if (zType === 'P') {
+                            padMat = (window.Visual3D && Visual3D.createGrassMaterial)
+                                ? Visual3D.createGrassMaterial(renderer)
+                                : new THREE.MeshStandardMaterial({ color: 0x2e7d32, roughness: 0.90 });
+                        } else if (zType.startsWith('R')) {
+                            padMat = new THREE.MeshStandardMaterial({ color: 0x3d6634, roughness: 0.88 });
+                        } else if (zType === 'I') {
+                            padMat = (window.Visual3D && Visual3D.createConcreteMaterial)
+                                ? Visual3D.createConcreteMaterial(renderer)
+                                : new THREE.MeshStandardMaterial({ color: 0x5a6065, roughness: 0.75 });
+                        } else {
+                            padMat = new THREE.MeshStandardMaterial({ color: 0xd1cfc7, roughness: 0.65 });
+                        }
+                        const padMesh = new THREE.Mesh(mergedPad, padMat);
+                        padMesh.receiveShadow = true;
+                        cityGroup.add(padMesh);
+                    }
+                }
+            });
+        }
+
+        // --- 步驟 B: 生成道路側建築資料 (若有土地分區則降速為背景填充模式，不侵入分區) ---
+        const maxRoadsideBuildings = hasZones ? 45 : 700;
+        const stepSize = hasZones ? 35 : 10;
+
         Object.values(netData.links).forEach(link => {
+            if (buildingsData.length >= maxRoadsideBuildings) return;
             let roadWidth = 0;
             Object.values(link.lanes).forEach(l => roadWidth += l.width);
             const baseOffset = (roadWidth / 2) + 3.0;
@@ -6897,9 +7787,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // ★ 核心修復：改以「真實總長度」進行取樣，無視原路段被分割的多細 (解決 Lane-based step=0 問題)
             const totalLength = Geom.Utils.getPolylineLength(path);
-            const stepSize = 10;
 
             for (let s = stepSize / 2; s < totalLength; s += stepSize) {
+                if (buildingsData.length >= maxRoadsideBuildings) break;
                 const jitter = rng.range(-2, 2);
                 let checkDist = s + jitter;
                 if (checkDist < 0) checkDist = 0;
@@ -7207,84 +8097,118 @@ document.addEventListener('DOMContentLoaded', () => {
     // ===================================================================
     // Main File Handling & Simulation Loop
     // ===================================================================
-    function handleFileSelect(event) {
+    function loadTrafficModelFromXML(xmlString) {
         stopSimulation();
+        resetStatistics();
+        if (placeholderText) placeholderText.style.display = 'none';
+
+        const parser = new DOMParser();
+        const xmlDoc = parser.parseFromString(xmlString, "application/xml");
+        if (xmlDoc.getElementsByTagName("parsererror").length) {
+            alert(translations[currentLang]?.alertParseError || "解析模型 XML 時發生錯誤。");
+            return Promise.reject(new Error("XML parse error"));
+        }
+
+        return parseTrafficModel(xmlDoc).then(netData => {
+            // [新增] 在這裡插入預計算邏輯
+            computeNetworkConflicts(netData);
+
+            networkData = netData;
+            window.networkData = netData;
+            if (window.Visual3D) Visual3D.state.networkData = netData;
+
+            // ★★★ [Architecture A: Web Worker 多執行緒模擬核心] ★★★
+            if (window.simBridge && window.simBridge.useMultiThreading && window.location.protocol !== 'file:') {
+                simBridge.loadNetwork(networkData);
+                simulation = simBridge;
+                window.simulation = simulation;
+            } else {
+                if (window.simBridge) window.simBridge.useMultiThreading = false;
+                simulation = new Simulation(networkData);
+                window.simulation = simulation;
+            }
+
+            // [Milestone 3] LUTI 時段控制器顯示與初始化
+            const lutiContainer = document.getElementById('lutiPeriodContainer');
+            const lutiSelector = document.getElementById('lutiPeriodSelector');
+            if (lutiContainer && lutiSelector) {
+                if (simulation && simulation.lutiEngine) {
+                    lutiContainer.style.display = 'inline-flex';
+                    lutiSelector.value = simulation.lutiEngine.timePeriod || 'AM';
+                } else {
+                    lutiContainer.style.display = 'none';
+                }
+            }
+
+            // [新增] 通知優化控制器更新資料
+            if (typeof optimizerController !== 'undefined') {
+                optimizerController.setSimulation(simulation);
+            }
+
+            // [Milestone 4] LUTI HUD 控制器初始化與路網綁定
+            if (typeof lutiHudController !== 'undefined') {
+                lutiHudController.setSimulation(simulation);
+            }
+
+            autoCenter2D(networkData.bounds);
+            networkCenter2D = {
+                x: (networkData.bounds.minX + networkData.bounds.maxX) / 2,
+                y: (networkData.bounds.minY + networkData.bounds.maxY) / 2
+            };
+            initialViewRotation2D = 0;
+            viewRotation2D = initialViewRotation2D;
+            buildNetwork3D(networkData);
+            // [新增] 建立底圖
+            buildBasemap3D(networkData);
+            autoCenterCamera3D(networkData.bounds);
+
+            // [新增] 生成城市
+            const seed = parseInt(citySeedInput.value, 10) || 12345;
+            generateCity(networkData, seed);
+
+            setupMeterCharts(networkData.speedMeters);
+            setupSectionMeterCharts(networkData.sectionMeters);
+
+            startStopButton.disabled = false;
+            simTimeSpan.textContent = "0.00";
+            updateButtonText();
+
+            if (isDisplay2D) redraw2D();
+            if (isDisplay3D) update3DScene();
+
+            // Show Pegman if in 2D mode
+            const pegman = document.getElementById('pegman-icon');
+            if (pegman) pegman.style.display = (isDisplay2D && !isDisplay3D) ? 'block' : 'none';
+
+            updateStatistics(0);
+            lastLoggedIntegerTime = 0;
+
+            // --- 關鍵修改：載入完成後，若有 3D 則啟動迴圈 ---
+            if (isDisplay3D) {
+                update3DScene();
+                if (!animationFrameId) {
+                    lastTimestamp = performance.now();
+                    animationFrameId = requestAnimationFrame(simulationLoop);
+                }
+            }
+
+            return netData;
+        }).catch(error => {
+            console.error("Error parsing model:", error);
+            alert((translations[currentLang]?.alertLoadError || "解析模型或載入底圖時發生錯誤。") + "\n\n" + (error && error.stack ? error.stack : (error && error.message ? error.message : String(error))));
+            throw error;
+        });
+    }
+    window.loadTrafficModelFromXML = loadTrafficModelFromXML;
+    window.loadTrafficModelFromXMLString = loadTrafficModelFromXML;
+
+    function handleFileSelect(event) {
         const file = event.target.files[0];
         if (!file) return;
 
-        resetStatistics();
-        placeholderText.style.display = 'none';
-
         const reader = new FileReader();
         reader.onload = (e) => {
-            const xmlString = e.target.result;
-            const parser = new DOMParser();
-            const xmlDoc = parser.parseFromString(xmlString, "application/xml");
-            if (xmlDoc.getElementsByTagName("parsererror").length) {
-                alert(translations[currentLang].alertParseError);
-                return;
-            }
-
-            parseTrafficModel(xmlDoc).then(netData => {
-                // [新增] 在這裡插入預計算邏輯
-                computeNetworkConflicts(netData);
-
-                networkData = netData;
-                window.networkData = netData;
-                if (window.Visual3D) Visual3D.state.networkData = netData;
-                simulation = new Simulation(networkData);
-
-                // [新增] 通知優化控制器更新資料
-                if (typeof optimizerController !== 'undefined') {
-                    optimizerController.setSimulation(simulation);
-                }
-
-                autoCenter2D(networkData.bounds);
-                networkCenter2D = {
-                    x: (networkData.bounds.minX + networkData.bounds.maxX) / 2,
-                    y: (networkData.bounds.minY + networkData.bounds.maxY) / 2
-                };
-                initialViewRotation2D = 0;
-                viewRotation2D = initialViewRotation2D;
-                buildNetwork3D(networkData);
-                // [新增] 建立底圖
-                buildBasemap3D(networkData);
-                autoCenterCamera3D(networkData.bounds);
-
-                // [新增] 生成城市
-                const seed = parseInt(citySeedInput.value, 10) || 12345;
-                generateCity(networkData, seed);
-
-                setupMeterCharts(networkData.speedMeters);
-                setupSectionMeterCharts(networkData.sectionMeters);
-
-                startStopButton.disabled = false;
-                simTimeSpan.textContent = "0.00";
-                updateButtonText();
-
-                if (isDisplay2D) redraw2D();
-                if (isDisplay3D) update3DScene();
-
-                // Show Pegman if in 2D mode
-                const pegman = document.getElementById('pegman-icon');
-                if (pegman) pegman.style.display = (isDisplay2D && !isDisplay3D) ? 'block' : 'none';
-
-                updateStatistics(0);
-                lastLoggedIntegerTime = 0;
-
-                // --- 關鍵修改：載入完成後，若有 3D 則啟動迴圈 ---
-                if (isDisplay3D) {
-                    update3DScene();
-                    if (!animationFrameId) {
-                        lastTimestamp = performance.now();
-                        animationFrameId = requestAnimationFrame(simulationLoop);
-                    }
-                }
-
-            }).catch(error => {
-                console.error("Error parsing model:", error);
-                alert((translations[currentLang]?.alertLoadError || "解析模型或載入底圖時發生錯誤。") + "\n\n" + (error && error.stack ? error.stack : (error && error.message ? error.message : String(error))));
-            });
+            loadTrafficModelFromXML(e.target.result);
         };
         reader.readAsText(file);
     }
@@ -7294,8 +8218,15 @@ document.addEventListener('DOMContentLoaded', () => {
         isRunning = !isRunning;
         if (isRunning) {
             lastTimestamp = performance.now();
+            if (window.simBridge && simulation === simBridge) {
+                simBridge.start();
+            }
             if (!animationFrameId) {
                 animationFrameId = requestAnimationFrame(simulationLoop);
+            }
+        } else {
+            if (window.simBridge && simulation === simBridge) {
+                simBridge.pause();
             }
         }
         updateButtonText();
@@ -7303,6 +8234,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function stopSimulation() {
         isRunning = false;
+        if (window.simBridge && simulation === simBridge) {
+            simBridge.reset();
+        }
         if (animationFrameId) {
             cancelAnimationFrame(animationFrameId);
             animationFrameId = null;
@@ -7391,19 +8325,27 @@ document.addEventListener('DOMContentLoaded', () => {
             const realDt = (timestamp - lastTimestamp) / 1000.0;
             const simulationDt = Math.min(realDt, 0.1) * simulationSpeed;
 
-            // 2. ★ [修正] 員警邏輯使用 simulationDt，確保與號誌時間同步
-            if (policeController && policeToggle && policeToggle.checked) {
-                policeController.update(simulationDt);
-            }
-            // 3. AI (若員警未啟動)
-            else if (aiController && aiToggle && aiToggle.checked) {
-                aiController.update(simulationDt);
+            // ★★★ [Architecture A: Web Worker 多執行緒模擬核心] ★★★
+            if (window.simBridge && simulation === simBridge && simBridge.useMultiThreading) {
+                // 多執行緒模式：IDM、跟車、換道與號誌推演在背景 Worker 執行，主線程不再被重度物理計算卡死！
+                if (policeController && policeToggle && policeToggle.checked) {
+                    policeController.update(simulationDt);
+                    if (policeController.selectedNodeId) {
+                        const tfl = simulation.trafficLights.find(t => t.nodeId === policeController.selectedNodeId);
+                        if (tfl) simBridge.sendPoliceOverride(policeController.selectedNodeId, undefined, tfl.timeShift);
+                    }
+                }
+            } else {
+                // 單執行緒後備模式：
+                if (policeController && policeToggle && policeToggle.checked) {
+                    policeController.update(simulationDt);
+                } else if (aiController && aiToggle && aiToggle.checked) {
+                    aiController.update(simulationDt);
+                }
+                simulation.update(simulationDt);
             }
 
-            // 3. 更新模擬核心
-            simulation.update(simulationDt);
-            simTimeSpan.textContent = simulation.time.toFixed(2);
-            // ★ 新增：數位孿生時間顯示邏輯
+            // 更新時間顯示
             if (isDigitalTwinMode && typeof DigitalTwinLogic !== 'undefined') {
                 simTimeSpan.textContent = DigitalTwinLogic.formatTime(); // 顯示 14:35:22 格式
             } else {
@@ -7420,6 +8362,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
 
+            // [Milestone 4] LUTI HUD 控制器即時統計與 24 小時動態演繹更新
+            if (typeof lutiHudController !== 'undefined') {
+                lutiHudController.update(simulationDt);
+            }
+
             const currentIntegerTime = Math.floor(simulation.time);
             if (currentIntegerTime > lastLoggedIntegerTime) {
                 updateStatistics(currentIntegerTime);
@@ -7429,6 +8376,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (simulation && driveToggle && driveToggle.checked && driveController) {
             driveController.update(frameDt);
+            if (window.simBridge && simulation === simBridge && driveController.isActive && driveController.targetVehicle) {
+                const tv = driveController.targetVehicle;
+                simBridge.sendDriveInput(tv.id, tv.accel, tv.targetLateralOffset, true);
+            }
         }
 
         lastTimestamp = timestamp;
@@ -7528,9 +8479,44 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 resampled.push(points[points.length - 1]);
                 return resampled;
+            },
+            // [新增] 計算點 point 到折線 path 的最近點與累積里程 (s)
+            getClosestPointOnPathWithDistance: function (path, point) {
+                if (!path || path.length < 2) return null;
+                let best = null;
+                let accumulatedLength = 0;
+                for (let i = 0; i < path.length - 1; i++) {
+                    const v = path[i];
+                    const w = path[i + 1];
+                    const dx = w.x - v.x;
+                    const dy = w.y - v.y;
+                    const l2 = dx * dx + dy * dy;
+                    if (l2 <= 0) continue;
+
+                    let t = ((point.x - v.x) * dx + (point.y - v.y) * dy) / l2;
+                    t = Math.max(0, Math.min(1, t));
+
+                    const x = v.x + t * dx;
+                    const y = v.y + t * dy;
+                    const dist = Math.hypot(point.x - x, point.y - y);
+                    const s = accumulatedLength + t * Math.sqrt(l2);
+
+                    if (!best || dist < best.dist) {
+                        best = { x, y, dist, s };
+                    }
+
+                    accumulatedLength += Math.sqrt(l2);
+                }
+                return best;
             }
         }
     };
+
+    function getClosestPointOnPathWithDistance(path, point) {
+        return Geom.Utils.getClosestPointOnPathWithDistance(path, point);
+    }
+    window.getClosestPointOnPathWithDistance = getClosestPointOnPathWithDistance;
+
     // =================================================================
     // ★★★ [新增] Lane-Based 標線樣式與幾何生成輔助 ★★★
     // =================================================================
@@ -7858,6 +8844,1469 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
 
+    // =================================================================
+    // ★★★ [Milestone 3] 土地使用與交通整合旅次需求生成引擎 (LUTI Engine) ★★★
+    // 實作都市規劃經典四階段模式 (Four-Step Model)：
+    // 1. 人口與就業推估 (Socio-Economic Engine)
+    // 2. 旅次產生與吸引推估 (Trip Generation Engine)
+    // 3. 雙約束重力模式與 Furness IPF 配平 (Trip Distribution Engine)
+    // 4. MNL 運具分配模式與卜瓦松微觀抽樣 (Mode Split & Downscaled Micro-Injection)
+    // =================================================================
+    class LUTIEngine {
+        constructor(simulation, network) {
+            this.simulation = simulation;
+            this.network = network;
+            this.zones = network.zones || {};
+            this.timePeriod = 'AM'; // 'AM', 'OFF', 'PM'
+            this.timeOfDay = 8.0;   // 0.0 ~ 24.0 小時 (預設 AM 尖峰 08:00)
+            this.is24hDynamic = false;
+            this.speedMultiplier24h = 30; // 預設 30 倍速動態演繹
+            this.diurnalMultiplier = 1.0;
+            this.showHeatmap = false;
+            let defaultScale = 1.0;
+            if (typeof document !== 'undefined') {
+                const scaleSel = document.getElementById('lutiScaleFactorSelector');
+                if (scaleSel && scaleSel.value) defaultScale = parseFloat(scaleSel.value) || 1.0;
+            }
+            this.scaleFactor = defaultScale;
+            this.routeCache = new Map();
+            this.odPairs = [];
+            this.missingODs = [];
+            this.generatedVehiclesCount = 0;
+            this.initialBurstDone = false;
+
+            this.stats = {
+                totalPop: 0,
+                totalEmp: 0,
+                totalGFA: 0,
+                totalProduction: 0,
+                totalAttraction: 0,
+                hourlyAutoTrips: 0,
+                hourlyMotoTrips: 0,
+                hourlyWalkTrips: 0,
+                autoShare: 0,
+                motoShare: 0,
+                walkShare: 0,
+                routableVehTrips: 0,
+                unroutableVehTrips: 0,
+                totalDemandVehTrips: 0,
+                connectivityRate: 1.0
+            };
+
+            this.ensureVehicleProfiles();
+            this.autoConnectZones();
+            this.recalculate();
+        }
+
+        /**
+         * 確保路網中存在 LUTI 專屬的小客車與機車 Profile
+         */
+        ensureVehicleProfiles() {
+            if (!this.network.vehicleProfiles) {
+                this.network.vehicleProfiles = {};
+            }
+
+            // 1. 小客車 Profile (Car)
+            if (!this.network.vehicleProfiles['luti_car']) {
+                this.network.vehicleProfiles['luti_car'] = {
+                    id: 'luti_car',
+                    length: 4.6,
+                    width: 1.8,
+                    params: {
+                        maxSpeed: 15.0, // ~54 km/h
+                        maxAcceleration: 2.5,
+                        comfortDeceleration: 3.0,
+                        minDistance: 2.0,
+                        desiredHeadwayTime: 1.2
+                    }
+                };
+            }
+
+            // 2. 機車 Profile (Motorcycle) - width < 1.2 觸發機車動力學與外觀
+            if (!this.network.vehicleProfiles['luti_moto']) {
+                this.network.vehicleProfiles['luti_moto'] = {
+                    id: 'luti_moto',
+                    length: 2.0,
+                    width: 0.8,
+                    params: {
+                        maxSpeed: 14.0, // ~50 km/h
+                        maxAcceleration: 3.5,
+                        comfortDeceleration: 3.5,
+                        minDistance: 1.0,
+                        desiredHeadwayTime: 0.8
+                    }
+                };
+            }
+        }
+
+        /**
+         * 計算多邊形面積 (m²)
+         */
+        calculatePolygonArea(pts) {
+            if (!pts || pts.length < 3) return 1000;
+            let area = 0;
+            for (let i = 0; i < pts.length; i++) {
+                const p1 = pts[i];
+                const p2 = pts[(i + 1) % pts.length];
+                area += (p1.x * p2.y - p2.x * p1.y);
+            }
+            return Math.max(100, Math.abs(area * 0.5));
+        }
+
+        /**
+         * 計算平均綠覆率 (%)
+         */
+        calculateGreenCoverage() {
+            let totalSiteArea = 0;
+            let totalGreenArea = 0;
+            for (const zId in this.zones) {
+                const z = this.zones[zId];
+                const area = this.calculatePolygonArea(z.boundary);
+                const bcr = (z.bcr !== undefined && z.bcr !== null) ? z.bcr : 0.5;
+                const greenRatio = (z.zoneType === 'P') ? 0.95 : Math.max(0.05, 1.0 - bcr);
+                totalSiteArea += area;
+                totalGreenArea += area * greenRatio;
+            }
+            return totalSiteArea > 0 ? ((totalGreenArea / totalSiteArea) * 100) : 35.0;
+        }
+
+        /**
+         * 24小時都市標準時段係數 (Diurnal Curve)
+         */
+        getDiurnalFactor(hour) {
+            hour = (hour % 24 + 24) % 24;
+            const profile = [
+                { h: 0, f: 0.06 }, { h: 5, f: 0.08 }, { h: 6, f: 0.35 },
+                { h: 7, f: 0.75 }, { h: 8, f: 1.00 }, { h: 9, f: 0.80 },
+                { h: 10, f: 0.48 }, { h: 12, f: 0.52 }, { h: 14, f: 0.45 },
+                { h: 16, f: 0.65 }, { h: 17, f: 0.90 }, { h: 18, f: 1.00 },
+                { h: 19, f: 0.75 }, { h: 21, f: 0.38 }, { h: 22, f: 0.18 },
+                { h: 24, f: 0.06 }
+            ];
+            for (let i = 0; i < profile.length - 1; i++) {
+                if (hour >= profile[i].h && hour <= profile[i + 1].h) {
+                    const t = (hour - profile[i].h) / (profile[i + 1].h - profile[i].h);
+                    return profile[i].f + t * (profile[i + 1].f - profile[i].f);
+                }
+            }
+            return 0.5;
+        }
+
+        /**
+         * 設定 24 小時連續時鐘時刻 (hour: 0.0 ~ 24.0)
+         */
+        setTimeOfDay(hour, autoAdjustVisual = true) {
+            hour = (hour % 24 + 24) % 24;
+            this.timeOfDay = hour;
+            this.diurnalMultiplier = this.getDiurnalFactor(hour);
+
+            let newPeriod = 'OFF';
+            if (hour >= 6.5 && hour < 10.5) newPeriod = 'AM';
+            else if (hour >= 10.5 && hour < 16.0) newPeriod = 'OFF';
+            else if (hour >= 16.0 && hour < 20.0) newPeriod = 'PM';
+            else newPeriod = 'OFF';
+
+            if (newPeriod !== this.timePeriod) {
+                this.setTimePeriod(newPeriod, false);
+            } else {
+                for (const od of this.odPairs) {
+                    let lambda = ((od.hourlyVehTrips * this.scaleFactor) / 3600) * this.diurnalMultiplier;
+                    if (od.hourlyVehTrips >= 30 && lambda < 0.04) {
+                        lambda = Math.max(lambda, 0.04 * this.diurnalMultiplier);
+                    }
+                    od.lambda = lambda;
+                }
+            }
+
+            if (this.simulation && this.simulation.pedManager && typeof this.simulation.pedManager.updateLUTIVolumes === 'function') {
+                this.simulation.pedManager.updateLUTIVolumes(this.stats.hourlyWalkTrips, this.timePeriod, this.diurnalMultiplier);
+            }
+
+            if (autoAdjustVisual && window.Visual3D && typeof Visual3D.setLightingTimeOfDay === 'function') {
+                Visual3D.setLightingTimeOfDay(hour);
+            }
+        }
+
+        /**
+         * 切換時段 (AM / OFF / PM)
+         */
+        setTimePeriod(period, adjustHour = true) {
+            const validPeriods = ['AM', 'OFF', 'PM'];
+            if (!validPeriods.includes(period)) period = 'AM';
+            this.timePeriod = period;
+
+            if (adjustHour) {
+                if (period === 'AM') this.timeOfDay = 8.0;
+                else if (period === 'OFF') this.timeOfDay = 13.5;
+                else if (period === 'PM') this.timeOfDay = 17.8;
+                this.diurnalMultiplier = this.getDiurnalFactor(this.timeOfDay);
+
+                if (window.Visual3D && typeof Visual3D.setLightingPeriod === 'function') {
+                    Visual3D.setLightingPeriod(period);
+                }
+            }
+
+            this.recalculate();
+
+            const sel = document.getElementById('lutiPeriodSelector');
+            if (sel && sel.value !== period) {
+                sel.value = period;
+            }
+
+            if (window.lutiHudController) {
+                window.lutiHudController.updatePeriodButtons(period);
+            }
+        }
+
+        /**
+         * 動態調整微觀發車抽樣尺度 (Scale Factor)
+         */
+        setScaleFactor(factor) {
+            this.scaleFactor = Math.max(0.01, Math.min(1.0, factor));
+            for (const od of this.odPairs) {
+                let lambda = ((od.hourlyVehTrips * this.scaleFactor) / 3600) * (this.diurnalMultiplier || 1.0);
+                if (od.hourlyVehTrips >= 30 && lambda < 0.04) {
+                    lambda = Math.max(lambda, 0.04 * (this.diurnalMultiplier || 1.0));
+                }
+                od.lambda = lambda;
+            }
+            console.log(`[LUTIEngine] 車流抽樣尺度已調整為 ${(this.scaleFactor * 100).toFixed(0)}%`);
+        }
+
+        /**
+         * 若分區未指定聯絡道，自動以邊界垂足投影建立形心聯絡道 (Auto Connect)
+         */
+        autoConnectZones() {
+            if (!this.network.links || Object.keys(this.network.links).length === 0) return;
+
+            Object.values(this.zones).forEach(zone => {
+                const boundary = zone.boundary || [];
+                let cx = 0, cy = 0;
+                if (boundary.length > 0) {
+                    boundary.forEach(p => { cx += p.x; cy += p.y; });
+                    cx /= boundary.length;
+                    cy /= boundary.length;
+                }
+
+                if (zone.accessNodes && zone.accessNodes.length > 0) {
+                    let hasValid = false;
+                    zone.accessNodes.forEach(c => {
+                        if (this.network.links[c.linkId]) {
+                            hasValid = true;
+                            const lk = this.network.links[c.linkId];
+                            const pts = lk.waypoints || lk.centerline || [];
+                            if (pts.length > 0) {
+                                const ratio = (c.offsetRatio !== undefined) ? c.offsetRatio : 0.5;
+                                const idx = Math.min(pts.length - 1, Math.floor(ratio * (pts.length - 1)));
+                                c.roadPoint = pts[idx];
+                            }
+                            if (!c.accessPoint || (c.accessPoint.x === 0 && c.accessPoint.y === 0 && (cx !== 0 || cy !== 0))) {
+                                c.accessPoint = { x: cx, y: cy };
+                            }
+                        }
+                    });
+                    if (hasValid) return; // 已有合法聯絡道
+                }
+
+                if (boundary.length < 3) return;
+
+                // 搜尋 300m 範圍內最近路段 (可連結至多 2 條不同路段，支援雙向幹道路網)
+                const candidates = [];
+                Object.values(this.network.links).forEach(link => {
+                    const pts = link.waypoints || link.centerline || [];
+                    if (pts.length < 2) return;
+
+                    let linkMinDist = Infinity;
+                    let bestProjDist = 0;
+                    let bestAccessPt = { x: cx, y: cy };
+                    let bestRoadPt = null;
+
+                    for (let i = 0; i < boundary.length; i++) {
+                        const p1 = boundary[i];
+                        const p2 = boundary[(i + 1) % boundary.length];
+                        for (let t = 0; t <= 1; t += 0.25) {
+                            const bp = { x: p1.x + t * (p2.x - p1.x), y: p1.y + t * (p2.y - p1.y) };
+                            const proj = getClosestPointOnPathWithDistance(pts, bp);
+                            if (proj && proj.dist < linkMinDist) {
+                                linkMinDist = proj.dist;
+                                bestProjDist = proj.s;
+                                bestAccessPt = bp;
+                                bestRoadPt = { x: proj.x, y: proj.y };
+                            }
+                        }
+                    }
+
+                    if (linkMinDist <= 300) {
+                        const linkLen = link.length || 100;
+                        const offsetRatio = Math.max(0, Math.min(1, bestProjDist / Math.max(0.001, linkLen)));
+                        candidates.push({
+                            link,
+                            dist: linkMinDist,
+                            offsetRatio,
+                            accessPoint: bestAccessPt,
+                            roadPoint: bestRoadPt
+                        });
+                    }
+                });
+
+                candidates.sort((a, b) => a.dist - b.dist);
+                if (candidates.length > 0) {
+                    zone.accessNodes = candidates.slice(0, 2).map((cand, idx) => ({
+                        id: `conn_${zone.id}_auto_${idx}`,
+                        linkId: cand.link.id,
+                        offsetRatio: cand.offsetRatio,
+                        gateType: 'bidirectional',
+                        accessPoint: cand.accessPoint,
+                        roadPoint: cand.roadPoint
+                    }));
+                }
+            });
+        }
+
+        /**
+         * 1. 旅次產生與吸引推估 (Trip Generation Engine)
+         */
+        calculateTripGeneration(zones, timePeriod) {
+            const P = {};
+            const A = {};
+            const socio = {};
+
+            let totalPop = 0;
+            let totalEmp = 0;
+            let totalGFA = 0;
+            let totalP = 0;
+            let totalA = 0;
+
+            Object.values(zones).forEach(zone => {
+                const zId = zone.id;
+                const boundary = zone.boundary || [];
+                const siteArea = this.calculatePolygonArea(boundary);
+                const bcr = (zone.bcr !== undefined && zone.bcr !== null && !isNaN(zone.bcr)) ? zone.bcr : 0.5;
+                const far = (zone.far !== undefined && zone.far !== null && !isNaN(zone.far)) ? zone.far : 1.2;
+                const gfa = siteArea * far;
+                totalGFA += gfa;
+
+                const zType = zone.zoneType || 'R1';
+                const cat = zType[0];
+
+                let pop = 0;
+                let emp = 0;
+
+                if (cat === 'R') {
+                    const uRes = (zType === 'R1') ? 35 : ((zType === 'R3') ? 25 : 30);
+                    pop = (zone.customPop !== null && zone.customPop !== undefined && !isNaN(zone.customPop))
+                        ? zone.customPop : Math.round((gfa * 0.85) / uRes);
+                } else if (zType === 'C1') {
+                    emp = (zone.customEmp !== null && zone.customEmp !== undefined && !isNaN(zone.customEmp))
+                        ? zone.customEmp : Math.round((gfa * 0.80) / 25);
+                } else if (zType === 'C2') {
+                    emp = (zone.customEmp !== null && zone.customEmp !== undefined && !isNaN(zone.customEmp))
+                        ? zone.customEmp : Math.round((gfa * 0.80) / 18);
+                } else if (zType === 'C3') {
+                    emp = (zone.customEmp !== null && zone.customEmp !== undefined && !isNaN(zone.customEmp))
+                        ? zone.customEmp : Math.round((gfa * 0.80) / 30);
+                } else if (cat === 'I') {
+                    emp = (zone.customEmp !== null && zone.customEmp !== undefined && !isNaN(zone.customEmp))
+                        ? zone.customEmp : Math.round((gfa * 0.80) / 40);
+                } else if (zType === 'G1') {
+                    pop = (zone.customPop !== null && zone.customPop !== undefined && !isNaN(zone.customPop))
+                        ? zone.customPop : Math.round((gfa * 0.85) / 15);
+                } else if (zType === 'G2') {
+                    emp = (zone.customEmp !== null && zone.customEmp !== undefined && !isNaN(zone.customEmp))
+                        ? zone.customEmp : Math.round((gfa * 0.80) / 22);
+                }
+
+                totalPop += pop;
+                totalEmp += emp;
+                socio[zId] = { siteArea, gfa, bcr, far, pop, emp };
+
+                let pi = 0, ai = 0;
+                if (cat === 'R') {
+                    const base = pop;
+                    let alpha = 0.45, splitP = 0.85;
+                    if (timePeriod === 'PM') { alpha = 0.50; splitP = 0.20; }
+                    else if (timePeriod === 'OFF') { alpha = 0.12; splitP = 0.50; }
+                    const trips = base * alpha;
+                    pi = Math.round(trips * splitP);
+                    ai = Math.round(trips * (1 - splitP));
+                } else if (zType === 'C2') {
+                    const base = emp;
+                    let alpha = 0.65, splitP = 0.10;
+                    if (timePeriod === 'PM') { alpha = 0.70; splitP = 0.85; }
+                    else if (timePeriod === 'OFF') { alpha = 0.15; splitP = 0.45; }
+                    const trips = base * alpha;
+                    pi = Math.round(trips * splitP);
+                    ai = Math.round(trips * (1 - splitP));
+                } else if (zType === 'C1') {
+                    const base = emp;
+                    let alpha = 0.40, splitP = 0.30;
+                    if (timePeriod === 'PM') { alpha = 0.60; splitP = 0.60; }
+                    else if (timePeriod === 'OFF') { alpha = 0.15; splitP = 0.50; }
+                    const trips = base * alpha;
+                    pi = Math.round(trips * splitP);
+                    ai = Math.round(trips * (1 - splitP));
+                } else if (zType === 'C3') {
+                    const base = gfa / 100;
+                    let alpha = 1.20, splitP = 0.30;
+                    if (timePeriod === 'PM') { alpha = 3.50; splitP = 0.45; }
+                    else if (timePeriod === 'OFF') { alpha = 1.80; splitP = 0.50; }
+                    const trips = base * alpha;
+                    pi = Math.round(trips * splitP);
+                    ai = Math.round(trips * (1 - splitP));
+                } else if (cat === 'I') {
+                    const base = emp;
+                    let alpha = 0.55, splitP = 0.15;
+                    if (timePeriod === 'PM') { alpha = 0.60; splitP = 0.85; }
+                    else if (timePeriod === 'OFF') { alpha = 0.12; splitP = 0.50; }
+                    const trips = base * alpha;
+                    pi = Math.round(trips * splitP);
+                    ai = Math.round(trips * (1 - splitP));
+                } else if (zType === 'G1') {
+                    const base = pop;
+                    let alpha = 0.80, splitP = 0.15;
+                    if (timePeriod === 'PM') { alpha = 0.75; splitP = 0.85; }
+                    else if (timePeriod === 'OFF') { alpha = 0.05; splitP = 0.50; }
+                    const trips = base * alpha;
+                    pi = Math.round(trips * splitP);
+                    ai = Math.round(trips * (1 - splitP));
+                } else if (zType === 'G2') {
+                    const base = emp;
+                    let alpha = 0.50, splitP = 0.25;
+                    if (timePeriod === 'PM') { alpha = 0.50; splitP = 0.70; }
+                    else if (timePeriod === 'OFF') { alpha = 0.10; splitP = 0.50; }
+                    const trips = base * alpha;
+                    pi = Math.round(trips * splitP);
+                    ai = Math.round(trips * (1 - splitP));
+                } else if (cat === 'P') {
+                    const base = gfa / 100;
+                    let alpha = 0.05, splitP = 0.50;
+                    if (timePeriod === 'PM') { alpha = 0.10; splitP = 0.50; }
+                    else if (timePeriod === 'OFF') { alpha = 0.08; splitP = 0.50; }
+                    const trips = base * alpha;
+                    pi = Math.round(trips * splitP);
+                    ai = Math.round(trips * (1 - splitP));
+                }
+
+                P[zId] = Math.max(1, pi);
+                A[zId] = Math.max(1, ai);
+                totalP += P[zId];
+                totalA += A[zId];
+            });
+
+            this.stats.totalPop = totalPop;
+            this.stats.totalEmp = totalEmp;
+            this.stats.totalGFA = totalGFA;
+            this.stats.totalProduction = totalP;
+            this.stats.totalAttraction = totalA;
+
+            return { P, A, socio };
+        }
+
+        /**
+         * 2. 雙約束重力模式與 Furness IPF 配平
+         */
+        calculateTripDistribution(zones, P, A) {
+            const zoneIds = Object.keys(zones);
+            const distances = {};
+            const centroids = {};
+
+            zoneIds.forEach(id => {
+                const b = zones[id].boundary || [];
+                let cx = 0, cy = 0;
+                b.forEach(p => { cx += p.x; cy += p.y; });
+                cx = b.length > 0 ? cx / b.length : 0;
+                cy = b.length > 0 ? cy / b.length : 0;
+                centroids[id] = { x: cx, y: cy };
+            });
+
+            zoneIds.forEach(i => {
+                distances[i] = {};
+                zoneIds.forEach(j => {
+                    if (i === j) {
+                        const area = this.calculatePolygonArea(zones[i].boundary);
+                        distances[i][j] = 0.5 * Math.sqrt(area / Math.PI);
+                    } else {
+                        const c1 = centroids[i];
+                        const c2 = centroids[j];
+                        distances[i][j] = Math.max(20, Math.hypot(c1.x - c2.x, c1.y - c2.y));
+                    }
+                });
+            });
+
+            const beta = 0.003;
+            const T = {};
+            zoneIds.forEach(i => {
+                T[i] = {};
+                zoneIds.forEach(j => {
+                    const dist = distances[i][j];
+                    T[i][j] = (P[i] || 1) * (A[j] || 1) * Math.exp(-beta * dist);
+                });
+            });
+
+            const sumP = zoneIds.reduce((sum, id) => sum + (P[id] || 0), 0);
+            const sumA = zoneIds.reduce((sum, id) => sum + (A[id] || 0), 0);
+            const targetA = {};
+            if (sumA > 0 && sumP > 0) {
+                const aFactor = sumP / sumA;
+                zoneIds.forEach(id => { targetA[id] = (A[id] || 0) * aFactor; });
+            } else {
+                zoneIds.forEach(id => { targetA[id] = A[id] || 0; });
+            }
+
+            for (let iter = 0; iter < 5; iter++) {
+                zoneIds.forEach(i => {
+                    let rSum = 0;
+                    zoneIds.forEach(j => { rSum += T[i][j]; });
+                    if (rSum > 1e-4) {
+                        const rFactor = (P[i] || 0) / rSum;
+                        zoneIds.forEach(j => { T[i][j] *= rFactor; });
+                    }
+                });
+
+                zoneIds.forEach(j => {
+                    let cSum = 0;
+                    zoneIds.forEach(i => { cSum += T[i][j]; });
+                    if (cSum > 1e-4) {
+                        const cFactor = (targetA[j] || 0) / cSum;
+                        zoneIds.forEach(i => { T[i][j] *= cFactor; });
+                    }
+                });
+            }
+
+            return { ODMatrix: T, distances };
+        }
+
+        /**
+         * 3. 運具分配模式與微觀抽樣
+         */
+        applyModeSplitAndDownscaling(ODMatrix, distances) {
+            const zoneIds = Object.keys(this.zones);
+            const odPairs = [];
+            const missingODs = [];
+            let routableVehTrips = 0;
+            let unroutableVehTrips = 0;
+
+            let totalAuto = 0;
+            let totalMoto = 0;
+            let totalWalk = 0;
+
+            zoneIds.forEach(i => {
+                zoneIds.forEach(j => {
+                    const tij = ODMatrix[i][j] || 0;
+                    const d = distances[i][j] || 100;
+
+                    const vWalk = 2.5 - 0.006 * d - 0.02 * Math.max(0, d - 600);
+                    const vMoto = 0.8 - 0.0018 * d + 0.5;
+                    const vAuto = 0.0 - 0.0012 * d + 0.8;
+
+                    const maxV = Math.max(vWalk, vMoto, vAuto);
+                    const eW = Math.exp(vWalk - maxV);
+                    const eM = Math.exp(vMoto - maxV);
+                    const eA = Math.exp(vAuto - maxV);
+                    const sumE = eW + eM + eA;
+
+                    const sWalk = eW / sumE;
+                    const sMoto = eM / sumE;
+                    const sAuto = eA / sumE;
+
+                    const tAuto = tij * sAuto;
+                    const tMoto = tij * sMoto;
+                    const tWalk = tij * sWalk;
+                    const tVeh = tAuto + tMoto;
+
+                    totalAuto += tAuto;
+                    totalMoto += tMoto;
+                    totalWalk += tWalk;
+
+                    if (i !== j && tVeh > 0) {
+                        const zOrigin = this.zones[i];
+                        const zDest = this.zones[j];
+
+                        const originConns = (zOrigin.accessNodes && zOrigin.accessNodes.length > 0) ? zOrigin.accessNodes : [];
+                        const destConns = (zDest.accessNodes && zDest.accessNodes.length > 0) ? zDest.accessNodes : [];
+
+                        let bestRoute = null;
+                        let bestConnO = null;
+                        let bestConnD = null;
+                        let sameLinkReverse = false;
+
+                        for (const cO of originConns) {
+                            if (!this.network.links[cO.linkId]) continue;
+                            for (const cD of destConns) {
+                                if (!this.network.links[cD.linkId]) continue;
+                                if (cO.linkId === cD.linkId) {
+                                    const oRatio = (cO.offsetRatio !== undefined) ? cO.offsetRatio : 0;
+                                    const dRatio = (cD.offsetRatio !== undefined) ? cD.offsetRatio : 1;
+                                    if (oRatio >= dRatio) {
+                                        sameLinkReverse = true;
+                                        continue;
+                                    }
+                                }
+                                const r = this.getRoute(cO.linkId, cD.linkId);
+                                if (r && r.length > 0) {
+                                    bestRoute = r;
+                                    bestConnO = cO;
+                                    bestConnD = cD;
+                                    break;
+                                }
+                            }
+                            if (bestRoute) break;
+                        }
+
+                        if (bestRoute && bestConnO && bestConnD) {
+                            const connO = bestConnO;
+                            const connD = bestConnD;
+
+                            // 微觀注入率 lambda (Vehicles/sec) = (T_Veh * Phi) / 3600 * diurnalMultiplier
+                            let lambda = ((tVeh * this.scaleFactor) / 3600) * (this.diurnalMultiplier || 1.0);
+                            // 小型沙盒保護：主要通道至少維持每 15~25 秒有一輛車進入路網，避免畫面長時間冷清
+                            if (tVeh >= 30 && lambda < 0.04) {
+                                lambda = Math.max(lambda, 0.04 * (this.diurnalMultiplier || 1.0));
+                            }
+                            const pAuto = sAuto / (sAuto + sMoto + 1e-6);
+
+                            odPairs.push({
+                                fromZoneId: i,
+                                toZoneId: j,
+                                originLink: connO.linkId,
+                                destLink: connD.linkId,
+                                originConnector: connO,
+                                destConnector: connD,
+                                route: bestRoute,
+                                lambda: lambda,
+                                pAuto: pAuto,
+                                hourlyVehTrips: tVeh,
+                                hourlyAuto: tAuto,
+                                hourlyMoto: tMoto,
+                                hourlyWalk: tWalk,
+                                distance: d
+                            });
+                            routableVehTrips += tVeh;
+                        } else {
+                            unroutableVehTrips += tVeh;
+                            const oLinkStr = originConns.map(c => c.linkId).join(', ') || '無聯絡道';
+                            const dLinkStr = destConns.map(c => c.linkId).join(', ') || '無聯絡道';
+                            let reason = '出發與迄點路段間無可行行車路徑 (缺少路口轉向線或單行道阻隔)';
+                            if (originConns.length === 0) reason = '出發分區未接上路網 (300m內無道路或未配置聯絡道)';
+                            else if (destConns.length === 0) reason = '迄點分區未接上路網 (300m內無道路或未配置聯絡道)';
+                            else if (sameLinkReverse) reason = '起迄位於同向單行路段且迄點在上游 (無法逆行且無下游迴轉道)';
+
+                            missingODs.push({
+                                fromZoneId: i,
+                                fromZoneName: zOrigin.name || i,
+                                fromZoneType: zOrigin.zoneType || 'R1',
+                                toZoneId: j,
+                                toZoneName: zDest.name || j,
+                                toZoneType: zDest.zoneType || 'C1',
+                                hourlyVehTrips: Math.round(tVeh),
+                                hourlyAuto: Math.round(tAuto),
+                                hourlyMoto: Math.round(tMoto),
+                                hourlyWalk: Math.round(tWalk),
+                                originLinks: oLinkStr,
+                                destLinks: dLinkStr,
+                                reason: reason
+                            });
+                        }
+                    }
+                });
+            });
+
+            this.odPairs = odPairs;
+            this.missingODs = missingODs;
+            const totalVeh = totalAuto + totalMoto + totalWalk;
+            this.stats.hourlyAutoTrips = totalAuto;
+            this.stats.hourlyMotoTrips = totalMoto;
+            this.stats.hourlyWalkTrips = totalWalk;
+            this.stats.autoShare = totalVeh > 0 ? (totalAuto / totalVeh) : 0;
+            this.stats.motoShare = totalVeh > 0 ? (totalMoto / totalVeh) : 0;
+            this.stats.walkShare = totalVeh > 0 ? (totalWalk / totalVeh) : 0;
+            this.stats.routableVehTrips = Math.round(routableVehTrips);
+            this.stats.unroutableVehTrips = Math.round(unroutableVehTrips);
+            this.stats.totalDemandVehTrips = Math.round(routableVehTrips + unroutableVehTrips);
+            this.stats.connectivityRate = (routableVehTrips + unroutableVehTrips > 0)
+                ? (routableVehTrips / (routableVehTrips + unroutableVehTrips))
+                : 1.0;
+
+            console.log(`[LUTIEngine] 重算完成 (${this.timePeriod}): 活躍 OD 通道數=${odPairs.length}, 預估小時車流=${Math.round(totalAuto + totalMoto)} 輛/h (汽車 ${(this.stats.autoShare*100).toFixed(0)}%, 機車 ${(this.stats.motoShare*100).toFixed(0)}%)`);
+            if (missingODs.length > 0) {
+                console.warn(`[LUTIEngine] ⚠️ 警告：偵測到 ${missingODs.length} 組 OD 路徑短缺，共 ${Math.round(unroutableVehTrips)} 輛/h 車流無法進入路網！`);
+            }
+        }
+
+        /**
+         * 重新計算全套 LUTI 模型
+         */
+        recalculate() {
+            this.routeCache.clear();
+            const { P, A } = this.calculateTripGeneration(this.zones, this.timePeriod);
+            const { ODMatrix, distances } = this.calculateTripDistribution(this.zones, P, A);
+            this.applyModeSplitAndDownscaling(ODMatrix, distances);
+            this.initialBurstDone = false;
+
+            if (this.simulation && this.simulation.pedManager && typeof this.simulation.pedManager.updateLUTIVolumes === 'function') {
+                this.simulation.pedManager.updateLUTIVolumes(this.stats.hourlyWalkTrips, this.timePeriod, this.diurnalMultiplier);
+            }
+        }
+
+        /**
+         * 檢查產生點之車道安全車距
+         */
+        isLaneClear(network, linkId, laneIndex, targetDist, safeBuffer = 6.0) {
+            if (!this.simulation || !this.simulation.vehicles) return true;
+            for (const v of this.simulation.vehicles) {
+                if (v.currentLinkId === linkId && v.currentLaneIndex === laneIndex && v.state === 'onLink') {
+                    if (Math.abs(v.distanceOnPath - targetDist) < safeBuffer) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+
+        /**
+         * 取得或計算兩路段間的行車路徑
+         */
+        getRoute(originLinkId, destLinkId) {
+            const key = `${originLinkId}->${destLinkId}`;
+            if (this.routeCache.has(key)) {
+                return this.routeCache.get(key);
+            }
+            if (!this.network.pathfinder) return null;
+            const route = this.network.pathfinder.findRouteBetweenLinks(originLinkId, destLinkId);
+            this.routeCache.set(key, route);
+            return route;
+        }
+
+        /**
+         * 每一模擬幀更新
+         */
+        update(dt, network, vehicleIdGenerator) {
+            if (this.is24hDynamic) {
+                const spd = this.speedMultiplier24h || 30;
+                this.timeOfDay = (this.timeOfDay + (dt * spd / 3600)) % 24;
+                this.setTimeOfDay(this.timeOfDay, true);
+            }
+
+            if (!this.odPairs || this.odPairs.length === 0) return [];
+            const spawnedVehicles = [];
+
+            if (!this.initialBurstDone) {
+                this.initialBurstDone = true;
+                for (const od of this.odPairs) {
+                    if (od.lambda <= 0) continue;
+                    // 開局預熱：主幹道依長度在出發路段散布 3~4 輛車，次要道散布 1~2 輛車
+                    const burstCount = od.hourlyVehTrips > 80 ? 3 : (od.hourlyVehTrips > 15 ? 2 : 1);
+                    for (let k = 0; k < burstCount; k++) {
+                        const v = this.spawnVehicleForOD(od, network, vehicleIdGenerator, k * 28.0);
+                        if (v) spawnedVehicles.push(v);
+                    }
+                }
+            }
+
+            for (const od of this.odPairs) {
+                if (od.lambda <= 0) continue;
+                const pSpawn = 1 - Math.exp(-od.lambda * dt);
+                if (Math.random() < pSpawn) {
+                    const v = this.spawnVehicleForOD(od, network, vehicleIdGenerator);
+                    if (v) spawnedVehicles.push(v);
+                }
+            }
+
+            return spawnedVehicles;
+        }
+
+        /**
+         * 為指定 OD 建立並實體化一輛微觀車輛
+         */
+        spawnVehicleForOD(od, network, vehicleIdGenerator, offsetBonus = 0) {
+            const route = od.route || this.getRoute(od.originLink, od.destLink);
+            if (!route || route.length === 0) return null;
+
+            const startLink = network.links[od.originLink];
+            if (!startLink) return null;
+
+            const isAuto = Math.random() < od.pAuto;
+            const profileId = isAuto ? 'luti_car' : 'luti_moto';
+            const profile = network.vehicleProfiles[profileId] || network.vehicleProfiles['default'];
+            if (!profile) return null;
+
+            const allowedLanes = getUpstreamAllowedLanes(startLink, profile, network);
+            if (allowedLanes.length === 0) return null;
+            const laneIndex = allowedLanes[Math.floor(Math.random() * allowedLanes.length)];
+
+            const linkLen = startLink.length || 100;
+            const baseDist = (od.originConnector.offsetRatio !== undefined ? od.originConnector.offsetRatio : 0) * linkLen;
+            const targetDist = baseDist + offsetBonus;
+            const safeDist = Math.max(0, Math.min(targetDist, Math.max(0, linkLen - 12)));
+
+            const safeBuffer = isAuto ? 7.0 : 4.0;
+            if (!this.isLaneClear(network, od.originLink, laneIndex, safeDist, safeBuffer)) {
+                return null;
+            }
+
+            const vehicleId = `v-luti-${vehicleIdGenerator()}`;
+            const initSpeed = Math.min(7.0, (profile.params.maxSpeed || 15) * 0.5);
+
+            const vehicle = new Vehicle(
+                vehicleId,
+                profile,
+                [...route],
+                network,
+                laneIndex,
+                { speed: initSpeed, distanceOnPath: safeDist }
+            );
+
+            vehicle.lutiOriginZone = od.fromZoneId;
+            vehicle.lutiDestZone = od.toZoneId;
+
+            const destLink = network.links[od.destLink];
+            if (destLink) {
+                const destLen = destLink.length || 100;
+                const destOffset = (od.destConnector.offsetRatio !== undefined ? od.destConnector.offsetRatio : 0.8) * destLen;
+                vehicle.destConnectorDist = Math.max(10, Math.min(destOffset, destLen - 5));
+            }
+
+            this.generatedVehiclesCount++;
+            return vehicle;
+        }
+
+        /**
+         * ★★★ [Milestone 4] 全域與各路段道路服務水準 (LOS A ~ F) 評估 ★★★
+         */
+        calculateNetworkLOS() {
+            let totalSpeed = 0;
+            let count = 0;
+            const linkStats = {};
+
+            if (this.simulation && this.simulation.vehicles) {
+                for (const v of this.simulation.vehicles) {
+                    if (v.state === 'onLink' || v.state === 'inIntersection') {
+                        const spdKmh = Math.max(0, (v.speed || 0) * 3.6);
+                        totalSpeed += spdKmh;
+                        count++;
+                        if (v.currentLinkId) {
+                            if (!linkStats[v.currentLinkId]) {
+                                linkStats[v.currentLinkId] = { totalSpd: 0, vehCount: 0 };
+                            }
+                            linkStats[v.currentLinkId].totalSpd += spdKmh;
+                            linkStats[v.currentLinkId].vehCount++;
+                        }
+                    }
+                }
+            }
+
+            const totalDemand = (this.stats.totalProduction + this.stats.totalAttraction) * (this.diurnalMultiplier || 1.0);
+            let avgSpeed = 42.0;
+            if (count > 0) {
+                avgSpeed = totalSpeed / count;
+            } else {
+                if (totalDemand > 12000) avgSpeed = 11.5;
+                else if (totalDemand > 8000) avgSpeed = 16.5;
+                else if (totalDemand > 5000) avgSpeed = 24.0;
+                else if (totalDemand > 3000) avgSpeed = 33.0;
+                else avgSpeed = 42.0;
+            }
+
+            let overallLOS = 'A';
+            if (avgSpeed >= 40.0) overallLOS = 'A';
+            else if (avgSpeed >= 32.0) overallLOS = 'B';
+            else if (avgSpeed >= 24.0) overallLOS = 'C';
+            else if (avgSpeed >= 18.0) overallLOS = 'D';
+            else if (avgSpeed >= 12.0) overallLOS = 'E';
+            else overallLOS = 'F';
+
+            const bottleneckLinks = [];
+            if (this.network && this.network.links) {
+                for (const lkId in this.network.links) {
+                    const lk = this.network.links[lkId];
+                    const stat = linkStats[lkId];
+                    let lkSpd = stat && stat.vehCount > 0 ? (stat.totalSpd / stat.vehCount) : avgSpeed;
+                    let lkLOS = 'A';
+                    if (lkSpd >= 40.0) lkLOS = 'A';
+                    else if (lkSpd >= 32.0) lkLOS = 'B';
+                    else if (lkSpd >= 24.0) lkLOS = 'C';
+                    else if (lkSpd >= 18.0) lkLOS = 'D';
+                    else if (lkSpd >= 12.0) lkLOS = 'E';
+                    else lkLOS = 'F';
+
+                    lk.currentAvgSpeed = lkSpd;
+                    lk.currentLOS = lkLOS;
+                    if (lkLOS === 'E' || lkLOS === 'F') {
+                        bottleneckLinks.push(lkId);
+                    }
+                }
+            }
+
+            return {
+                avgSpeed,
+                los: overallLOS,
+                bottleneckLinks,
+                activeVehicles: count,
+                hasSevereCongestion: (overallLOS === 'E' || overallLOS === 'F' || bottleneckLinks.length > 0)
+            };
+        }
+
+        /**
+         * 動態調整分區屬性 (即時長成 3D 建築與重算旅次)
+         */
+        updateZoneProperty(zoneId, props) {
+            if (!this.zones[zoneId]) return;
+            const zone = this.zones[zoneId];
+            Object.assign(zone, props);
+            if (this.network.zones && this.network.zones[zoneId]) {
+                Object.assign(this.network.zones[zoneId], props);
+            }
+            this.recalculate();
+
+            if (typeof window.generateCity === 'function') {
+                const seedInput = document.getElementById('citySeedInput');
+                const seed = seedInput ? (parseInt(seedInput.value, 10) || 12345) : 12345;
+                window.generateCity(this.network, seed);
+            }
+
+            if (typeof redraw2D === 'function') {
+                redraw2D();
+            }
+
+            if (window.lutiHudController) {
+                window.lutiHudController.refreshStats();
+            }
+        }
+
+        /**
+         * 取得全域都市交通統計指標
+         */
+        getSummary() {
+            let activeLutiVehicles = 0;
+            if (this.simulation && this.simulation.vehicles) {
+                activeLutiVehicles = this.simulation.vehicles.filter(v => v.lutiOriginZone).length;
+            }
+            return {
+                ...this.stats,
+                timePeriod: this.timePeriod,
+                timeOfDay: this.timeOfDay,
+                diurnalMultiplier: this.diurnalMultiplier,
+                activeVehicles: activeLutiVehicles,
+                totalSpawned: this.generatedVehiclesCount
+            };
+        }
+    }
+    window.LUTIEngine = LUTIEngine;
+
+    // =========================================================================
+    // ★★★ [Milestone 4] LUTI 都市規劃與交通指標儀表板控制器 (LUTIHUDController) ★★★
+    // =========================================================================
+    class LUTIHUDController {
+        constructor() {
+            this.simulation = null;
+            this.lutiEngine = null;
+            this.isActive = false;
+            this.updateTimer = 0;
+            this.dragState = { isDragging: false, startX: 0, startY: 0, initialLeft: 0, initialTop: 0, isDraggingSlider: false };
+        }
+
+        init() {
+            this.hudEl = document.getElementById('luti-hud');
+            this.toggleBtn = document.getElementById('lutiHudToggleBtn');
+            this.minimizeBtn = document.getElementById('lutiHudMinimizeBtn');
+            this.closeBtn = document.getElementById('lutiHudCloseBtn');
+            this.headerEl = document.getElementById('lutiHudHeader');
+
+            this.btnAM = document.getElementById('btnPeriodAM');
+            this.btnOFF = document.getElementById('btnPeriodOFF');
+            this.btnPM = document.getElementById('btnPeriodPM');
+
+            this.btn24hPlay = document.getElementById('luti24hToggleBtn');
+            this.timeSlider = document.getElementById('lutiTimeSlider');
+            this.speedSelector = document.getElementById('luti24hSpeedSelector');
+            this.clockBadge = document.getElementById('lutiHudClockBadge');
+            this.periodBadge = document.getElementById('lutiHudPeriodBadge');
+            this.diurnalStatus = document.getElementById('lutiDiurnalStatus');
+
+            this.valSiteArea = document.getElementById('lutiMetricSiteArea');
+            this.valGFA = document.getElementById('lutiMetricGFA');
+            this.valGreen = document.getElementById('lutiMetricGreen');
+            this.valPop = document.getElementById('lutiMetricPop');
+            this.valEmp = document.getElementById('lutiMetricEmp');
+            this.valTrips = document.getElementById('lutiMetricTrips');
+            this.valSpeed = document.getElementById('lutiMetricSpeed');
+            this.valLOS = document.getElementById('lutiMetricLOS');
+            this.congestionAlert = document.getElementById('lutiCongestionWarning');
+            this.zonesCount = document.getElementById('lutiTotalZonesCount');
+            this.activeVehiclesCount = document.getElementById('lutiActiveVehiclesCount');
+
+            this.chartCanvas = document.getElementById('lutiModeChart');
+            this.shareAuto = document.getElementById('lutiShareAutoVal');
+            this.shareMoto = document.getElementById('lutiShareMotoVal');
+            this.shareWalk = document.getElementById('lutiShareWalkVal');
+
+            this.zoneSelector = document.getElementById('lutiZoneSelector');
+            this.zoneTypeSelect = document.getElementById('lutiZoneTypeSelect');
+            this.bcrSlider = document.getElementById('lutiBcrSlider');
+            this.bcrVal = document.getElementById('lutiBcrVal');
+            this.farSlider = document.getElementById('lutiFarSlider');
+            this.farVal = document.getElementById('lutiFarVal');
+            this.scaleSelector = document.getElementById('lutiScaleFactorSelector');
+            this.btnQuickSurgeC2 = document.getElementById('btnQuickSurgeC2');
+            this.btnQuickQuietR1 = document.getElementById('btnQuickQuietR1');
+
+            this.heatmapBtn = document.getElementById('lutiHeatmapToggleBtn');
+            this.tiaReportBtn = document.getElementById('lutiOpenTiaReportBtn');
+
+            this.bindEvents();
+        }
+
+        bindEvents() {
+            if (this.toggleBtn) {
+                this.toggleBtn.addEventListener('click', () => this.toggleVisibility());
+            }
+            if (this.closeBtn) {
+                this.closeBtn.addEventListener('click', () => this.setVisibility(false));
+            }
+            if (this.minimizeBtn) {
+                this.minimizeBtn.addEventListener('click', () => {
+                    if (this.hudEl) this.hudEl.classList.toggle('minimized');
+                });
+            }
+
+            if (this.headerEl && this.hudEl) {
+                const startDrag = (clientX, clientY) => {
+                    this.dragState.isDragging = true;
+                    this.dragState.startX = clientX;
+                    this.dragState.startY = clientY;
+
+                    // 計算相對於 offsetParent 的座標，避免 getBoundingClientRect 造成視窗與父容器偏移落差
+                    const parent = this.hudEl.offsetParent || document.body;
+                    const parentRect = parent.getBoundingClientRect();
+                    const hudRect = this.hudEl.getBoundingClientRect();
+
+                    this.dragState.initialLeft = hudRect.left - parentRect.left;
+                    this.dragState.initialTop = hudRect.top - parentRect.top;
+
+                    this.hudEl.style.right = 'auto';
+                    this.hudEl.style.bottom = 'auto';
+                    this.hudEl.style.left = `${this.dragState.initialLeft}px`;
+                    this.hudEl.style.top = `${this.dragState.initialTop}px`;
+                    document.body.style.userSelect = 'none';
+                };
+
+                const moveDrag = (clientX, clientY) => {
+                    if (!this.dragState.isDragging || !this.hudEl) return;
+                    const dx = clientX - this.dragState.startX;
+                    const dy = clientY - this.dragState.startY;
+
+                    const parent = this.hudEl.offsetParent || document.body;
+                    const parentWidth = parent.clientWidth;
+                    const parentHeight = parent.clientHeight;
+                    const hudWidth = this.hudEl.offsetWidth;
+
+                    const minLeft = 10;
+                    const maxLeft = Math.max(10, parentWidth - hudWidth - 10);
+                    const minTop = 10;
+                    const maxTop = Math.max(10, parentHeight - 60);
+
+                    const targetLeft = Math.min(maxLeft, Math.max(minLeft, this.dragState.initialLeft + dx));
+                    const targetTop = Math.min(maxTop, Math.max(minTop, this.dragState.initialTop + dy));
+
+                    this.hudEl.style.left = `${targetLeft}px`;
+                    this.hudEl.style.top = `${targetTop}px`;
+                };
+
+                const endDrag = () => {
+                    if (this.dragState.isDragging) {
+                        this.dragState.isDragging = false;
+                        document.body.style.userSelect = '';
+                    }
+                };
+
+                this.headerEl.addEventListener('mousedown', (e) => {
+                    if (e.target.tagName === 'BUTTON' || e.target.closest('button')) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    startDrag(e.clientX, e.clientY);
+                });
+
+                window.addEventListener('mousemove', (e) => {
+                    if (this.dragState.isDragging) {
+                        moveDrag(e.clientX, e.clientY);
+                    }
+                });
+
+                window.addEventListener('mouseup', () => {
+                    endDrag();
+                });
+
+                // 支援觸控設備拖曳
+                this.headerEl.addEventListener('touchstart', (e) => {
+                    if (e.target.tagName === 'BUTTON' || e.target.closest('button')) return;
+                    if (e.touches && e.touches.length > 0) {
+                        startDrag(e.touches[0].clientX, e.touches[0].clientY);
+                    }
+                }, { passive: true });
+
+                window.addEventListener('touchmove', (e) => {
+                    if (this.dragState.isDragging && e.touches && e.touches.length > 0) {
+                        moveDrag(e.touches[0].clientX, e.touches[0].clientY);
+                    }
+                }, { passive: true });
+
+                window.addEventListener('touchend', () => {
+                    endDrag();
+                });
+                window.addEventListener('touchcancel', () => {
+                    endDrag();
+                });
+            }
+
+            const setPeriodUI = (p) => {
+                if (!this.lutiEngine) return;
+                this.lutiEngine.setTimePeriod(p, true);
+                this.updatePeriodButtons(p);
+                this.refreshStats();
+            };
+
+            if (this.btnAM) this.btnAM.addEventListener('click', () => setPeriodUI('AM'));
+            if (this.btnOFF) this.btnOFF.addEventListener('click', () => setPeriodUI('OFF'));
+            if (this.btnPM) this.btnPM.addEventListener('click', () => setPeriodUI('PM'));
+
+            if (this.btn24hPlay) {
+                this.btn24hPlay.addEventListener('click', () => this.toggle24hPlay());
+            }
+
+            if (this.timeSlider) {
+                this.timeSlider.addEventListener('mousedown', () => { this.dragState.isDraggingSlider = true; });
+                window.addEventListener('mouseup', () => { this.dragState.isDraggingSlider = false; });
+                this.timeSlider.addEventListener('input', (e) => {
+                    const h = parseFloat(e.target.value);
+                    if (this.lutiEngine) {
+                        this.lutiEngine.setTimeOfDay(h, true);
+                        this.updatePeriodButtons(this.lutiEngine.timePeriod);
+                        this.refreshStats();
+                    }
+                });
+            }
+
+            if (this.speedSelector) {
+                this.speedSelector.addEventListener('change', (e) => {
+                    if (this.lutiEngine) {
+                        this.lutiEngine.speedMultiplier24h = parseInt(e.target.value, 10) || 30;
+                    }
+                });
+            }
+
+            if (this.scaleSelector) {
+                this.scaleSelector.addEventListener('change', (e) => {
+                    const factor = parseFloat(e.target.value) || 0.30;
+                    if (this.lutiEngine) {
+                        this.lutiEngine.setScaleFactor(factor);
+                    }
+                });
+            }
+
+            if (this.zoneSelector) {
+                this.zoneSelector.addEventListener('change', (e) => {
+                    this.onZoneSelected(e.target.value);
+                });
+            }
+
+            if (this.zoneTypeSelect) {
+                this.zoneTypeSelect.addEventListener('change', (e) => {
+                    const zId = this.zoneSelector ? this.zoneSelector.value : null;
+                    if (zId && this.lutiEngine) {
+                        this.lutiEngine.updateZoneProperty(zId, { zoneType: e.target.value });
+                        this.refreshStats();
+                    }
+                });
+            }
+
+            if (this.bcrSlider) {
+                this.bcrSlider.addEventListener('input', (e) => {
+                    const val = parseInt(e.target.value, 10);
+                    if (this.bcrVal) this.bcrVal.textContent = `${val}%`;
+                    const zId = this.zoneSelector ? this.zoneSelector.value : null;
+                    if (zId && this.lutiEngine) {
+                        this.lutiEngine.updateZoneProperty(zId, { bcr: val / 100 });
+                        this.refreshStats();
+                    }
+                });
+            }
+
+            if (this.farSlider) {
+                this.farSlider.addEventListener('input', (e) => {
+                    const val = parseInt(e.target.value, 10);
+                    if (this.farVal) this.farVal.textContent = `${val}%`;
+                    const zId = this.zoneSelector ? this.zoneSelector.value : null;
+                    if (zId && this.lutiEngine) {
+                        this.lutiEngine.updateZoneProperty(zId, { far: val / 100 });
+                        this.refreshStats();
+                    }
+                });
+            }
+
+            if (this.btnQuickSurgeC2) {
+                this.btnQuickSurgeC2.addEventListener('click', () => {
+                    if (!this.lutiEngine) return;
+                    let targetZId = this.zoneSelector ? this.zoneSelector.value : null;
+                    if (!targetZId || !this.lutiEngine.zones[targetZId]) {
+                        const cand = Object.values(this.lutiEngine.zones).find(z => z.zoneType !== 'C2');
+                        targetZId = cand ? cand.id : Object.keys(this.lutiEngine.zones)[0];
+                    }
+                    if (targetZId) {
+                        if (this.zoneSelector) this.zoneSelector.value = targetZId;
+                        this.lutiEngine.updateZoneProperty(targetZId, { zoneType: 'C2', bcr: 0.70, far: 6.0 });
+                        if (this.zoneTypeSelect) this.zoneTypeSelect.value = 'C2';
+                        if (this.bcrSlider) { this.bcrSlider.value = 70; if (this.bcrVal) this.bcrVal.textContent = '70%'; }
+                        if (this.farSlider) { this.farSlider.value = 600; if (this.farVal) this.farVal.textContent = '600%'; }
+                        this.refreshStats();
+                    }
+                });
+            }
+
+            if (this.btnQuickQuietR1) {
+                this.btnQuickQuietR1.addEventListener('click', () => {
+                    if (!this.lutiEngine) return;
+                    let targetZId = this.zoneSelector ? this.zoneSelector.value : null;
+                    if (!targetZId || !this.lutiEngine.zones[targetZId]) {
+                        const cand = Object.values(this.lutiEngine.zones).find(z => z.zoneType === 'C2' || z.zoneType === 'C3');
+                        targetZId = cand ? cand.id : Object.keys(this.lutiEngine.zones)[0];
+                    }
+                    if (targetZId) {
+                        if (this.zoneSelector) this.zoneSelector.value = targetZId;
+                        this.lutiEngine.updateZoneProperty(targetZId, { zoneType: 'R1', bcr: 0.50, far: 1.20 });
+                        if (this.zoneTypeSelect) this.zoneTypeSelect.value = 'R1';
+                        if (this.bcrSlider) { this.bcrSlider.value = 50; if (this.bcrVal) this.bcrVal.textContent = '50%'; }
+                        if (this.farSlider) { this.farSlider.value = 120; if (this.farVal) this.farVal.textContent = '120%'; }
+                        this.refreshStats();
+                    }
+                });
+            }
+
+            if (this.heatmapBtn) {
+                this.heatmapBtn.addEventListener('click', () => {
+                    if (!this.lutiEngine) return;
+                    this.lutiEngine.showHeatmap = !this.lutiEngine.showHeatmap;
+                    this.heatmapBtn.classList.toggle('active', this.lutiEngine.showHeatmap);
+                    if (typeof redraw2D === 'function') redraw2D();
+                    if (typeof render3DScene === 'function') render3DScene();
+                });
+            }
+
+            if (this.tiaReportBtn) {
+                this.tiaReportBtn.addEventListener('click', () => {
+                    if (typeof window.TIAReportGenerator !== 'undefined') {
+                        window.TIAReportGenerator.showModal(this.simulation ? this.simulation.network : null, this.simulation);
+                    }
+                });
+            }
+        }
+
+        setSimulation(sim) {
+            this.simulation = sim;
+            this.lutiEngine = sim ? sim.lutiEngine : null;
+            if (this.lutiEngine) {
+                if (this.scaleSelector) {
+                    const selFactor = parseFloat(this.scaleSelector.value);
+                    if (!isNaN(selFactor)) {
+                        this.lutiEngine.setScaleFactor(selFactor);
+                    }
+                }
+                this.populateZones();
+                this.updatePeriodButtons(this.lutiEngine.timePeriod);
+                this.setVisibility(true);
+                this.refreshStats();
+            } else {
+                this.setVisibility(false);
+            }
+        }
+
+        setVisibility(visible) {
+            this.isActive = !!visible;
+            if (this.hudEl) this.hudEl.style.display = this.isActive ? 'flex' : 'none';
+            if (this.toggleBtn) this.toggleBtn.classList.toggle('active', this.isActive);
+        }
+
+        toggleVisibility() {
+            this.setVisibility(!this.isActive);
+        }
+
+        toggle24hPlay() {
+            if (!this.lutiEngine) return;
+            this.lutiEngine.is24hDynamic = !this.lutiEngine.is24hDynamic;
+            if (this.btn24hPlay) {
+                this.btn24hPlay.classList.toggle('playing', this.lutiEngine.is24hDynamic);
+                this.btn24hPlay.innerHTML = this.lutiEngine.is24hDynamic
+                    ? '<i class="fa-solid fa-pause"></i> <span>暫停演繹</span>'
+                    : '<i class="fa-solid fa-play"></i> <span>24H 演繹</span>';
+            }
+        }
+
+        updatePeriodButtons(period) {
+            if (this.btnAM) this.btnAM.classList.toggle('active', period === 'AM');
+            if (this.btnOFF) this.btnOFF.classList.toggle('active', period === 'OFF');
+            if (this.btnPM) this.btnPM.classList.toggle('active', period === 'PM');
+            if (this.periodBadge) {
+                const map = { 'AM': 'AM 尖峰', 'OFF': '日間離峰', 'PM': 'PM 尖峰' };
+                this.periodBadge.textContent = map[period] || period;
+            }
+        }
+
+        populateZones() {
+            if (!this.zoneSelector || !this.lutiEngine) return;
+            this.zoneSelector.innerHTML = '';
+            const zoneList = Object.values(this.lutiEngine.zones);
+            if (zoneList.length === 0) {
+                const opt = document.createElement('option');
+                opt.value = ''; opt.textContent = '(無土地使用分區)';
+                this.zoneSelector.appendChild(opt);
+                return;
+            }
+
+            zoneList.forEach((z, idx) => {
+                const opt = document.createElement('option');
+                opt.value = z.id;
+                opt.textContent = `${z.name || z.id} (${z.zoneType || 'R1'})`;
+                if (idx === 0) opt.selected = true;
+                this.zoneSelector.appendChild(opt);
+            });
+
+            this.onZoneSelected(zoneList[0].id);
+        }
+
+        onZoneSelected(zoneId) {
+            if (!this.lutiEngine || !this.lutiEngine.zones[zoneId]) return;
+            const zone = this.lutiEngine.zones[zoneId];
+            if (this.zoneTypeSelect) this.zoneTypeSelect.value = zone.zoneType || 'R1';
+            const bcrP = Math.round(((zone.bcr !== undefined && zone.bcr !== null) ? zone.bcr : 0.5) * 100);
+            const farP = Math.round(((zone.far !== undefined && zone.far !== null) ? zone.far : 1.2) * 100);
+            if (this.bcrSlider) this.bcrSlider.value = bcrP;
+            if (this.bcrVal) this.bcrVal.textContent = `${bcrP}%`;
+            if (this.farSlider) this.farSlider.value = farP;
+            if (this.farVal) this.farVal.textContent = `${farP}%`;
+        }
+
+        update(dt) {
+            if (!this.lutiEngine) return;
+            this.updateTimer += dt;
+            if (this.updateTimer >= 0.25) {
+                this.updateTimer = 0;
+                this.refreshStats();
+            }
+        }
+
+        refreshStats() {
+            if (!this.lutiEngine) return;
+            const engine = this.lutiEngine;
+            const zones = Object.values(engine.zones);
+
+            if (this.zonesCount) this.zonesCount.textContent = `${zones.length} 分區`;
+
+            let totalSite = 0;
+            zones.forEach(z => { totalSite += engine.calculatePolygonArea(z.boundary); });
+            if (this.valSiteArea) this.valSiteArea.textContent = (totalSite / 10000).toFixed(2);
+            if (this.valGFA) this.valGFA.textContent = Math.round(engine.stats.totalGFA).toLocaleString();
+            if (this.valGreen) this.valGreen.textContent = engine.calculateGreenCoverage().toFixed(1) + '%';
+            if (this.valPop) this.valPop.textContent = Math.round(engine.stats.totalPop).toLocaleString();
+            if (this.valEmp) this.valEmp.textContent = Math.round(engine.stats.totalEmp).toLocaleString();
+
+            const diurnal = engine.diurnalMultiplier || 1.0;
+            const trips = Math.round((engine.stats.totalProduction + engine.stats.totalAttraction) * diurnal);
+            if (this.valTrips) this.valTrips.textContent = trips.toLocaleString();
+
+            // LOS & Speed
+            const losRes = engine.calculateNetworkLOS();
+            if (this.valSpeed) this.valSpeed.textContent = losRes.avgSpeed.toFixed(1);
+            if (this.valLOS) {
+                this.valLOS.textContent = 'LOS ' + losRes.los;
+                this.valLOS.className = 'los-badge los-' + losRes.los.toLowerCase();
+            }
+            if (this.activeVehiclesCount) {
+                this.activeVehiclesCount.textContent = `${losRes.activeVehicles} 動態車輛`;
+            }
+
+            if (this.congestionAlert) {
+                if (losRes.hasSevereCongestion) {
+                    this.congestionAlert.style.display = 'flex';
+                    const alertText = document.getElementById('lutiCongestionText');
+                    if (alertText) {
+                        alertText.textContent = `路網出現嚴重瓶頸壅塞警示 (LOS ${losRes.los}) - 車流飽和！`;
+                    }
+                } else {
+                    this.congestionAlert.style.display = 'none';
+                }
+            }
+
+            // Mode split donut chart
+            this.drawModeShareChart(engine.stats.autoShare, engine.stats.motoShare, engine.stats.walkShare);
+
+            if (this.shareAuto) this.shareAuto.textContent = `${(engine.stats.autoShare * 100).toFixed(0)}%`;
+            if (this.shareMoto) this.shareMoto.textContent = `${(engine.stats.motoShare * 100).toFixed(0)}%`;
+            if (this.shareWalk) this.shareWalk.textContent = `${(engine.stats.walkShare * 100).toFixed(0)}%`;
+
+            // Clock & Time slider
+            const h = Math.floor(engine.timeOfDay);
+            const m = Math.floor((engine.timeOfDay % 1) * 60);
+            const clockStr = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
+            if (this.clockBadge) this.clockBadge.textContent = clockStr;
+            const topBadge = document.getElementById('lutiClockBadge');
+            if (topBadge) topBadge.textContent = clockStr;
+            if (this.timeSlider && !this.dragState.isDraggingSlider) {
+                this.timeSlider.value = engine.timeOfDay.toFixed(1);
+            }
+            if (this.diurnalStatus) {
+                this.diurnalStatus.textContent = `${diurnal.toFixed(2)}x Demand`;
+            }
+        }
+
+        drawModeShareChart(autoShare, motoShare, walkShare) {
+            if (!this.chartCanvas) return;
+            const ctx = this.chartCanvas.getContext('2d');
+            const w = this.chartCanvas.width;
+            const h = this.chartCanvas.height;
+            ctx.clearRect(0, 0, w, h);
+
+            const cx = w / 2;
+            const cy = h / 2;
+            const outerR = Math.min(w, h) * 0.44;
+            const innerR = outerR * 0.60;
+
+            const shares = [
+                { share: autoShare, color: '#3b82f6' },
+                { share: motoShare, color: '#f59e0b' },
+                { share: walkShare, color: '#10b981' }
+            ];
+
+            let startAngle = -Math.PI / 2;
+            for (const item of shares) {
+                const sliceAngle = Math.max(0.01, item.share) * Math.PI * 2;
+                ctx.beginPath();
+                ctx.arc(cx, cy, outerR, startAngle, startAngle + sliceAngle);
+                ctx.arc(cx, cy, innerR, startAngle + sliceAngle, startAngle, true);
+                ctx.closePath();
+                ctx.fillStyle = item.color;
+                ctx.fill();
+                startAngle += sliceAngle;
+            }
+
+            ctx.beginPath();
+            ctx.arc(cx, cy, innerR - 2, 0, Math.PI * 2);
+            ctx.fillStyle = '#0f172a';
+            ctx.fill();
+
+            ctx.fillStyle = '#f8fafc';
+            ctx.font = 'bold 11px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('MODE', cx, cy - 6);
+            ctx.font = '9px monospace';
+            ctx.fillStyle = '#94a3b8';
+            ctx.fillText('SPLIT', cx, cy + 8);
+        }
+    }
+
+    const lutiHudController = new LUTIHUDController();
+    window.lutiHudController = lutiHudController;
+    lutiHudController.init();
+
     // [修改] Simulation 類別：整合了 OD 模式與 Flow 模式的初始化與更新邏輯
     class Simulation {
         constructor(network) {
@@ -7865,6 +10314,16 @@ document.addEventListener('DOMContentLoaded', () => {
             this.time = 0;
             this.vehicles = [];
             this.vehicleIdCounter = 0;
+
+            // ★★★ [Milestone 3] 載入 LUTI 旅次需求生成引擎 ★★★
+            if (network.zones && Object.keys(network.zones).length > 0) {
+                this.lutiEngine = new LUTIEngine(this, network);
+                window.lutiEngine = this.lutiEngine;
+            } else {
+                this.lutiEngine = null;
+                window.lutiEngine = null;
+            }
+
 
             // --- 建立停止線快速查詢表 (區分車種) ---
             this.stopLineMap = {};     // 給汽車用 (需退後)
@@ -8025,6 +10484,10 @@ document.addEventListener('DOMContentLoaded', () => {
             // ★ 初始化行人管理器
             if (typeof window.PedestrianManagerSim !== 'undefined') {
                 this.pedManager = new window.PedestrianManagerSim(this, network);
+                // ★★★ [Milestone 4] 連動 LUTI 步行需求與周邊 500m 斑馬線/路口行人產生器 ★★★
+                if (this.lutiEngine && typeof this.pedManager.initLUTISpawners === 'function') {
+                    this.pedManager.initLUTISpawners(network, this.lutiEngine);
+                }
             }
 
             // =================================================================
@@ -8069,6 +10532,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
 
+            // ★★★ [Milestone 3] LUTI 旅次生成引擎微觀交通發布更新 ★★★
+            if (this.lutiEngine) {
+                const lutiVehicles = this.lutiEngine.update(dt, this.network, () => this.vehicleIdCounter++);
+                if (lutiVehicles && lutiVehicles.length > 0) {
+                    for (const lv of lutiVehicles) {
+                        this.vehicles.push(lv);
+                    }
+                }
+            }
+
             this.vehicles.forEach(vehicle => vehicle.update(dt, this.vehicles, this));
             this.vehicles = this.vehicles.filter(v => !v.finished);
 
@@ -8078,12 +10551,16 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
     }
+    window.Simulation = Simulation;
 
     class Pathfinder {
         constructor(links, nodes) {
+            this.links = links;
+            this.nodes = nodes;
             this.adj = new Map();
             for (const linkId in links) {
                 const link = links[linkId];
+                if (!link.source || link.source === '-1' || link.source === -1) continue;
                 if (!this.adj.has(link.source)) this.adj.set(link.source, []);
                 this.adj.get(link.source).push({ linkId: link.id, toNode: link.destination });
             }
@@ -8105,6 +10582,49 @@ document.addEventListener('DOMContentLoaded', () => {
                         visited.add(neighbor.toNode);
                         const newPath = [...path, neighbor.linkId];
                         q.push([neighbor.toNode, newPath]);
+                    }
+                }
+            }
+            return null;
+        }
+
+        // ★★★ [Milestone 3] 路段至路段全域尋標器 (Link-to-Link Pathfinder) ★★★
+        findRouteBetweenLinks(startLinkId, endLinkId) {
+            if (!startLinkId || !endLinkId) return null;
+            if (startLinkId === endLinkId) return [startLinkId];
+
+            const startLink = this.links ? this.links[startLinkId] : null;
+            const endLink = this.links ? this.links[endLinkId] : null;
+            if (!startLink || !endLink) return null;
+
+            const isValidNode = (n) => n && n !== '-1' && n !== -1 && (!this.nodes || this.nodes[n]);
+
+            // 1. 若兩路段透過中間合法節點相連，優先呼叫節點級尋標 (排除 -1 虛擬端點)
+            if (isValidNode(startLink.destination) && isValidNode(endLink.source)) {
+                if (startLink.destination === endLink.source) {
+                    return [startLinkId, endLinkId];
+                }
+                const betweenNodes = this.findRoute(startLink.destination, endLink.source);
+                if (betweenNodes !== null) {
+                    return [startLinkId, ...betweenNodes, endLinkId];
+                }
+            }
+
+            // 2. 直接在 Link 圖拓撲上進行廣度優先搜尋 (BFS)
+            const q = [[startLinkId]];
+            const visited = new Set([startLinkId]);
+            while (q.length > 0) {
+                const currPath = q.shift();
+                const currLinkId = currPath[currPath.length - 1];
+                if (currLinkId === endLinkId) return currPath;
+                const curL = this.links ? this.links[currLinkId] : null;
+                if (!curL || !isValidNode(curL.destination)) continue;
+                const neighbors = this.adj.get(curL.destination) || [];
+                for (const n of neighbors) {
+                    if (n.toNode === '-1' || n.toNode === -1) continue;
+                    if (!visited.has(n.linkId)) {
+                        visited.add(n.linkId);
+                        q.push([...currPath, n.linkId]);
                     }
                 }
             }
@@ -9376,6 +11896,16 @@ document.addEventListener('DOMContentLoaded', () => {
             // 收集數據
             this.collectMeterData(oldDistanceOnPath, simulation);
 
+            // ★★★ [Milestone 3] LUTI 目的地吸收判定 ★★★
+            if (this.lutiDestZone && this.currentLinkIndex >= this.route.length - 1) {
+                if (this.destConnectorDist !== undefined && this.destConnectorDist !== null) {
+                    if (this.distanceOnPath >= this.destConnectorDist) {
+                        this.finished = true;
+                        return;
+                    }
+                }
+            }
+
             // 路徑轉換
             if (this.distanceOnPath > this.currentPathLength) {
                 const leftoverDistance = this.distanceOnPath - this.currentPathLength;
@@ -9957,8 +12487,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 const currentLink = network.links[this.currentLinkId];
                 const nextLinkId = this.route[nextLinkIndex];
-                const destNodeId = currentLink.destination;
-                const destNode = network.nodes[destNodeId];
+                const destNodeId = currentLink ? currentLink.destination : null;
+                const destNode = destNodeId ? network.nodes[destNodeId] : null;
+
+                // 若目標路口節點不存在或無轉向過渡線 (例如直連路段或邊界端點)，直接切換至下一路段
+                if (!destNode || !destNode.transitions) {
+                    this.switchToNextLink(leftoverDistance, network);
+                    return;
+                }
 
                 // --- 兩段式左轉判定 (機車專用) ---
                 if (this.isMotorcycle) {
@@ -10238,7 +12774,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!tfl) return true;
 
             const node = network.nodes[nodeId];
-            if (!node) return true;
+            if (!node || !node.transitions) return true;
 
             // --- 內部輔助：計算道路角度 ---
             const getLinkAngle = (l, isStart) => {
@@ -10771,6 +13307,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const nextLinkId = this.route[this.currentLinkIndex + 1];
             if (!nextLinkId) return;
             const destNode = network.nodes[link.destination];
+            if (!destNode || !destNode.transitions) return;
             const canPass = destNode.transitions.some(t => t.sourceLinkId === this.currentLinkId && t.sourceLaneIndex === this.currentLaneIndex && t.destLinkId === nextLinkId);
             if (canPass) return;
 
@@ -10832,6 +13369,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const nextLinkId = this.route[this.currentLinkIndex + 1];
             if (!nextLinkId) return;
             const destNode = network.nodes[link.destination];
+            if (!destNode || !destNode.transitions) return;
 
             if (this.isMotorcycle && this.currentLaneIndex < maxLaneIndex) {
                 const targetLane = this.currentLaneIndex + 1;
@@ -11283,7 +13821,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     const nextLinkIndex = this.currentLinkIndex + 1;
                     if (nextLinkIndex < this.route.length) {
                         const currentLink = network.links[this.currentLinkId];
-                        const destNode = network.nodes[currentLink.destination];
+                        const destNode = currentLink ? network.nodes[currentLink.destination] : null;
                         const nextLinkId = this.route[nextLinkIndex];
 
                         // ★★★★★ [關鍵修正開始] ★★★★★
@@ -11298,9 +13836,12 @@ document.addEventListener('DOMContentLoaded', () => {
                         const finalLane = checkLane;
                         // ★★★★★ [關鍵修正結束] ★★★★★
 
-                        let myTransition = destNode.transitions.find(t => t.sourceLinkId === this.currentLinkId && t.sourceLaneIndex === finalLane && t.destLinkId === nextLinkId);
-                        if (!myTransition) {
-                            myTransition = destNode.transitions.find(t => t.sourceLinkId === this.currentLinkId && t.destLinkId === nextLinkId);
+                        let myTransition = null;
+                        if (destNode && destNode.transitions) {
+                            myTransition = destNode.transitions.find(t => t.sourceLinkId === this.currentLinkId && t.sourceLaneIndex === finalLane && t.destLinkId === nextLinkId);
+                            if (!myTransition) {
+                                myTransition = destNode.transitions.find(t => t.sourceLinkId === this.currentLinkId && t.destLinkId === nextLinkId);
+                            }
                         }
 
                         if (myTransition) {
@@ -11433,12 +13974,15 @@ document.addEventListener('DOMContentLoaded', () => {
                                     const otherNextLinkIndex = other.currentLinkIndex + 1;
                                     if (otherNextLinkIndex < other.route.length) {
                                         const otherNextLinkId = other.route[otherNextLinkIndex];
-                                        const otherDestNode = network.nodes[currentLink.destination];
+                                        const otherDestNode = currentLink ? network.nodes[currentLink.destination] : null;
 
                                         // 找出對方的過彎規則
-                                        let otherTrans = otherDestNode.transitions.find(t => t.sourceLinkId === other.currentLinkId && t.sourceLaneIndex === other.currentLaneIndex && t.destLinkId === otherNextLinkId);
-                                        if (!otherTrans) {
-                                            otherTrans = otherDestNode.transitions.find(t => t.sourceLinkId === other.currentLinkId && t.destLinkId === otherNextLinkId);
+                                        let otherTrans = null;
+                                        if (otherDestNode && otherDestNode.transitions) {
+                                            otherTrans = otherDestNode.transitions.find(t => t.sourceLinkId === other.currentLinkId && t.sourceLaneIndex === other.currentLaneIndex && t.destLinkId === otherNextLinkId);
+                                            if (!otherTrans) {
+                                                otherTrans = otherDestNode.transitions.find(t => t.sourceLinkId === other.currentLinkId && t.destLinkId === otherNextLinkId);
+                                            }
                                         }
 
                                         // 如果他的終點 Link 與 車道，跟我們完全一樣 (發生匯流衝突)
@@ -12542,32 +15086,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
             function getClosestPointOnPathWithDistance(path, point) {
-                if (!path || path.length < 2) return null;
-                let best = null;
-                let accumulatedLength = 0;
-                for (let i = 0; i < path.length - 1; i++) {
-                    const v = path[i];
-                    const w = path[i + 1];
-                    const dx = w.x - v.x;
-                    const dy = w.y - v.y;
-                    const l2 = dx * dx + dy * dy;
-                    if (l2 <= 0) continue;
-
-                    let t = ((point.x - v.x) * dx + (point.y - v.y) * dy) / l2;
-                    t = Math.max(0, Math.min(1, t));
-
-                    const x = v.x + t * dx;
-                    const y = v.y + t * dy;
-                    const dist = Math.hypot(point.x - x, point.y - y);
-                    const s = accumulatedLength + t * Math.sqrt(l2);
-
-                    if (!best || dist < best.dist) {
-                        best = { x, y, dist, s };
-                    }
-
-                    accumulatedLength += Math.sqrt(l2);
-                }
-                return best;
+                return Geom.Utils.getClosestPointOnPathWithDistance(path, point);
             }
 
             // --- 1. 解析全域參數 ---
@@ -12691,6 +15210,9 @@ document.addEventListener('DOMContentLoaded', () => {
                         });
                     });
                 }
+
+                link.waypoints = centerlinePolyline;
+                link.centerline = centerlinePolyline;
 
                 const miteredNormals = [];
                 if (centerlinePolyline.length > 1) {
@@ -13902,6 +16424,84 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
 
+            // =========================================================
+            // ★★★ [新增] 11. 解析土地使用分區 (LandUseZones) ★★★
+            // =========================================================
+            const zones = {};
+            const zonesContainer = xmlDoc.getElementsByTagName("LandUseZones")[0] || xmlDoc.getElementsByTagName("tm:LandUseZones")[0];
+            if (zonesContainer) {
+                const zoneElements = getChildrenByLocalName(zonesContainer, "Zone");
+                zoneElements.forEach(zoneEl => {
+                    const id = getChildValue(zoneEl, "id");
+                    const name = getChildValue(zoneEl, "name");
+                    const zoneType = getChildValue(zoneEl, "zoneType") || 'R1';
+
+                    let bcr = null, far = null, customPop = null, customEmp = null, autoCalculateTraffic = true;
+                    const paramEl = getChildrenByLocalName(zoneEl, "parameters")[0];
+                    if (paramEl) {
+                        const bcrStr = getChildValue(paramEl, "bcr");
+                        const farStr = getChildValue(paramEl, "far");
+                        const popStr = getChildValue(paramEl, "customPop");
+                        const empStr = getChildValue(paramEl, "customEmp");
+                        const autoStr = getChildValue(paramEl, "autoCalculateTraffic");
+                        if (bcrStr !== null && bcrStr !== '') bcr = parseFloat(bcrStr);
+                        if (farStr !== null && farStr !== '') far = parseFloat(farStr);
+                        if (popStr !== null && popStr !== '' && popStr !== 'null') customPop = parseFloat(popStr);
+                        if (empStr !== null && empStr !== '' && empStr !== 'null') customEmp = parseFloat(empStr);
+                        if (autoStr !== null && autoStr !== '') autoCalculateTraffic = (autoStr === 'true');
+                    }
+
+                    const boundary = [];
+                    const boundEl = getChildrenByLocalName(zoneEl, "Boundary")[0];
+                    if (boundEl) {
+                        getChildrenByLocalName(boundEl, "Point").forEach(pEl => {
+                            const px = parseFloat(getChildValue(pEl, "x"));
+                            const py = -parseFloat(getChildValue(pEl, "y")); // 反轉 Y 軸以符合內部畫布與 3D 座標系
+                            if (!isNaN(px) && !isNaN(py)) {
+                                boundary.push({ x: px, y: py });
+                                updateBounds({ x: px, y: py });
+                            }
+                        });
+                    }
+
+                    const accessNodes = [];
+                    const connContainer = getChildrenByLocalName(zoneEl, "Connectors")[0];
+                    if (connContainer) {
+                        getChildrenByLocalName(connContainer, "Connector").forEach(cEl => {
+                            const cId = getChildValue(cEl, "id");
+                            const targetLinkId = getChildValue(cEl, "targetLinkId");
+                            const offsetRatio = parseFloat(getChildValue(cEl, "offsetRatio") || 0.5);
+                            const gateType = getChildValue(cEl, "gateType") || 'bidirectional';
+                            const accessX = parseFloat(getChildValue(cEl, "accessX") || 0);
+                            const accessY = -parseFloat(getChildValue(cEl, "accessY") || 0);
+                            accessNodes.push({
+                                id: cId,
+                                linkId: targetLinkId,
+                                offsetRatio,
+                                gateType,
+                                accessPoint: { x: accessX, y: accessY }
+                            });
+                        });
+                    }
+
+                    if (boundary.length >= 3) {
+                        const finalId = id || `zone_${Object.keys(zones).length}`;
+                        zones[finalId] = {
+                            id: finalId,
+                            name: name || finalId,
+                            zoneType,
+                            bcr,
+                            far,
+                            customPop,
+                            customEmp,
+                            autoCalculateTraffic,
+                            boundary,
+                            accessNodes
+                        };
+                    }
+                });
+            }
+
             Promise.all(imagePromises).then(() => {
                 resolve({
                     links,
@@ -13916,6 +16516,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     medians, // [新增]
                     freeRoadSigns, // ★ 新增：匯出自由模式標誌
                     geoAnchors, // ★★★ 最重要的一行：必須把 geoAnchors 放進這裡，滑鼠事件才讀得到！ ★★★
+                    zones, // ★ [新增] 土地使用分區 (LUTI Sandbox)
                     bounds: { minX, minY, maxX, maxY },
                     pathfinder: new Pathfinder(links, nodes),
                     backgroundTiles,
@@ -14066,5 +16667,50 @@ document.addEventListener('DOMContentLoaded', () => {
                 generateCity(networkData, seed);
             }
         });
+    }
+
+    // 自動檢測 URL 參數或 localStorage 載入網路
+    try {
+        const urlParams = new URLSearchParams(window.location.search);
+        const fileParam = urlParams.get('file');
+        const exportedNetwork = localStorage.getItem('simTrafficFlow_exportedNetwork');
+        if (fileParam) {
+            console.log(`從 URL 參數自動載入路網模型: ${fileParam}...`);
+            setTimeout(() => {
+                fetch(fileParam)
+                    .then(res => {
+                        if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+                        return res.text();
+                    })
+                    .then(xmlContent => {
+                        loadTrafficModelFromXML(xmlContent).then(() => {
+                            console.log(`成功載入路網檔案: ${fileParam}`);
+                            const display3DBtn = document.getElementById('display3DBtn');
+                            if (display3DBtn && !isDisplay3D) {
+                                display3DBtn.click();
+                            }
+                        }).catch(err => {
+                            console.error("解析 URL 路網 XML 失敗:", err);
+                        });
+                    })
+                    .catch(err => {
+                        console.error("載入 URL 路網檔案失敗:", err);
+                    });
+            }, 300);
+        } else if (urlParams.get('source') === 'editor' && exportedNetwork) {
+            console.log("從 Network Editor (localStorage) 自動載入路網模型...");
+            setTimeout(() => {
+                loadTrafficModelFromXML(exportedNetwork).then(() => {
+                    const display3DBtn = document.getElementById('display3DBtn');
+                    if (display3DBtn && !isDisplay3D) {
+                        display3DBtn.click();
+                    }
+                }).catch(err => {
+                    console.error("自動載入 Network Editor 路網失敗:", err);
+                });
+            }, 300);
+        }
+    } catch (e) {
+        console.warn("檢查 URL 參數或 localStorage 失敗:", e);
     }
 });

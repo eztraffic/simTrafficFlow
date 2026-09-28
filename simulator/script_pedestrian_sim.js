@@ -9,12 +9,12 @@ function randNormal(min, max) {
 }
 
 // 多樣化行人服飾、膚色與髮型配色庫
-const PED_MALE_SHIRTS = [0x2563eb, 0x0284c7, 0xdc2626, 0x059669, 0x334155, 0xd97706, 0x7c3aed, 0xf1f5f9, 0x0f766e, 0xeab308, 0x475569];
-const PED_FEMALE_SHIRTS = [0xec4899, 0xf43f5e, 0x06b6d4, 0xfbbf24, 0xa855f7, 0xfef3c7, 0x10b981, 0x38bdf8, 0x991b1b, 0xf97316, 0x6366f1];
-const PED_PANTS = [0x1e293b, 0x0f172a, 0x475569, 0xc2b280, 0x18181b, 0x334155, 0x27272a, 0x3f3f46];
-const PED_SKINS = [0xfde2d1, 0xfcbda1, 0xe5a77f, 0xc88358, 0x8d5524];
-const PED_HAIRS = [0x1c1917, 0x292524, 0x451a03, 0x78350f, 0x9a3412, 0xd97706];
-const PED_SHOES = [0xf8fafc, 0x18181b, 0x334155, 0x52525b, 0x7c2d12];
+var PED_MALE_SHIRTS = [0x2563eb, 0x0284c7, 0xdc2626, 0x059669, 0x334155, 0xd97706, 0x7c3aed, 0xf1f5f9, 0x0f766e, 0xeab308, 0x475569];
+var PED_FEMALE_SHIRTS = [0xec4899, 0xf43f5e, 0x06b6d4, 0xfbbf24, 0xa855f7, 0xfef3c7, 0x10b981, 0x38bdf8, 0x991b1b, 0xf97316, 0x6366f1];
+var PED_PANTS = [0x1e293b, 0x0f172a, 0x475569, 0xc2b280, 0x18181b, 0x334155, 0x27272a, 0x3f3f46];
+var PED_SKINS = [0xfde2d1, 0xfcbda1, 0xe5a77f, 0xc88358, 0x8d5524];
+var PED_HAIRS = [0x1c1917, 0x292524, 0x451a03, 0x78350f, 0x9a3412, 0xd97706];
+var PED_SHOES = [0xf8fafc, 0x18181b, 0x334155, 0x52525b, 0x7c2d12];
 
 class Pedestrian {
     constructor(id, startPoint, endPoint, width, crosswalk, spawner, crossTwice) {
@@ -198,11 +198,138 @@ class PedestrianSimManager {
         this.pedIdCounter = 0;
 
         this.initSpawners();
+        this.initLUTISpawners();
 
         // 3D 群組
         if (typeof THREE !== 'undefined') {
             this.group3D = new THREE.Group();
             this.group3D.name = "PedestriansGroup";
+        }
+    }
+
+    initLUTISpawners() {
+        if (!this.network.zones || Object.keys(this.network.zones).length === 0) return;
+        if (!this.network.roadMarkings) return;
+
+        // 收集所有標線斑馬線
+        const allCrosswalks = [];
+        this.network.roadMarkings.forEach(mark => {
+            if (mark.type === 'crosswalk' || mark.type === 'diagonal_crosswalk') {
+                const lineData = window.calculateCrosswalkLine ? window.calculateCrosswalkLine(mark, this.network) : null;
+                if (lineData) {
+                    const midX = (lineData.p1.x + lineData.p2.x) / 2;
+                    const midY = (lineData.p1.y + lineData.p2.y) / 2;
+                    allCrosswalks.push({
+                        mark,
+                        lineData,
+                        mid: { x: midX, y: midY },
+                        nodeId: mark.nodeId,
+                        turnGroupId: mark.signalGroupId || null,
+                        invertSignal: false,
+                        cw: {
+                            id: mark.id,
+                            p1: lineData.p1,
+                            p2: lineData.p2,
+                            width: lineData.width || 3.0,
+                            turnGroupId: mark.signalGroupId || null,
+                            invertSignal: false,
+                            isDiagonal: mark.type === 'diagonal_crosswalk',
+                            hasRefuge: false
+                        }
+                    });
+                }
+            }
+        });
+
+        if (allCrosswalks.length === 0) return;
+
+        const lutiEngine = this.simulation ? this.simulation.lutiEngine : (window.lutiEngine || null);
+        const walkTrips = lutiEngine && lutiEngine.stats ? (lutiEngine.stats.hourlyWalkTrips || 150) : 150;
+        const scaleFactor = lutiEngine ? (lutiEngine.scaleFactor || 0.05) : 0.05;
+
+        // 找出所有鄰近分區 (< 500m) 之斑馬線並建立 LUTI 生成器
+        allCrosswalks.forEach(item => {
+            let minDist = Infinity;
+            let nearestZone = null;
+            Object.values(this.network.zones).forEach(zone => {
+                const b = zone.boundary || [];
+                let cx = 0, cy = 0;
+                b.forEach(p => { cx += p.x; cy += p.y; });
+                if (b.length > 0) { cx /= b.length; cy /= b.length; }
+                const d = Math.hypot(item.mid.x - cx, item.mid.y - cy);
+                if (d < minDist) {
+                    minDist = d;
+                    nearestZone = zone;
+                }
+            });
+
+            if (minDist <= 500) {
+                const existing = this.spawners.find(s => s.nodeId === item.nodeId && s.isLuti);
+                if (existing) {
+                    if (!existing.crosswalks.some(c => c.id === item.cw.id)) {
+                        existing.crosswalks.push(item.cw);
+                    }
+                    return;
+                }
+
+                // 換算微觀小時發出人數 (保持微觀模擬自然流暢)
+                const baseVolume = Math.max(30, Math.min(220, Math.round(walkTrips * scaleFactor * (1 - minDist / 650) * 1.5)));
+                const spawner = {
+                    nodeId: item.nodeId || `luti_node_${item.mark.id}`,
+                    isLuti: true,
+                    nearestZoneId: nearestZone ? nearestZone.id : null,
+                    distanceToZone: minDist,
+                    baseVolume: baseVolume,
+                    volume: baseVolume,
+                    interval: 3600 / baseVolume,
+                    timer: Math.random() * (3600 / baseVolume),
+                    crossOnceProb: 80,
+                    crossTwiceProb: 20,
+                    crosswalks: [item.cw],
+                    diagonals: [],
+                    findConnectingCrosswalk: (currentCw, x, y) => {
+                        for (const cw of spawner.crosswalks) {
+                            if (cw.id === currentCw.id) continue;
+                            const d1 = Math.hypot(x - cw.p1.x, y - cw.p1.y);
+                            const d2 = Math.hypot(x - cw.p2.x, y - cw.p2.y);
+                            if (d1 < 10 || d2 < 10) return cw;
+                        }
+                        return null;
+                    }
+                };
+                this.spawners.push(spawner);
+            }
+        });
+
+        console.log(`[PedestrianSim] 成功對接 LUTI 短途步行需求，共掛載 ${this.spawners.filter(s => s.isLuti).length} 處斑馬線行人生成器。`);
+    }
+
+    /**
+     * 時段或 24 小時晝夜動態演繹時，即時動態調整行人生成強度
+     */
+    updateLUTIVolumes(hourlyWalkTrips, period = 'AM', diurnalFactor = 1.0) {
+        let periodMultiplier = 1.0;
+        if (period === 'AM') periodMultiplier = 1.35;
+        else if (period === 'PM') periodMultiplier = 1.45;
+        else if (period === 'OFF') periodMultiplier = 0.85;
+
+        this.spawners.forEach(sp => {
+            if (!sp.isLuti) return;
+            const targetVol = Math.max(15, Math.min(300, Math.round(sp.baseVolume * periodMultiplier * diurnalFactor)));
+            sp.volume = targetVol;
+            sp.interval = 3600 / Math.max(1, targetVol);
+        });
+
+        // 若當前行人過少且切換時段，立即觸發首發行人提供即時視覺回饋
+        if (this.spawners.some(s => s.isLuti) && this.pedestrians.length < 3) {
+            const sp = this.spawners.find(s => s.isLuti);
+            if (sp && sp.crosswalks.length > 0) {
+                const cw = sp.crosswalks[0];
+                const startP = Math.random() > 0.5 ? cw.p1 : cw.p2;
+                const endP = startP === cw.p1 ? cw.p2 : cw.p1;
+                const ped = new Pedestrian(`ped_luti_${this.pedIdCounter++}`, startP, endP, cw.width, cw, sp, false);
+                this.pedestrians.push(ped);
+            }
         }
     }
 
