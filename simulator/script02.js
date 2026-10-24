@@ -529,9 +529,10 @@ document.addEventListener('DOMContentLoaded', () => {
     let lastTimestamp = 0;
     let animationFrameId = null;
     let simulationSpeed = parseInt(speedSlider.value, 10);
-    let showTurnPaths = false;
-    let showPointMeters = true;
-    let showSectionMeters = true;
+    // --- 修改後 ---
+    let showTurnPaths = showPathsToggle ? showPathsToggle.checked : true;
+    let showPointMeters = showPointMetersToggle ? showPointMetersToggle.checked : true;
+    let showSectionMeters = showSectionMetersToggle ? showSectionMetersToggle.checked : true;
     let isStatsPanelVisible = true;
 
     // --- 2D View Variables ---
@@ -753,44 +754,54 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // ★★★ [Architecture A] 多執行緒 Web Worker 狀態切換與提示 ★★★
-    const workerBadge = document.getElementById('workerStatusBadge');
+    // ★★★ [Architecture A] 多執行緒 Web Worker 狀態切換 (改為核取方塊勾選控制) ★★★
+    const workerToggle = document.getElementById('workerToggle');
     const workerText = document.getElementById('workerStatusText');
+    const workerContainer = document.getElementById('workerToggleContainer');
     const isFileProtocol = window.location.protocol === 'file:';
 
-    if (workerBadge) {
+    if (workerToggle) {
         if (isFileProtocol) {
+            // 本機 file:// 環境：強制單執行緒模式，取消勾選並停用 (disabled)，防止彈回混淆
             if (window.simBridge) simBridge.useMultiThreading = false;
-            workerBadge.style.borderColor = 'rgba(245, 158, 11, 0.4)';
-            workerBadge.style.color = '#f59e0b';
-            workerBadge.style.background = 'rgba(245, 158, 11, 0.15)';
-            if (workerText) workerText.textContent = '單執行緒 (本機 file://)';
-            workerBadge.title = '以 file:// 本機開啟時，瀏覽器安全性限制（CORS）停用 Worker。已自動啟用單執行緒引擎。若需啟用多執行緒，請以本機 HTTP 伺服器開啟 (如 http://localhost:8000)';
-        }
+            workerToggle.checked = false;
+            workerToggle.disabled = true;
 
-        workerBadge.addEventListener('click', () => {
-            if (window.location.protocol === 'file:') {
-                alert('【瀏覽器安全政策提示 (CORS)】\n\n以 file:// 雙擊開啟 HTML 時，所有現代瀏覽器基於安全性考量，禁止頁面建立 Web Worker 背景執行緒。\n\n如需啟用多執行緒 Web Worker（解耦物理運算與 60 FPS 渲染）：\n請開啟終端機執行本機 HTTP 伺服器：\n  cd "Urban Planning"\n  python3 -m http.server 8000\n並在瀏覽器訪問：http://localhost:8000/simulator/main_01.html\n\n目前系統已自動為您切換至「單執行緒完整引擎」，所有車輛物理、號誌、LUTI 與 3D 渲染皆正常運行！');
-                return;
+            if (workerText) {
+                workerText.innerHTML = '<span style="color: #94a3b8;">多執行緒 <small style="color: #f59e0b;">(本機限單執行緒)</small></span>';
             }
-            if (!window.simBridge) return;
-            const newMode = !simBridge.useMultiThreading;
-            simBridge.useMultiThreading = newMode;
-            if (newMode) {
-                workerBadge.style.borderColor = 'rgba(16, 185, 129, 0.4)';
-                workerBadge.style.color = '#10b981';
-                workerBadge.style.background = 'rgba(16, 185, 129, 0.15)';
-                if (workerText) workerText.textContent = '多執行緒 (Worker)';
-                alert('已切換至「多執行緒 Worker 模式」：IDM/MOBIL 物理運算獨立於背景執行緒，3D 渲染維持恆定 60 FPS！\n（若已載入路網，請重新點擊開始模擬以套用）');
-            } else {
-                workerBadge.style.borderColor = 'rgba(245, 158, 11, 0.4)';
-                workerBadge.style.color = '#f59e0b';
-                workerBadge.style.background = 'rgba(245, 158, 11, 0.15)';
-                if (workerText) workerText.textContent = '單執行緒 (Local)';
-                alert('已切換至「單執行緒模式」：物理運算與渲染在同一執行緒執行。');
+            if (workerContainer) {
+                workerContainer.style.cursor = 'pointer';
+                workerContainer.title = '瀏覽器安全性政策 (CORS) 限制：以 file:// 雙擊開啟時禁止背景 Worker，已自動啟用單執行緒引擎。\n點擊查看如何以 HTTP 伺服器啟用多執行緒。';
+
+                // 點擊容器時彈出友善說明
+                workerContainer.addEventListener('click', (e) => {
+                    alert('【單執行緒運行中 (本機 file://)】\n\n所有現代瀏覽器基於安全性考量，禁止以 file:// 雙擊開啟的網頁載入 Web Worker 背景執行緒。\n\n目前系統已自動為您切換至「單執行緒完整引擎」，所有車輛物理、號誌、LUTI 與 3D 渲染皆正常運行！\n\n如需啟用「多執行緒 Worker 模式」：\n請開啟終端機執行本機 HTTP 伺服器：\n  cd "Urban Planning"\n  python3 -m http.server 8000\n並在瀏覽器訪問：http://localhost:8000/simulator/main_01.html');
+                });
             }
-        });
+        } else {
+            // HTTP 伺服器環境 (如 http://localhost:8000)：支援自由勾選切換
+            workerToggle.disabled = false;
+            const useMT = window.simBridge ? simBridge.useMultiThreading : true;
+            workerToggle.checked = useMT;
+            if (workerText) workerText.textContent = useMT ? '多執行緒 (Worker)' : '多執行緒 (關閉/單執行緒)';
+
+            workerToggle.addEventListener('change', (e) => {
+                if (!window.simBridge) return;
+                const newMode = e.target.checked;
+                simBridge.useMultiThreading = newMode;
+
+                if (newMode) {
+                    if (workerText) workerText.textContent = '多執行緒 (Worker)';
+                    alert('已勾選「多執行緒 Worker 模式」：IDM/MOBIL 物理運算獨立於背景執行緒，3D 渲染維持恆定 60 FPS！\n（若已載入路網，請重新點擊開始模擬以套用）');
+                } else {
+                    if (workerText) workerText.textContent = '多執行緒 (關閉/單執行緒)';
+                    alert('已切換至「單執行緒模式」：物理運算與畫面渲染在同一執行緒執行。');
+                }
+            });
+        }
     }
+
     showPathsToggle.addEventListener('change', (e) => {
         showTurnPaths = e.target.checked;
         if (isDisplay2D && !isRunning) redraw2D();
@@ -2692,10 +2703,13 @@ document.addEventListener('DOMContentLoaded', () => {
         const vehiclesInIntersection = [];
         if (vehicles) {
             vehicles.forEach(v => {
-                if (v.state === 'onLink') {
+                // ★ 修正：若具備明確路段歸屬則依路段繪製，否則（含路口車與多執行緒 Proxy 車）統一歸入上層車輛佇列繪製
+                if (v.state === 'onLink' && v.currentLinkId && netData.links[v.currentLinkId]) {
                     if (!vehiclesOnLink[v.currentLinkId]) vehiclesOnLink[v.currentLinkId] = [];
                     vehiclesOnLink[v.currentLinkId].push(v);
-                } else if (v.state === 'inIntersection' || v.state === 'parking_maneuver') vehiclesInIntersection.push(v);
+                } else {
+                    vehiclesInIntersection.push(v);
+                }
             });
         }
 
@@ -5737,7 +5751,10 @@ document.addEventListener('DOMContentLoaded', () => {
                                             const dot = Math.abs(walkDirX * (cwDx / cwLen) + walkDirY * (cwDy / cwLen));
                                             if (dot > 0.85 && dot > bestDot) {
                                                 bestDot = dot;
-                                                explicitPedGroupId = mark.signalGroupId;
+                                                const activeGsId = tfl.activeGroupSetId;
+                                                explicitPedGroupId = (mark.signalGroupBySet && activeGsId && mark.signalGroupBySet[activeGsId])
+                                                    ? mark.signalGroupBySet[activeGsId]
+                                                    : mark.signalGroupId;
                                             }
                                         }
                                     }
@@ -8102,6 +8119,17 @@ document.addEventListener('DOMContentLoaded', () => {
         resetStatistics();
         if (placeholderText) placeholderText.style.display = 'none';
 
+        // ★★★ [新增/修正] 確保燈號狀態與當前工具列按鈕嚴格同步 ★★★
+        if (showPathsToggle) {
+            showTurnPaths = showPathsToggle.checked;
+        }
+        if (showPointMetersToggle) {
+            showPointMeters = showPointMetersToggle.checked;
+        }
+        if (showSectionMetersToggle) {
+            showSectionMeters = showSectionMetersToggle.checked;
+        }
+
         const parser = new DOMParser();
         const xmlDoc = parser.parseFromString(xmlString, "application/xml");
         if (xmlDoc.getElementsByTagName("parsererror").length) {
@@ -8128,16 +8156,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 window.simulation = simulation;
             }
 
-            // [Milestone 3] LUTI 時段控制器顯示與初始化
-            const lutiContainer = document.getElementById('lutiPeriodContainer');
-            const lutiSelector = document.getElementById('lutiPeriodSelector');
-            if (lutiContainer && lutiSelector) {
-                if (simulation && simulation.lutiEngine) {
-                    lutiContainer.style.display = 'inline-flex';
-                    lutiSelector.value = simulation.lutiEngine.timePeriod || 'AM';
-                } else {
-                    lutiContainer.style.display = 'none';
-                }
+            // [LUTI] 檢查路網是否有都市計畫分區，有才顯示「功能」選單內的都市儀表板選項
+            const lutiMenuItem = document.getElementById('lutiHudToggleContainer');
+            const hasZones = !!(networkData && networkData.zones && Object.keys(networkData.zones).length > 0);
+
+            if (lutiMenuItem) {
+                lutiMenuItem.style.display = hasZones ? 'flex' : 'none';
             }
 
             // [新增] 通知優化控制器更新資料
@@ -8258,6 +8282,13 @@ document.addEventListener('DOMContentLoaded', () => {
             setDroneMode(false);
         }
 
+        // ★★★ [更新] 隱藏功能選單內的都市儀表板選項與關閉懸浮面板 ★★★
+        const lutiMenuItem = document.getElementById('lutiHudToggleContainer');
+        if (lutiMenuItem) lutiMenuItem.style.display = 'none';
+        if (typeof lutiHudController !== 'undefined') {
+            lutiHudController.setVisibility(false);
+        }
+
         vehicleMeshes.forEach(mesh => scene.remove(mesh));
         vehicleMeshes.clear();
         networkGroup.clear();
@@ -8265,15 +8296,11 @@ document.addEventListener('DOMContentLoaded', () => {
         signalPathsGroup.clear();
         trafficLightsGroup.clear(); // Clear poles
 
-        // [新增] 清空城市
+        // 清空城市與底圖
         cityGroup.clear();
-
         basemapGroup.clear();
-
-        // [新增] 清空自定義模型
         customModelsGroup.clear();
-
-        cloudGroup.clear(); // ★ [新增] 清空雲朵
+        cloudGroup.clear();
 
         render3DScene();
 
@@ -8281,7 +8308,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
         placeholderText.style.display = 'block';
 
-        // Hide Pegman
         const pegman = document.getElementById('pegman-icon');
         if (pegman) pegman.style.display = 'none';
 
@@ -8665,13 +8691,27 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
 
-                // 2. 針對 Lane-based (Stroke-based) 路段的起點判定
-                if (link.geometryType === 'lane-based' && link.strokes) {
+                // 2. 針對 Lane-based / Parametric (Stroke-based) 路段的起點判定
+                if ((link.geometryType === 'lane-based' || link.geometryType === 'parametric') && link.strokes) {
                     const leftStroke = link.strokes.find(st => st.id === l.leftStrokeId);
                     const rightStroke = link.strokes.find(st => st.id === l.rightStrokeId);
 
-                    // 判定起點存在門檻值（通常 s_min 在 5.0 公尺或總長 10% 內視為起點車道）
-                    const startThreshold = Math.min(5.0, link.length * 0.1);
+                    // 判定起點存在門檻值（通常在 8.0 公尺或總長 15% 內視為起點車道）
+                    const startThreshold = Math.min(8.0, link.length * 0.15);
+
+                    // 若該車道要到下游才真正展開（validStartS > 門檻值，例如左/右轉專用袋狀車道），排除於起點發車車道之外
+                    if (typeof l.validStartS === 'number' && l.validStartS > startThreshold) {
+                        return false;
+                    }
+
+                    // 若起點處左右標線重疊（寬度 < 1.5m），代表起點處此袋狀車道尚未展開，排除之
+                    if (leftStroke && rightStroke && leftStroke.points?.length > 0 && rightStroke.points?.length > 0) {
+                        const startW = Math.hypot(
+                            leftStroke.points[0].x - rightStroke.points[0].x,
+                            leftStroke.points[0].y - rightStroke.points[0].y
+                        );
+                        if (startW < 1.5) return false;
+                    }
 
                     // 如果該車道的左側或右側邊界線是在下游才開始（s_min > 門檻值），代表其為附加車道，排除之
                     if (leftStroke && typeof leftStroke.s_min === 'number' && leftStroke.s_min > startThreshold) {
@@ -9527,7 +9567,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 ? (routableVehTrips / (routableVehTrips + unroutableVehTrips))
                 : 1.0;
 
-            console.log(`[LUTIEngine] 重算完成 (${this.timePeriod}): 活躍 OD 通道數=${odPairs.length}, 預估小時車流=${Math.round(totalAuto + totalMoto)} 輛/h (汽車 ${(this.stats.autoShare*100).toFixed(0)}%, 機車 ${(this.stats.motoShare*100).toFixed(0)}%)`);
+            console.log(`[LUTIEngine] 重算完成 (${this.timePeriod}): 活躍 OD 通道數=${odPairs.length}, 預估小時車流=${Math.round(totalAuto + totalMoto)} 輛/h (汽車 ${(this.stats.autoShare * 100).toFixed(0)}%, 機車 ${(this.stats.motoShare * 100).toFixed(0)}%)`);
             if (missingODs.length > 0) {
                 console.warn(`[LUTIEngine] ⚠️ 警告：偵測到 ${missingODs.length} 組 OD 路徑短缺，共 ${Math.round(unroutableVehTrips)} 輛/h 車流無法進入路網！`);
             }
@@ -9807,7 +9847,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
         init() {
             this.hudEl = document.getElementById('luti-hud');
-            this.toggleBtn = document.getElementById('lutiHudToggleBtn');
+            // ★ 取得新核取方塊 (相容舊按鈕 ID)
+            this.toggleInput = document.getElementById('lutiHudToggle') || document.getElementById('lutiHudToggleBtn');
             this.minimizeBtn = document.getElementById('lutiHudMinimizeBtn');
             this.closeBtn = document.getElementById('lutiHudCloseBtn');
             this.headerEl = document.getElementById('lutiHudHeader');
@@ -9857,9 +9898,15 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         bindEvents() {
-            if (this.toggleBtn) {
-                this.toggleBtn.addEventListener('click', () => this.toggleVisibility());
+            // ★ 綁定開關變更事件 (勾選/取消勾選)
+            if (this.toggleInput) {
+                if (this.toggleInput.type === 'checkbox') {
+                    this.toggleInput.addEventListener('change', (e) => this.setVisibility(e.target.checked));
+                } else {
+                    this.toggleInput.addEventListener('click', () => this.toggleVisibility());
+                }
             }
+
             if (this.closeBtn) {
                 this.closeBtn.addEventListener('click', () => this.setVisibility(false));
             }
@@ -10112,7 +10159,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 this.populateZones();
                 this.updatePeriodButtons(this.lutiEngine.timePeriod);
-                this.setVisibility(true);
+
+                // ★ 改為 false：預設不主動彈出懸浮視窗，由使用者點擊工具列「都市儀表板」按鈕時再開啟
+                this.setVisibility(false);
                 this.refreshStats();
             } else {
                 this.setVisibility(false);
@@ -10307,6 +10356,49 @@ document.addEventListener('DOMContentLoaded', () => {
     window.lutiHudController = lutiHudController;
     lutiHudController.init();
 
+    // ★★★ [新增] 空間雜湊網格：將車輛鄰居搜尋由 O(N^2) 加速至 O(N) ★★★
+    class SpatialGrid {
+        constructor(cellSize = 35) {
+            this.cellSize = cellSize;
+            this.cells = new Map();
+        }
+        clear() {
+            this.cells.clear();
+        }
+        _key(cx, cy) {
+            return (cx << 16) ^ (cy & 0xFFFF);
+        }
+        insert(vehicle) {
+            const cx = Math.floor(vehicle.x / this.cellSize);
+            const cy = Math.floor(vehicle.y / this.cellSize);
+            const k = this._key(cx, cy);
+            let list = this.cells.get(k);
+            if (!list) {
+                list = [];
+                this.cells.set(k, list);
+            }
+            list.push(vehicle);
+        }
+        getNearby(x, y, radius = 80) {
+            const minCX = Math.floor((x - radius) / this.cellSize);
+            const maxCX = Math.floor((x + radius) / this.cellSize);
+            const minCY = Math.floor((y - radius) / this.cellSize);
+            const maxCY = Math.floor((y + radius) / this.cellSize);
+            const nearby = [];
+            for (let cx = minCX; cx <= maxCX; cx++) {
+                for (let cy = minCY; cy <= maxCY; cy++) {
+                    const list = this.cells.get(this._key(cx, cy));
+                    if (list) {
+                        for (let i = 0; i < list.length; i++) {
+                            nearby.push(list[i]);
+                        }
+                    }
+                }
+            }
+            return nearby;
+        }
+    }
+
     // [修改] Simulation 類別：整合了 OD 模式與 Flow 模式的初始化與更新邏輯
     class Simulation {
         constructor(network) {
@@ -10314,6 +10406,7 @@ document.addEventListener('DOMContentLoaded', () => {
             this.time = 0;
             this.vehicles = [];
             this.vehicleIdCounter = 0;
+            this.spatialGrid = new SpatialGrid(35); // ★ 新增這一行：建立 35m 空間網格
 
             // ★★★ [Milestone 3] 載入 LUTI 旅次需求生成引擎 ★★★
             if (network.zones && Object.keys(network.zones).length > 0) {
@@ -10532,7 +10625,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
 
-            // ★★★ [Milestone 3] LUTI 旅次生成引擎微觀交通發布更新 ★★★
+            // [Milestone 3] LUTI 旅次生成引擎微觀交通發布更新
             if (this.lutiEngine) {
                 const lutiVehicles = this.lutiEngine.update(dt, this.network, () => this.vehicleIdCounter++);
                 if (lutiVehicles && lutiVehicles.length > 0) {
@@ -10542,10 +10635,26 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
 
-            this.vehicles.forEach(vehicle => vehicle.update(dt, this.vehicles, this));
+            // ★★★ [修改處] 原本是：this.vehicles.forEach(vehicle => vehicle.update(dt, this.vehicles, this));
+            // 改為使用 SpatialGrid 只傳入周圍 80 公尺內的鄰車：
+            if (this.spatialGrid) {
+                this.spatialGrid.clear();
+                for (let i = 0; i < this.vehicles.length; i++) {
+                    this.spatialGrid.insert(this.vehicles[i]);
+                }
+                for (let i = 0; i < this.vehicles.length; i++) {
+                    const v = this.vehicles[i];
+                    const nearby = this.spatialGrid.getNearby(v.x, v.y, 80);
+                    v.update(dt, nearby, this);
+                }
+            } else {
+                this.vehicles.forEach(vehicle => vehicle.update(dt, this.vehicles, this));
+            }
+            // ★★★ [修改結束] ★★★
+
             this.vehicles = this.vehicles.filter(v => !v.finished);
 
-            // ★ 更新行人
+            // 更新行人
             if (this.pedManager) {
                 this.pedManager.update(dt);
             }
@@ -10638,6 +10747,8 @@ document.addEventListener('DOMContentLoaded', () => {
             this.lights = config.lights;
             this.timeShift = config.timeShift || 0;
             this.advancedConfig = config.advancedConfig;
+            this.activeGroupSetId = (config.advancedConfig && config.advancedConfig.activeGroupSetId) || 'GroupSet_1';
+            this.activeScheduleId = null;
             this.allGroupIds = config.allGroupIds || [];
             this.groupNameMap = config.groupNameMap || {}; // ★ 新增：名稱對應表 (例如 "P1" -> "2")
             this.cycleDuration = this.schedule.reduce((sum, p) => sum + p.duration, 0);
@@ -10646,7 +10757,20 @@ document.addEventListener('DOMContentLoaded', () => {
 
         update(time) {
             if (isDigitalTwinMode && this.advancedConfig && typeof DigitalTwinLogic !== 'undefined') {
-                this.turnGroupStates = DigitalTwinLogic.updateTrafficLight(this.advancedConfig, this.allGroupIds);
+                const dtStates = DigitalTwinLogic.updateTrafficLight(this.advancedConfig, this.allGroupIds);
+                this.turnGroupStates = dtStates;
+                if (dtStates._activeGroupSetId) this.activeGroupSetId = dtStates._activeGroupSetId;
+                if (dtStates._activeSchedule && this.activeScheduleId !== dtStates._activeScheduleId) {
+                    this.activeScheduleId = dtStates._activeScheduleId;
+                    const activeSched = dtStates._activeSchedule;
+                    this.timeShift = activeSched.timeShift || 0;
+                    this.cycleDuration = activeSched.cycleDuration || 0;
+                    this.schedule = (activeSched.phases || []).map(p => {
+                        const sigObj = {};
+                        (p.signals || []).forEach(s => { sigObj[s.groupId] = s.state; });
+                        return { duration: p.duration, signals: sigObj };
+                    });
+                }
                 return;
             }
             if (this.cycleDuration <= 0) return;
@@ -10944,6 +11068,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const currentLane = link.lanes[currentLaneIdx];
             if (!currentLane) return true;
+
+            const targetLane = link.lanes[targetLaneIdx];
+            if (!targetLane) return false;
+            // 若目標車道為下游附加車道（如左/右轉專用袋狀車道），在尚未抵達其漸變段展開處 (validStartS) 前禁止提早切入，避免壓在邊界線上行駛
+            if (typeof targetLane.validStartS === 'number' && this.distanceOnPath < targetLane.validStartS) {
+                return false;
+            }
 
             const isMovingLeft = targetLaneIdx < currentLaneIdx;
 
@@ -12577,11 +12708,21 @@ document.addEventListener('DOMContentLoaded', () => {
                 // =================================================================
                 // 路口車道自我修復邏輯 (防死亡交叉)
                 // =================================================================
+                const isDestLaneOpenAtStart = (dLinkId, dLaneIdx) => {
+                    const dLink = network.links[dLinkId];
+                    const dLane = dLink && dLink.lanes ? dLink.lanes[dLaneIdx] : null;
+                    if (!dLane) return false;
+                    const startThresh = Math.min(8.0, (dLink.length || 50) * 0.15);
+                    if (typeof dLane.validStartS === 'number' && dLane.validStartS > startThresh) return false;
+                    return true;
+                };
+
                 let transition = destNode.transitions.find(t =>
                     t.sourceLinkId === this.currentLinkId &&
                     t.sourceLaneIndex === this.currentLaneIndex &&
                     t.destLinkId === nextLinkId &&
-                    this.isLaneAllowed(network, nextLinkId, t.destLaneIndex)
+                    this.isLaneAllowed(network, nextLinkId, t.destLaneIndex) &&
+                    isDestLaneOpenAtStart(nextLinkId, t.destLaneIndex)
                 );
 
                 if (!transition) {
@@ -12601,9 +12742,14 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (baseTransition) {
                         const nextLinkObj = network.links[nextLinkId];
                         if (nextLinkObj) {
-                            const allowedLanes = Object.keys(nextLinkObj.lanes)
+                            let allowedLanes = Object.keys(nextLinkObj.lanes)
                                 .map(Number)
-                                .filter(idx => this.isLaneAllowed(network, nextLinkId, idx));
+                                .filter(idx => this.isLaneAllowed(network, nextLinkId, idx) && isDestLaneOpenAtStart(nextLinkId, idx));
+                            if (allowedLanes.length === 0) {
+                                allowedLanes = Object.keys(nextLinkObj.lanes)
+                                    .map(Number)
+                                    .filter(idx => this.isLaneAllowed(network, nextLinkId, idx));
+                            }
 
                             if (allowedLanes.length > 0) {
                                 let bestLane = allowedLanes[0];
@@ -13183,6 +13329,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 if (this.laneChangeState && this.laneChangeState.progress >= 1) {
                     this.currentLaneIndex = this.laneChangeState.toLaneIndex;
+                    const activeLink = network.links[this.currentLinkId];
+                    if (activeLink && activeLink.lanes && activeLink.lanes[this.currentLaneIndex]) {
+                        this.currentPath = activeLink.lanes[this.currentLaneIndex].path;
+                        this.currentPathLength = activeLink.lanes[this.currentLaneIndex].length;
+                    }
                     this.lateralOffset = this.laneChangeState.endOffset;
                     if (this.isMotorcycle) {
                         this.targetLateralOffset = this.lateralOffset;
@@ -13207,6 +13358,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 } else {
                     const direction = Math.sign(this.laneChangeGoal - this.currentLaneIndex);
                     const nextLaneIndex = this.currentLaneIndex + direction;
+                    const linkObj = network.links[this.currentLinkId];
+                    const nextLaneObj = linkObj && linkObj.lanes ? linkObj.lanes[nextLaneIndex] : null;
+
+                    // ★★★ 若下一目標車道為下游袋狀車道且尚未展開 (distanceOnPath < validStartS)，暫緩換道並維持於當前主線車道，待抵達漸變段再立即切入 ★★★
+                    if (nextLaneObj && typeof nextLaneObj.validStartS === 'number' && this.distanceOnPath < nextLaneObj.validStartS) {
+                        return;
+                    }
 
                     // =========================================================
                     // ★★★ [新增] 最終物理防線：執行換道前，嚴格攔截禁止跨越的標線
@@ -15392,10 +15550,17 @@ document.addEventListener('DOMContentLoaded', () => {
                             const midX = (leftPt.x + rightPt.x) / 2;
                             const midY = (leftPt.y + rightPt.y) / 2;
 
-                            // 【修正重點】動態測量實體寬度並累加
+                            // 【修正重點】動態測量實體寬度並記錄附加車道展開起點 (validStartS)
                             const currentWidth = Math.hypot(leftPt.x - rightPt.x, leftPt.y - rightPt.y);
                             if (!lane.widthSamples) lane.widthSamples = [];
-                            lane.widthSamples.push(currentWidth);
+                            if (currentWidth >= 1.0) {
+                                lane.widthSamples.push(currentWidth);
+                            }
+                            const openThreshold = Math.min(2.2, (lane.width || 3.5) * 0.65);
+                            if (currentWidth >= openThreshold) {
+                                if (typeof lane.validStartS !== 'number') lane.validStartS = currentS;
+                                lane.validEndS = currentS;
+                            }
 
                             // 過濾過度密集的點
                             if (lane.path.length > 0) {
@@ -15581,8 +15746,23 @@ document.addEventListener('DOMContentLoaded', () => {
                         };
                         const bezierEl = ruleEl.querySelector('BezierCurveGeometry');
                         if (bezierEl) {
-                            const points = Array.from(bezierEl.querySelectorAll('Point')).map(pEl => ({ x: parseFloat(pEl.querySelector('x').textContent), y: -parseFloat(pEl.querySelector('y').textContent) }));
+                            let points = Array.from(bezierEl.querySelectorAll('Point')).map(pEl => ({ x: parseFloat(pEl.querySelector('x').textContent), y: -parseFloat(pEl.querySelector('y').textContent) }));
                             if (points.length === 4) {
+                                const srcLane = links[transition.sourceLinkId] && links[transition.sourceLinkId].lanes ? links[transition.sourceLinkId].lanes[transition.sourceLaneIndex] : null;
+                                const dstLane = links[transition.destLinkId] && links[transition.destLinkId].lanes ? links[transition.destLinkId].lanes[transition.destLaneIndex] : null;
+                                if (srcLane && srcLane.path && srcLane.path.length >= 2 && dstLane && dstLane.path && dstLane.path.length >= 2) {
+                                    const trueP1 = srcLane.path[srcLane.path.length - 1];
+                                    const trueP4 = dstLane.path[0];
+                                    if (Geom.Vec.dist(points[3], trueP4) > 1.5 && Geom.Vec.dist(trueP1, trueP4) > 1.5) {
+                                        const v1 = Geom.Vec.normalize(Geom.Vec.sub(trueP1, srcLane.path[srcLane.path.length - 2]));
+                                        const v2 = Geom.Vec.normalize(Geom.Vec.sub(dstLane.path[1], trueP4));
+                                        const distBetweenEnds = Geom.Vec.dist(trueP1, trueP4);
+                                        const controlPointOffset = distBetweenEnds * 0.4;
+                                        const p2 = Geom.Vec.add(trueP1, Geom.Vec.scale(v1, controlPointOffset));
+                                        const p3 = Geom.Vec.add(trueP4, Geom.Vec.scale(v2, -controlPointOffset));
+                                        points = [trueP1, p2, p3, trueP4];
+                                    }
+                                }
                                 transition.bezier = { points: points, length: Geom.Bezier.getLength(...points) };
                             }
                         }
@@ -15899,6 +16079,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
                     const spanToLinkIdStr = mkEl.querySelector('spanToLinkId')?.textContent;
                     const signalGroupIdStr = mkEl.querySelector('signalGroupId')?.textContent;
+                    const signalGroupBySetStr = (mkEl.querySelector('signalGroupBySet') || mkEl.querySelector('tm\\:signalGroupBySet'))?.textContent;
+                    let signalGroupBySetObj = null;
+                    if (signalGroupBySetStr) {
+                        try { signalGroupBySetObj = JSON.parse(signalGroupBySetStr); } catch (e) { }
+                    }
 
                     const mk = {
                         id, type, linkId, nodeId,
@@ -15911,7 +16096,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         laneIndices: [],
                         isFree: mkEl.querySelector('isFree')?.textContent === 'true',
                         spanToLinkId: spanToLinkIdStr || null,
-                        signalGroupId: signalGroupIdStr || null
+                        signalGroupId: signalGroupIdStr || null,
+                        signalGroupBySet: signalGroupBySetObj
                     };
 
                     // ★★★ [新增] 槽化線解析邏輯 ★★★
@@ -15959,8 +16145,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
 
-            // 輔助函數：獲取行穿線號誌ID
+            // 輔助函數：獲取行穿線號誌ID (支援多套硬體群組綁定)
             const getCrosswalkSignalGroupId = (mark, nodeId, lineData) => {
+                const tflForCw = trafficLights.find(t => String(t.nodeId) === String(nodeId));
+                if (mark.signalGroupBySet && tflForCw && tflForCw.activeGroupSetId && mark.signalGroupBySet[tflForCw.activeGroupSetId]) {
+                    return mark.signalGroupBySet[tflForCw.activeGroupSetId];
+                }
                 if (mark.signalGroupId) return mark.signalGroupId;
 
                 let cwVecX = lineData.p2.x - lineData.p1.x;

@@ -63,14 +63,6 @@
                 </label>
             </div>
 
-            <div class="separator"></div>
-
-            <!-- ★★★ 多執行緒 Web Worker 狀態指示器 (Architecture A) ★★★ -->
-            <div id="workerStatusBadge" class="worker-status-badge" title="架構 A：模擬核心運行於專屬獨立背景執行緒 (Web Worker)，渲染恆定 60 FPS">
-                <span class="status-dot"></span>
-                <i class="fa-solid fa-microchip"></i>
-                <span id="workerStatusText">多執行緒 (Worker)</span>
-            </div>
 
             <div class="separator"></div>
 
@@ -116,33 +108,12 @@
             </div>
         </div>
 
-        <div class="divider-v"></div>
-
-        <!-- 中間：LUTI 都市規劃與交通指標時段切換 -->
-        <div class="toolbar-section luti-controls">
-            <div class="luti-control-group" id="lutiPeriodContainer" title="LUTI 土地使用旅次時段切換 (Land-Use Trip Generation Period)">
-                <span class="luti-tag">
-                    <i class="fa-solid fa-city"></i> LUTI
-                </span>
-                <select id="lutiPeriodSelector" class="luti-select">
-                    <option value="AM" selected>上午尖峰 (AM)</option>
-                    <option value="OFF">日間離峰 (OFF)</option>
-                    <option value="PM">下午尖峰 (PM)</option>
-                </select>
-                <button type="button" id="lutiHudToggleBtn" class="tool-btn-luti" title="開啟/關閉 都市規劃與交通指標儀表板 (LUTI Analytics HUD)">
-                    <i class="fa-solid fa-chart-line"></i>
-                    <span>都市儀表板</span>
-                </button>
-            </div>
-        </div>
-
-        <div class="divider-v"></div>
-
         <!-- 右側：視圖切換與圖層工具 -->
         <div class="toolbar-section view-tools-controls">
             <!-- 視圖切換 (Segmented Control) -->
             <div id="displayModeToggle" class="segment-control" role="group">
-                <button type="button" id="displayStatsBtn" class="segment-btn is-active" data-mode="stats" title="顯示/隱藏統計面板">
+                <button type="button" id="displayStatsBtn" class="segment-btn is-active" data-mode="stats"
+                    title="顯示/隱藏統計面板">
                     <i class="fa-solid fa-chart-pie"></i>
                 </button>
                 <button type="button" id="display2DBtn" class="segment-btn is-active" data-mode="2d">
@@ -234,6 +205,17 @@
                         <input type="checkbox" id="nightToggle">
                         <span class="switch-label" data-i18n="lblNight">夜景</span>
                     </label>
+                    <label class="mini-switch" id="lutiHudToggleContainer" style="display: none;"
+                        title="都市規劃與交通指標儀表板 (LUTI Analytics HUD)">
+                        <input type="checkbox" id="lutiHudToggle">
+                        <span class="switch-label">都市儀表板</span>
+                    </label>
+
+                    <!-- 「功能」下拉選單內 -->
+                    <label class="mini-switch" id="workerToggleContainer" title="切換多執行緒 (Web Worker) / 單執行緒模式">
+                        <input type="checkbox" id="workerToggle">
+                        <span class="switch-label" id="workerStatusText">多執行緒 (Worker)</span>
+                    </label>
                 </div>
             </div>
 
@@ -269,7 +251,8 @@
             <!-- 5. 數位孿生資料更新頻率選單 (維持原樣預設隱藏) -->
             <div id="vdUpdateFreqContainer" style="display: none; align-items: center; gap: 6px; margin-left: 6px;">
                 <label style="font-size: 0.75rem; color: #64748b; font-weight: 700; white-space: nowrap;">更新頻率:</label>
-                <select id="vdUpdateFreqSelector" class="dropdown-light" style="font-weight: 600; color: #06b6d4; height: 30px; border-radius: 6px;">
+                <select id="vdUpdateFreqSelector" class="dropdown-light"
+                    style="font-weight: 600; color: #06b6d4; height: 30px; border-radius: 6px;">
                     <option value="10">10 分鐘</option>
                     <option value="15">15 分鐘</option>
                     <option value="30">30 分鐘</option>
@@ -460,8 +443,10 @@
                     </div>
                     <div class="luti-hud-header-actions">
                         <span id="lutiHudClockBadge" class="luti-clock-badge">08:00</span>
-                        <button id="lutiHudMinimizeBtn" class="hud-icon-btn" title="最小化/展開"><i class="fa-solid fa-minus"></i></button>
-                        <button id="lutiHudCloseBtn" class="hud-icon-btn" title="關閉"><i class="fa-solid fa-xmark"></i></button>
+                        <button id="lutiHudMinimizeBtn" class="hud-icon-btn" title="最小化/展開"><i
+                                class="fa-solid fa-minus"></i></button>
+                        <button id="lutiHudCloseBtn" class="hud-icon-btn" title="關閉"><i
+                                class="fa-solid fa-xmark"></i></button>
                     </div>
                 </div>
 
@@ -470,7 +455,8 @@
                     <div class="luti-section">
                         <div class="luti-section-hdr">
                             <span><i class="fa-solid fa-clock-rotate-left"></i> 時段控制與 24H 動態演繹</span>
-                            <span id="lutiDiurnalStatus" style="color: #38bdf8; font-family: monospace;">1.00x Demand</span>
+                            <span id="lutiDiurnalStatus" style="color: #38bdf8; font-family: monospace;">1.00x
+                                Demand</span>
                         </div>
                         <div class="luti-periods-grid">
                             <button type="button" class="luti-period-btn active" data-period="AM" id="btnPeriodAM">
@@ -490,17 +476,22 @@
                             <button type="button" id="luti24hToggleBtn" class="luti-play-btn">
                                 <i class="fa-solid fa-play"></i> <span>24H 演繹</span>
                             </button>
-                            <input type="range" id="lutiTimeSlider" min="0" max="24" step="0.1" value="8.0" style="flex: 1;" title="拖曳時間滑桿調整 24 小時時段">
-                            <select id="luti24hSpeedSelector" class="dropdown-dark" style="padding: 2px 4px; font-size: 0.72rem; border-radius: 4px; background: #0f172a; color: #38bdf8; border: 1px solid #0284c7; cursor: pointer;">
+                            <input type="range" id="lutiTimeSlider" min="0" max="24" step="0.1" value="8.0"
+                                style="flex: 1;" title="拖曳時間滑桿調整 24 小時時段">
+                            <select id="luti24hSpeedSelector" class="dropdown-dark"
+                                style="padding: 2px 4px; font-size: 0.72rem; border-radius: 4px; background: #0f172a; color: #38bdf8; border: 1px solid #0284c7; cursor: pointer;">
                                 <option value="1" selected>1x 速</option>
                                 <option value="10">10x 速</option>
                                 <option value="30">30x 速</option>
                                 <option value="60">60x 速</option>
                             </select>
                         </div>
-                        <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 6px; padding: 4px 6px; background: rgba(15, 23, 42, 0.6); border-radius: 4px; border: 1px solid rgba(56, 189, 248, 0.2);">
-                            <span style="font-size: 0.72rem; color: #cbd5e1;"><i class="fa-solid fa-gauge-high" style="color: #38bdf8;"></i> 車流生成密度:</span>
-                            <select id="lutiScaleFactorSelector" class="dropdown-dark" style="padding: 2px 6px; font-size: 0.72rem; border-radius: 4px; background: #0f172a; color: #38bdf8; border: 1px solid #0284c7; cursor: pointer;">
+                        <div
+                            style="display: flex; align-items: center; justify-content: space-between; margin-top: 6px; padding: 4px 6px; background: rgba(15, 23, 42, 0.6); border-radius: 4px; border: 1px solid rgba(56, 189, 248, 0.2);">
+                            <span style="font-size: 0.72rem; color: #cbd5e1;"><i class="fa-solid fa-gauge-high"
+                                    style="color: #38bdf8;"></i> 車流生成密度:</span>
+                            <select id="lutiScaleFactorSelector" class="dropdown-dark"
+                                style="padding: 2px 6px; font-size: 0.72rem; border-radius: 4px; background: #0f172a; color: #38bdf8; border: 1px solid #0284c7; cursor: pointer;">
                                 <option value="0.05">標準 (5% 抽樣 / 1:20)</option>
                                 <option value="0.15">適中 (15% 抽樣)</option>
                                 <option value="0.30">生動沙盒 (30% 抽樣)</option>
@@ -557,7 +548,8 @@
                                 <div class="val" id="lutiMetricSpeed">--</div>
                                 <div class="lbl">平均車速 (km/h)</div>
                             </div>
-                            <div class="luti-kpi-box" style="display: flex; flex-direction: column; justify-content: center; align-items: center;">
+                            <div class="luti-kpi-box"
+                                style="display: flex; flex-direction: column; justify-content: center; align-items: center;">
                                 <span id="lutiMetricLOS" class="los-badge los-a">LOS A</span>
                                 <div class="lbl" style="margin-top: 3px;">服務水準</div>
                             </div>
@@ -599,10 +591,12 @@
                             <span style="color: #f59e0b; font-size: 0.68rem;">即時聯動車流</span>
                         </div>
                         <div style="display: flex; gap: 6px; margin-bottom: 6px;">
-                            <select id="lutiZoneSelector" class="dropdown-dark" style="flex: 1; padding: 4px 6px; font-size: 0.74rem; background: #0f172a; color: #f8fafc; border: 1px solid #334155; border-radius: 4px;">
+                            <select id="lutiZoneSelector" class="dropdown-dark"
+                                style="flex: 1; padding: 4px 6px; font-size: 0.74rem; background: #0f172a; color: #f8fafc; border: 1px solid #334155; border-radius: 4px;">
                                 <option value="">(選擇分區)</option>
                             </select>
-                            <select id="lutiZoneTypeSelect" class="dropdown-dark" style="width: 110px; padding: 4px 6px; font-size: 0.74rem; background: #0f172a; color: #f59e0b; border: 1px solid #d97706; border-radius: 4px;">
+                            <select id="lutiZoneTypeSelect" class="dropdown-dark"
+                                style="width: 110px; padding: 4px 6px; font-size: 0.74rem; background: #0f172a; color: #f59e0b; border: 1px solid #d97706; border-radius: 4px;">
                                 <option value="R1">R1 低密住宅</option>
                                 <option value="R2">R2 中密住宅</option>
                                 <option value="R3">R3 高密住宅</option>
@@ -628,10 +622,12 @@
 
                         <!-- 關鍵驗收情境快速切換按鈕 -->
                         <div class="luti-quick-buttons">
-                            <button type="button" id="btnQuickSurgeC2" class="btn-scenario surge" title="將住宅區變更為 CBD 核心商貿區 (C2)，測試就業與尖峰旅次暴增引發壅塞警示">
+                            <button type="button" id="btnQuickSurgeC2" class="btn-scenario surge"
+                                title="將住宅區變更為 CBD 核心商貿區 (C2)，測試就業與尖峰旅次暴增引發壅塞警示">
                                 <i class="fa-solid fa-arrow-trend-up" style="color: #ef4444;"></i> 住宅變更為 CBD (C2)
                             </button>
-                            <button type="button" id="btnQuickQuietR1" class="btn-scenario" title="將分區變更為低密度住宅區 (R1)，測試旅次驟降恢復順暢">
+                            <button type="button" id="btnQuickQuietR1" class="btn-scenario"
+                                title="將分區變更為低密度住宅區 (R1)，測試旅次驟降恢復順暢">
                                 <i class="fa-solid fa-arrow-trend-down" style="color: #10b981;"></i> 商業變更為住宅 (R1)
                             </button>
                         </div>
@@ -639,10 +635,12 @@
                 </div>
 
                 <div class="luti-hud-footer">
-                    <button type="button" id="lutiHeatmapToggleBtn" class="btn-hud-tool" title="在路網上以綠黃紅視覺化標示各路段當前服務水準 (LOS)">
+                    <button type="button" id="lutiHeatmapToggleBtn" class="btn-hud-tool"
+                        title="在路網上以綠黃紅視覺化標示各路段當前服務水準 (LOS)">
                         <i class="fa-solid fa-fire"></i> <span>壅塞等級 (LOS)</span>
                     </button>
-                    <button type="button" id="lutiOpenTiaReportBtn" class="btn-hud-tool btn-primary-hud" title="產生並匯出都市土地使用效益與交通衝擊評估報告">
+                    <button type="button" id="lutiOpenTiaReportBtn" class="btn-hud-tool btn-primary-hud"
+                        title="產生並匯出都市土地使用效益與交通衝擊評估報告">
                         <i class="fa-solid fa-file-invoice"></i> <span>TIA 評估報告</span>
                     </button>
                 </div>

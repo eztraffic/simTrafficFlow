@@ -178,12 +178,17 @@ class SimulationBridge {
             netData.trafficLights.forEach(tflConfig => {
                 const proxy = {
                     nodeId: tflConfig.nodeId,
-                    schedule: tflConfig.schedule,
+                    schedule: tflConfig.schedule || [],
+                    lights: tflConfig.lights || {},
+                    advancedConfig: tflConfig.advancedConfig || null,
+                    activeGroupSetId: (tflConfig.advancedConfig && tflConfig.advancedConfig.activeGroupSetId) || 'GroupSet_1',
+                    groupNameMap: tflConfig.groupNameMap || {},
                     timeShift: tflConfig.timeShift || 0,
                     cycleDuration: (tflConfig.schedule || []).reduce((sum, p) => sum + p.duration, 0),
                     turnGroupStates: {},
                     getSignalForTurnGroup: (turnGroupId) => {
-                        return proxy.turnGroupStates[turnGroupId] || 'Green';
+                        const actualId = proxy.groupNameMap[turnGroupId] || turnGroupId;
+                        return proxy.turnGroupStates[actualId] || 'Green';
                     },
                     getPhaseDetails: (time) => {
                         if (proxy.cycleDuration <= 0) return { duration: 1, remaining: 0 };
@@ -194,6 +199,70 @@ class SimulationBridge {
                             t -= p.duration;
                         }
                         return { duration: 1, remaining: 0 };
+                    },
+                    // ★★★ 新增 1：計算距離下一次綠燈的倒數秒數 (供 3D 號誌紅燈倒數使用) ★★★
+                    getTimeToNextGreen: (time, targetGroupIds) => {
+                        if (proxy.cycleDuration <= 0 || !targetGroupIds || targetGroupIds.length === 0 || !proxy.schedule.length) return 0;
+                        const actualIds = targetGroupIds.map(id => proxy.groupNameMap[id] || id);
+                        const effectiveTime = time - proxy.timeShift;
+                        let timeInCycle = ((effectiveTime % proxy.cycleDuration) + proxy.cycleDuration) % proxy.cycleDuration;
+                        let currentPeriodIndex = 0;
+                        for (let i = 0; i < proxy.schedule.length; i++) {
+                            if (timeInCycle < proxy.schedule[i].duration) {
+                                currentPeriodIndex = i;
+                                break;
+                            }
+                            timeInCycle -= proxy.schedule[i].duration;
+                        }
+                        const currentPeriod = proxy.schedule[currentPeriodIndex];
+                        if (!currentPeriod) return 0;
+                        if (actualIds.some(gid => currentPeriod.signals[gid] === 'Green')) return 0;
+
+                        let totalWaitTime = currentPeriod.duration - timeInCycle;
+                        let i = (currentPeriodIndex + 1) % proxy.schedule.length;
+                        let safetyCounter = 0;
+                        while (i !== currentPeriodIndex && safetyCounter < proxy.schedule.length) {
+                            const period = proxy.schedule[i];
+                            if (actualIds.some(gid => period.signals[gid] === 'Green')) return totalWaitTime;
+                            totalWaitTime += period.duration;
+                            i = (i + 1) % proxy.schedule.length;
+                            safetyCounter++;
+                        }
+                        return totalWaitTime;
+                    },
+                    // ★★★ 新增 2：計算行人號誌剩餘秒數 (供 3D 小綠人倒數使用) ★★★
+                    getPedestrianRemainingTime: (time, groupId) => {
+                        if (proxy.cycleDuration <= 0 || !groupId || !proxy.schedule.length) return 0;
+                        const actualId = proxy.groupNameMap[groupId] || groupId;
+                        const effectiveTime = time - proxy.timeShift;
+                        let timeInCycle = ((effectiveTime % proxy.cycleDuration) + proxy.cycleDuration) % proxy.cycleDuration;
+                        let currentPeriodIndex = 0;
+                        for (let i = 0; i < proxy.schedule.length; i++) {
+                            if (timeInCycle < proxy.schedule[i].duration) {
+                                currentPeriodIndex = i;
+                                break;
+                            }
+                            timeInCycle -= proxy.schedule[i].duration;
+                        }
+                        const currentPeriod = proxy.schedule[currentPeriodIndex];
+                        if (!currentPeriod) return 0;
+                        const currentState = currentPeriod.signals[actualId] || 'Green';
+                        if (currentState === 'Red') {
+                            return proxy.getTimeToNextGreen(time, [groupId]);
+                        } else {
+                            let totalRemaining = currentPeriod.duration - timeInCycle;
+                            let i = (currentPeriodIndex + 1) % proxy.schedule.length;
+                            let safetyCounter = 0;
+                            while (i !== currentPeriodIndex && safetyCounter < proxy.schedule.length) {
+                                const period = proxy.schedule[i];
+                                const state = period.signals[actualId] || 'Green';
+                                if (state === 'Red') break;
+                                totalRemaining += period.duration;
+                                i = (i + 1) % proxy.schedule.length;
+                                safetyCounter++;
+                            }
+                            return totalRemaining;
+                        }
                     }
                 };
                 this.trafficLights.push(proxy);
@@ -393,6 +462,7 @@ class SimulationBridge {
                         isBraking: false,
                         isPlayerControlled: false,
                         currentLaneIndex: 0,
+                        state: 'inIntersection', // ★ 新增：賦予有效狀態，讓 2D 畫布與統計模組正常繪製與計數
                         finished: false
                     };
                     this.vehiclesByNumId.set(nv.numId, proxy);
