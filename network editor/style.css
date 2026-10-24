@@ -29,7 +29,7 @@
 
     /* 尺寸定義 */
     --h-nav: 50px;
-    --h-toolbar: 64px;
+    --h-toolbar: 70px;
     /* [修改] 稍微增加高度以容納文字 */
     --w-sidebar: 300px;
 
@@ -191,7 +191,7 @@ body {
     gap: 5px;
     z-index: 10;
     flex-shrink: 0;
-    overflow-x: auto;
+    overflow: visible;
 }
 
 .toolbar-section {
@@ -220,7 +220,7 @@ body {
     /* Icon top, Text bottom */
     align-items: center;
     justify-content: center;
-    min-width: 50px;
+    min-width: 40px;
     /* 稍微加寬 */
     height: 52px;
     /* 固定高度 */
@@ -1326,10 +1326,11 @@ td {
     height: 30px;
     background-color: #e2e8f0;
     border-radius: 6px;
-    margin-bottom: 25px; /* 留空間給刻度 */
+    margin-bottom: 25px;
+    /* 留空間給刻度 */
     display: flex;
     overflow: hidden;
-    box-shadow: inset 0 1px 3px rgba(0,0,0,0.1);
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.1);
     border: 1px solid var(--border);
 }
 
@@ -1338,8 +1339,9 @@ td {
     display: flex;
     align-items: center;
     justify-content: center;
-    border-right: 1px solid rgba(255,255,255,0.3);
-    transition: width 0.3s ease; /* 動畫過渡效果 */
+    border-right: 1px solid rgba(255, 255, 255, 0.3);
+    transition: width 0.3s ease;
+    /* 動畫過渡效果 */
 }
 
 .tfl-timeline-segment:last-child {
@@ -1347,10 +1349,10 @@ td {
 }
 
 .seg-label {
-    color: rgba(255,255,255,0.9);
+    color: rgba(255, 255, 255, 0.9);
     font-size: 0.7rem;
     font-weight: 600;
-    text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1371,6 +1373,7 @@ td {
     color: var(--text-muted);
     transform: translateX(-50%);
 }
+
 .tfl-timeline-ticks span::before {
     content: '';
     position: absolute;
@@ -1393,9 +1396,10 @@ td {
     gap: 15px;
     transition: background 0.2s;
 }
+
 .tfl-checkpoint-row:hover {
     background: #ffffff;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
 }
 
 .cp-time {
@@ -1404,11 +1408,13 @@ td {
     gap: 6px;
     color: var(--primary);
 }
+
 .cp-time-input {
     width: 100px;
     font-family: 'Roboto Mono', monospace;
     font-weight: 600;
 }
+
 .cp-action {
     font-size: 0.8rem;
     color: var(--text-muted);
@@ -1416,10 +1422,951 @@ td {
     align-items: center;
     gap: 6px;
 }
+
 .cp-schedule {
     flex: 1;
 }
+
 .cp-delete {
     width: 30px;
     text-align: right;
+}
+
+/* ==========================================================================
+   Traffic Light Editor - 膠囊分頁列與階層式時制庫樣式
+   ========================================================================== */
+.tfl-pill-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px 12px;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    margin-bottom: 12px;
+}
+
+.tfl-pill-bar-tier1 {
+    background: #f5f3ff;
+    border-color: #ddd6fe;
+    margin-bottom: 8px;
+}
+
+.tfl-library-tier2-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 6px 12px;
+    margin-bottom: 12px;
+}
+
+.tfl-pill-bar-tier2 {
+    background: transparent;
+    border: none;
+    padding: 0;
+    margin-bottom: 0;
+    flex: 1;
+}
+
+.tfl-timeshift-box {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding-left: 10px;
+    border-left: 1px solid #e2e8f0;
+}
+
+.tfl-pill-bar-label {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: #334155;
+    margin-right: 4px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+}
+
+.tfl-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 12px;
+    border-radius: 999px;
+    border: 1px solid #cbd5e1;
+    background: #ffffff;
+    color: #334155;
+    font-size: 0.82rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    user-select: none;
+}
+
+.tfl-pill:hover {
+    border-color: #94a3b8;
+    background: #f1f5f9;
+}
+
+.tfl-pill.active {
+    background: #ede9fe;
+    border-color: #8b5cf6;
+    color: #5b21b6;
+    font-weight: 600;
+    box-shadow: 0 1px 2px rgba(139, 92, 246, 0.18);
+}
+
+.tfl-pill.tfl-pill-schedule.active {
+    background: #dbeafe;
+    border-color: #3b82f6;
+    color: #1d4ed8;
+    font-weight: 600;
+    box-shadow: 0 1px 2px rgba(59, 130, 246, 0.18);
+}
+
+.tfl-pill-sub {
+    font-size: 0.72rem;
+    opacity: 0.75;
+    font-weight: 400;
+}
+
+.tfl-pill-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    border: none;
+    background: rgba(255, 255, 255, 0.75);
+    color: inherit;
+    font-size: 0.7rem;
+    cursor: pointer;
+    padding: 0;
+    transition: background 0.15s, color 0.15s, transform 0.1s;
+}
+
+.tfl-pill-icon-btn:hover {
+    background: #ffffff;
+    transform: scale(1.08);
+}
+
+.tfl-pill-icon-btn.danger:hover {
+    background: #fee2e2;
+    color: #ef4444;
+}
+
+.tfl-pill-add-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 5px 12px;
+    border-radius: 999px;
+    border: 1px dashed #94a3b8;
+    background: rgba(255, 255, 255, 0.6);
+    color: #475569;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.tfl-pill-add-btn:hover {
+    border-color: #6366f1;
+    color: #4f46e5;
+    background: #eef2ff;
+}
+
+.tfl-pill-inline-input {
+    width: 125px;
+    padding: 2px 6px;
+    font-size: 0.82rem;
+    font-weight: 600;
+    border: 1px solid #6366f1;
+    border-radius: 4px;
+    background: #ffffff;
+    color: #0f172a;
+    outline: none;
+}
+
+
+/* =========================================================
+   Synchro Mode Toolbar & Visual Lane/Turn Diagram Picker
+   ========================================================= */
+.synchro-mode-btn {
+    position: relative;
+    border: 1.5px solid #cbd5e1 !important;
+    background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%) !important;
+    color: #334155 !important;
+    transition: all 0.2s ease !important;
+}
+
+.synchro-mode-btn i {
+    color: #f59e0b !important;
+}
+
+.synchro-mode-btn.synchro-active {
+    border-color: #f59e0b !important;
+    background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%) !important;
+    color: #b45309 !important;
+    box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.25), 0 2px 6px rgba(245, 158, 11, 0.2) !important;
+}
+
+.synchro-badge {
+    font-size: 9px;
+    font-weight: 800;
+    padding: 1px 5px;
+    border-radius: 999px;
+    background: #e2e8f0;
+    color: #64748b;
+    letter-spacing: 0.4px;
+    margin-top: 1px;
+}
+
+.synchro-mode-btn.synchro-active .synchro-badge {
+    background: #f59e0b;
+    color: #ffffff;
+}
+
+.synchro-panel-box {
+    background: linear-gradient(180deg, #fffbeb 0%, #ffffff 100%);
+    border: 1.5px solid #fcd34d;
+    border-radius: 8px;
+    padding: 10px;
+    margin-bottom: 12px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.synchro-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: #92400e;
+}
+
+.synchro-lane-count-bar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.synchro-count-btn {
+    padding: 2px 7px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    border: 1px solid #cbd5e1;
+    border-radius: 4px;
+    background: #ffffff;
+    color: #334155;
+    cursor: pointer;
+}
+
+.synchro-count-btn.active {
+    background: #f59e0b;
+    color: #ffffff;
+    border-color: #d97706;
+}
+
+.synchro-road-strip {
+    display: flex;
+    align-items: stretch;
+    justify-content: center;
+    background: #334155;
+    border-left: 3px solid #facc15;
+    border-right: 3px solid #e2e8f0;
+    border-top: 4px solid #ffffff;
+    border-radius: 6px;
+    padding: 6px 4px;
+    margin-bottom: 8px;
+    gap: 4px;
+}
+
+.synchro-lane-col {
+    flex: 1;
+    min-width: 48px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 8px 4px 6px 4px;
+    border-radius: 5px;
+    border: 1.5px solid transparent;
+    background: rgba(15, 23, 42, 0.35);
+    cursor: pointer;
+    user-select: none;
+    transition: all 0.15s ease;
+    position: relative;
+}
+
+.synchro-lane-col:hover {
+    background: rgba(15, 23, 42, 0.65);
+    border-color: rgba(147, 197, 253, 0.6);
+}
+
+.synchro-lane-col.selected {
+    background: #1e293b;
+    border-color: #38bdf8;
+    box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.25);
+}
+
+.synchro-lane-arrow-big {
+    font-size: 1.35rem;
+    font-weight: 900;
+    color: #ffffff;
+    line-height: 1.1;
+    letter-spacing: -1px;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+    margin-bottom: 4px;
+}
+
+.synchro-lane-col.selected .synchro-lane-arrow-big {
+    color: #38bdf8;
+}
+
+.synchro-lane-label {
+    font-size: 0.68rem;
+    color: #cbd5e1;
+    font-weight: 600;
+    margin-bottom: 2px;
+}
+
+.synchro-lane-code-badge {
+    font-size: 0.6rem;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.12);
+    color: #94a3b8;
+}
+
+.synchro-lane-col.selected .synchro-lane-code-badge {
+    background: rgba(56, 189, 248, 0.2);
+    color: #7dd3fc;
+}
+
+/* 下方共用單排大尺寸轉向選擇器 */
+.synchro-shared-turn-bar {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    padding: 7px 8px;
+}
+
+.synchro-shared-turn-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 0.74rem;
+    color: #334155;
+    margin-bottom: 6px;
+}
+
+.synchro-turn-pills {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 4px;
+}
+
+.synchro-turn-pill {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 5px 2px;
+    border-radius: 5px;
+    border: 1px solid #cbd5e1;
+    background: #ffffff;
+    color: #334155;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    gap: 1px;
+}
+
+.synchro-turn-pill .pill-arrow {
+    font-size: 0.95rem;
+    font-weight: 900;
+    line-height: 1.1;
+    letter-spacing: -1px;
+}
+
+.synchro-turn-pill .pill-code {
+    font-size: 0.58rem;
+    font-weight: 700;
+    opacity: 0.7;
+}
+
+.synchro-turn-pill:hover {
+    border-color: #3b82f6;
+    background: #eff6ff;
+    color: #1d4ed8;
+}
+
+.synchro-turn-pill.active {
+    background: #2563eb;
+    border-color: #1d4ed8;
+    color: #ffffff;
+    box-shadow: 0 1px 3px rgba(37, 99, 235, 0.3);
+}
+
+.synchro-turn-pill {
+    font-size: 0.62rem;
+    font-weight: 700;
+    padding: 1px 3.5px;
+    border-radius: 3px;
+    border: 1px solid #64748b;
+    background: #1e293b;
+    color: #cbd5e1;
+    cursor: pointer;
+    line-height: 1.2;
+}
+
+.synchro-turn-pill:hover {
+    border-color: #93c5fd;
+    color: #ffffff;
+}
+
+.synchro-turn-pill.active {
+    background: #3b82f6;
+    border-color: #60a5fa;
+    color: #ffffff;
+}
+
+.synchro-preset-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 5px;
+    margin-top: 6px;
+}
+
+.synchro-preset-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 5px 4px;
+    background: #1e293b;
+    border: 1.5px solid #475569;
+    border-top: 3px solid #f8fafc;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    color: #f8fafc;
+}
+
+.synchro-preset-card:hover {
+    border-color: #f59e0b;
+    transform: translateY(-1px);
+}
+
+.synchro-preset-card.active {
+    border-color: #f59e0b;
+    background: #0f172a;
+    box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.35);
+}
+
+.synchro-preset-lanes {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+}
+
+.synchro-preset-lane-cell {
+    flex: 1;
+    text-align: center;
+    font-size: 0.82rem;
+    font-weight: 800;
+    color: #ffffff;
+    border-right: 1px dashed rgba(255, 255, 255, 0.4);
+    padding: 1px 2px;
+    letter-spacing: -1px;
+}
+
+.synchro-preset-lane-cell:last-child {
+    border-right: none;
+}
+
+.synchro-preset-caption {
+    font-size: 0.62rem;
+    color: #94a3b8;
+    margin-top: 2px;
+    font-weight: 600;
+}
+
+.synchro-approach-card {
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 9px;
+    margin-bottom: 10px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+}
+
+.synchro-approach-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid #f1f5f9;
+}
+
+.synchro-compass-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 800;
+    background: #eff6ff;
+    color: #1d4ed8;
+    border: 1px solid #bfdbfe;
+}
+
+/* =========================================================
+   UI Optimization Patch - Right Properties Panel Redesign
+   ========================================================= */
+
+/* 1. 適度加寬右側面板，解決雙欄與車道圖擁擠問題 */
+:root {
+    --w-sidebar: 400px;
+}
+
+#properties-content {
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+/* 2. 置頂物件識別卡 (取代原本的 <h4> 與重複的 ID 輸入框) */
+.prop-object-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: #ffffff;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    box-shadow: var(--shadow-sm);
+}
+
+.prop-object-title-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.prop-object-icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    background: #eff6ff;
+    color: var(--primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.9rem;
+    flex-shrink: 0;
+}
+
+.prop-object-meta {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.prop-object-type {
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    letter-spacing: 0.04em;
+}
+
+.prop-object-id {
+    font-family: 'Roboto Mono', monospace;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-main);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.btn-header-delete {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: #94a3b8;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+}
+
+.btn-header-delete:hover {
+    background: #fef2f2;
+    color: var(--danger);
+    border-color: #fecaca;
+}
+
+/* 3. 唯讀數據儀表板 (取代 disabled input) */
+.prop-stat-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 6px;
+}
+
+.prop-stat-grid.cols-3 {
+    grid-template-columns: repeat(3, 1fr);
+}
+
+.prop-stat-box {
+    background: #ffffff;
+    border: 1px solid var(--border-light);
+    border-radius: 6px;
+    padding: 6px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.prop-stat-label {
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.prop-stat-value {
+    font-family: 'Roboto Mono', monospace;
+    font-size: 0.88rem;
+    font-weight: 700;
+    color: #0f172a;
+}
+
+/* 4. 手風琴摺疊區塊 (<details> & <summary>) */
+details.prop-accordion {
+    background: #ffffff;
+    border: 1px solid var(--border-light);
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
+}
+
+details.prop-accordion>summary {
+    list-style: none;
+    padding: 9px 12px;
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: var(--text-main);
+    background: #ffffff;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    user-select: none;
+    transition: background 0.15s;
+}
+
+details.prop-accordion>summary::-webkit-details-marker {
+    display: none;
+}
+
+details.prop-accordion>summary:hover {
+    background: #f8fafc;
+}
+
+details.prop-accordion[open]>summary {
+    border-bottom: 1px solid var(--border-light);
+    background: #f8fafc;
+}
+
+.prop-accordion-arrow {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    transition: transform 0.2s ease;
+}
+
+details.prop-accordion[open] .prop-accordion-arrow {
+    transform: rotate(180deg);
+}
+
+.prop-accordion-body {
+    padding: 10px 12px;
+}
+
+.prop-accordion-badge {
+    font-size: 0.68rem;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: #e2e8f0;
+    color: #475569;
+    margin-left: auto;
+    margin-right: 8px;
+}
+
+/* 5. 分段控制器 (Segmented Control - 取代凌亂的 Radio 清單) */
+.segmented-control {
+    display: flex;
+    background: #e2e8f0;
+    padding: 3px;
+    border-radius: 7px;
+    gap: 2px;
+    margin-bottom: 8px;
+}
+
+.segmented-option {
+    flex: 1;
+    text-align: center;
+    position: relative;
+}
+
+.segmented-option input[type="radio"] {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.segmented-option span {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    padding: 5px 6px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: #475569;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.segmented-option input[type="radio"]:checked+span {
+    background: #ffffff;
+    color: var(--primary);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+/* 6. 緊湊型車道列與車種膠囊 (Compact Lane Row & Vehicle Chips) */
+.lane-compact-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 8px;
+    background: #f8fafc;
+    border: 1px solid var(--border-light);
+    border-radius: 6px;
+    margin-bottom: 6px;
+    gap: 6px;
+    transition: border-color 0.15s;
+}
+
+.lane-compact-row:hover {
+    border-color: var(--primary);
+    background: #eff6ff;
+}
+
+.veh-chip-group {
+    display: flex;
+    gap: 3px;
+}
+
+.veh-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 6px;
+    font-size: 0.68rem;
+    font-weight: 600;
+    border-radius: 4px;
+    border: 1px solid #cbd5e1;
+    background: #ffffff;
+    color: #94a3b8;
+    cursor: pointer;
+    user-select: none;
+    transition: all 0.15s;
+}
+
+.veh-chip input {
+    display: none;
+}
+
+.veh-chip:has(input:checked) {
+    background: #dbeafe;
+    border-color: #60a5fa;
+    color: #1d4ed8;
+}
+
+/* 7. 路口方向切換分頁 (用於 Node -> Synchro 分頁，避免 4 個方向垂直塞爆) */
+.approach-switcher {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 8px;
+    background: #f1f5f9;
+    padding: 4px;
+    border-radius: 6px;
+}
+
+.approach-tab-btn {
+    flex: 1;
+    padding: 5px 4px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: #475569;
+    cursor: pointer;
+    text-align: center;
+    transition: all 0.15s;
+}
+
+.approach-tab-btn.active {
+    background: #ffffff;
+    color: #1d4ed8;
+    border-color: #bfdbfe;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+/* 8. 低干擾次要按鈕 (取代原本五顏六色的按鈕) */
+.btn-soft {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 100%;
+    padding: 7px 10px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: #334155;
+    background: #ffffff;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.btn-soft:hover {
+    background: #f8fafc;
+    border-color: var(--primary);
+    color: var(--primary);
+}
+
+/* 1. 確保工具列允許下拉選單浮出 */
+.app-toolbar {
+    overflow: visible !important;
+}
+
+/* 2. 工具列收納式下拉選單 (Split/Dropdown Tool Group) */
+.tool-dropdown {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+}
+
+.tool-dropdown-toggle {
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text-main);
+    padding: 4px 8px;
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-width: 52px;
+    height: 52px;
+    transition: all 0.2s;
+    gap: 4px;
+}
+
+.tool-dropdown-toggle i.group-icon {
+    font-size: 1.1rem;
+    margin-bottom: 2px;
+}
+
+.tool-dropdown-toggle .btn-text {
+    font-size: 0.65rem;
+    font-weight: 500;
+    white-space: nowrap;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+}
+
+.tool-dropdown-toggle .caret-icon {
+    font-size: 0.6rem;
+    opacity: 0.65;
+}
+
+.tool-dropdown-toggle:hover {
+    background-color: #f1f5f9;
+    color: var(--primary);
+}
+
+.tool-dropdown.active .tool-dropdown-toggle {
+    background-color: #eff6ff;
+    color: var(--primary);
+    border-color: rgba(59, 130, 246, 0.25);
+}
+
+.tool-dropdown-menu {
+    display: none;
+    position: absolute;
+    top: calc(100% + 5px);
+    left: 0;
+    min-width: 170px;
+    background: #ffffff;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.14);
+    padding: 4px;
+    z-index: 250;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.tool-dropdown.open .tool-dropdown-menu {
+    display: flex;
+}
+
+/* 選單內的工具改為水平列表排列，好讀好點 */
+.tool-dropdown-menu .tool-btn {
+    flex-direction: row;
+    justify-content: flex-start;
+    width: 100%;
+    height: 36px;
+    padding: 6px 10px;
+    gap: 10px;
+}
+
+.tool-dropdown-menu .tool-btn i {
+    font-size: 0.95rem;
+    margin-bottom: 0;
+    width: 18px;
+    text-align: center;
+}
+
+.tool-dropdown-menu .tool-btn .btn-text {
+    font-size: 0.78rem;
+    font-weight: 500;
 }

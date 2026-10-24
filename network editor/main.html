@@ -79,8 +79,19 @@
         </div>
     </nav>
 
-    <!-- 2. 工具列：採用最早優化方案的分類 (EDIT, ROAD, OBJECTS, UTILS) -->
+    <!-- 2. 工具列：收納式群組設計 (19 顆濃縮為 13 顆) -->
     <div class="app-toolbar" id="toolbar">
+
+        <!-- 0. SYNCHRO MODE -->
+        <div class="toolbar-section">
+            <button id="btn-synchro-mode" class="tool-btn synchro-mode-btn" title="Synchro 快速建模與視覺車道轉向模式 (Alt+S)">
+                <i class="fa-solid fa-bolt"></i>
+                <span class="btn-text">Synchro</span>
+                <span id="synchro-mode-badge" class="synchro-badge">OFF</span>
+            </button>
+        </div>
+
+        <div class="divider-v"></div>
 
         <!-- 1. EDIT -->
         <div class="toolbar-section">
@@ -88,11 +99,12 @@
                 <i class="fa-solid fa-arrow-pointer"></i>
                 <span class="btn-text">Select</span>
             </button>
+            <button class="tool-btn" data-tool="subnetwork" title="Sub-Network Tool (Polygon Select / Copy / Move)">
+                <i class="fa-solid fa-object-group"></i>
+                <span class="btn-text">SubNet</span>
+            </button>
         </div>
-        <button class="tool-btn" data-tool="subnetwork" title="Sub-Network Tool (Polygon Select / Copy / Move)">
-            <i class="fa-solid fa-object-group"></i>
-            <span class="btn-text">SubNet</span>
-        </button>
+
         <div class="divider-v"></div>
 
         <!-- 2. ROAD -->
@@ -117,7 +129,7 @@
 
         <div class="divider-v"></div>
 
-        <!-- 3. OBJECTS -->
+        <!-- 3. OBJECTS (收納偵測器與停車設施) -->
         <div class="toolbar-section">
             <button class="tool-btn" data-tool="edit-tfl" title="Traffic Light (T)">
                 <i class="fa-solid fa-traffic-light"></i>
@@ -131,22 +143,43 @@
                 <i class="fa-solid fa-sign-hanging"></i>
                 <span class="btn-text">Sign</span>
             </button>
-            <button class="tool-btn" data-tool="add-point-detector" title="Point Detector (P)">
-                <i class="fa-solid fa-video"></i>
-                <span class="btn-text">Pt. Det.</span>
-            </button>
-            <button class="tool-btn" data-tool="add-section-detector" title="Section Detector (S)">
-                <i class="fa-solid fa-video-slash"></i>
-                <span class="btn-text">Sec. Det.</span>
-            </button>
-            <button class="tool-btn" data-tool="add-parking-lot" title="Parking Lot (P)">
-                <i class="fa-solid fa-square-parking"></i>
-                <span class="btn-text">Parking</span>
-            </button>
-            <button class="tool-btn" data-tool="add-parking-gate" title="Parking Gate (Shift+P)">
-                <i class="fa-solid fa-door-open"></i>
-                <span class="btn-text">Gate</span>
-            </button>
+
+            <!-- 收納群組 1：偵測器 (Point / Section Detector) -->
+            <div class="tool-dropdown" data-group="detector">
+                <button type="button" class="tool-dropdown-toggle" title="Detectors (Point / Section)">
+                    <i class="fa-solid fa-video group-icon"></i>
+                    <span class="btn-text"><span class="group-label">Detector</span> <i class="fa-solid fa-caret-down caret-icon"></i></span>
+                </button>
+                <div class="tool-dropdown-menu">
+                    <button class="tool-btn" data-tool="add-point-detector" title="Point Detector (P)">
+                        <i class="fa-solid fa-video"></i>
+                        <span class="btn-text">Pt. Det. (單點偵測)</span>
+                    </button>
+                    <button class="tool-btn" data-tool="add-section-detector" title="Section Detector (S)">
+                        <i class="fa-solid fa-video-slash"></i>
+                        <span class="btn-text">Sec. Det. (區段偵測)</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- 收納群組 2：停車設施 (Parking Lot / Gate) -->
+            <div class="tool-dropdown" data-group="parking">
+                <button type="button" class="tool-dropdown-toggle" title="Parking Lot & Gate">
+                    <i class="fa-solid fa-square-parking group-icon"></i>
+                    <span class="btn-text"><span class="group-label">Parking</span> <i class="fa-solid fa-caret-down caret-icon"></i></span>
+                </button>
+                <div class="tool-dropdown-menu">
+                    <button class="tool-btn" data-tool="add-parking-lot" title="Parking Lot">
+                        <i class="fa-solid fa-square-parking"></i>
+                        <span class="btn-text">Parking Lot (停車場)</span>
+                    </button>
+                    <button class="tool-btn" data-tool="add-parking-gate" title="Parking Gate">
+                        <i class="fa-solid fa-door-open"></i>
+                        <span class="btn-text">Parking Gate (出入口)</span>
+                    </button>
+                </div>
+            </div>
+
             <button class="tool-btn" data-tool="add-zone" title="Land Use Zone (Z)">
                 <i class="fa-solid fa-city"></i>
                 <span class="btn-text">Zone</span>
@@ -155,43 +188,45 @@
 
         <div class="divider-v"></div>
 
-        <!-- 4. UTILS -->
+        <!-- 4. UTILS & GIS (收納底圖、圖釘、OSM路網生成) -->
         <div class="toolbar-section">
             <button class="tool-btn" data-tool="measure" title="Measure (M)">
                 <i class="fa-solid fa-ruler"></i>
                 <span class="btn-text">Measure</span>
             </button>
-            <button class="tool-btn" data-tool="add-background" title="Background Image (B)">
-                <i class="fa-regular fa-image"></i>
-                <span class="btn-text">Image</span>
-            </button>
-            <button class="tool-btn" data-tool="add-pushpin" title="Geo Pin (G)">
-                <i class="fa-solid fa-thumbtack"></i>
-                <span class="btn-text">Geo Pin</span>
-            </button>
+
+            <!-- 收納群組 3：地圖與底圖工具 -->
+            <div class="tool-dropdown" data-group="gis">
+                <button type="button" class="tool-dropdown-toggle" title="Map, Background & Geo Tools">
+                    <i class="fa-solid fa-map-location-dot group-icon"></i>
+                    <span class="btn-text"><span class="group-label">Map/GIS</span> <i class="fa-solid fa-caret-down caret-icon"></i></span>
+                </button>
+                <div class="tool-dropdown-menu">
+                    <button class="tool-btn" data-tool="add-background" title="Background Image (B)">
+                        <i class="fa-regular fa-image"></i>
+                        <span class="btn-text">Image (底圖圖層)</span>
+                    </button>
+                    <button class="tool-btn" data-tool="add-pushpin" title="Geo Pin (G)">
+                        <i class="fa-solid fa-thumbtack"></i>
+                        <span class="btn-text">Geo Pin (座標圖釘)</span>
+                    </button>
+                    <button class="tool-btn" id="btn-osm-generate" title="Generate Roads from OSM Data">
+                        <i class="fa-solid fa-road-spikes"></i>
+                        <span class="btn-text">Gen. Roads (OSM生成)</span>
+                    </button>
+                </div>
+            </div>
         </div>
 
-        <div class="divider-v"></div>
-        <div class="toolbar-section">
-            <button class="tool-btn" id="btn-osm-generate" title="Generate Roads from OSM Data">
-                <i class="fa-solid fa-road-spikes"></i>
-                <span class="btn-text">Gen. Roads</span>
-            </button>
-        </div>
-
-        <!-- [修改位置] 背景鎖定區塊移至最右側 -->
-        <!-- margin-left: auto 會將此元素之後的所有內容推到最右邊 -->
+        <!-- 背景鎖定區塊 -->
         <div class="divider-v" id="bg-lock-divider" style="display:none; margin-left: auto;"></div>
-
         <div class="toolbar-section" id="bg-lock-section" style="display:none;">
             <label class="tool-check-label" title="Lock Background Image">
                 <input type="checkbox" id="bg-lock-checkbox">
                 <i class="fa-solid fa-lock-open" id="bg-lock-icon"></i>
-                <span class="btn-text">lock(鎖定背景)</span>
+                <span class="btn-text">Lock</span>
             </label>
         </div>
-        <!-- [結束修改] -->
-
     </div>
     <!-- 3. 主內容區 -->
     <main id="main-content">
@@ -231,8 +266,9 @@
                     <button class="tab-link" data-tab="tfl-weekly">Weekly (週排程)</button>
                 </div>
 
-                <!-- Tab 1: 號誌群組 (保留原有邏輯) -->
+                <!-- Tab 1: 號誌群組 (支援多套硬體群組配置) -->
                 <div id="tfl-grouping" class="tab-content active">
+                    <div id="tfl-groupset-pills" class="tfl-pill-bar"></div>
                     <div class="tfl-column">
                         <h4>Manage Groups</h4>
                         <div id="tfl-group-management"></div>
@@ -243,23 +279,17 @@
                     </div>
                 </div>
 
-                <!-- Tab 2: 時制庫 (Schedule Library) -->
+                <!-- Tab 2: 時制庫 (Schedule Library — 依硬體群組階層管理時制) -->
                 <div id="tfl-library" class="tab-content">
-                    <div style="display:flex; justify-content:space-between; margin-bottom:10px; align-items:center;">
-                        <!-- 左側：下拉選單與時差輸入 -->
-                        <div style="display:flex; gap:10px; align-items:center;">
-                            <select id="tfl-schedule-selector" class="prop-select" style="width: 150px;"></select>
-                            <label class="prop-label" style="margin:0; min-width:auto;">Time Shift (s):</label>
+                    <!-- 第 1 列：先選擇硬體群組 -->
+                    <div id="tfl-library-groupset-pills" class="tfl-pill-bar tfl-pill-bar-tier1"></div>
+                    <!-- 第 2 列：該硬體群組底下的時制分頁 ＋ Time Shift -->
+                    <div class="tfl-library-tier2-row">
+                        <div id="tfl-schedule-pills" class="tfl-pill-bar tfl-pill-bar-tier2"></div>
+                        <div class="tfl-timeshift-box">
+                            <label class="prop-label" style="margin:0; min-width:auto; white-space:nowrap;">Time Shift (s):</label>
                             <input type="number" id="tfl-schedule-timeshift" class="prop-input"
-                                style="width: 60px; padding:4px;" min="0">
-                        </div>
-                        <!-- 右側：新增與刪除按鈕 -->
-                        <div style="display:flex; gap:8px;">
-                            <button id="tfl-add-schedule-btn" class="btn-secondary">+ Add</button>
-                            <button id="tfl-delete-schedule-btn" class="btn-secondary"
-                                style="color:#ef4444; border-color:#fecaca;" title="Delete Schedule">
-                                <i class="fa-solid fa-trash-can"></i>
-                            </button>
+                                style="width: 64px; padding:4px 6px;" min="0">
                         </div>
                     </div>
                     <div id="tfl-schedule-table-container">

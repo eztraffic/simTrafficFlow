@@ -261,6 +261,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const statusBar = document.getElementById('status-bar');
 
     let lastActiveNodeTab = 'tab-settings'; // [新增] 用於記憶 Node 屬性面板當前的分頁
+    let isSynchroMode = false; // Synchro 快速建模與視覺車道轉向模式
+    var synchroDraftStart = null;
+    var synchroDraftPreviewGroup = null;
+    var synchroSnapIndicatorGroup = null;
     let lastActiveLinkTab = 'tab-link-general'; // <--- [新增] 記憶 Link 面板的分頁
 
     // --- DATA MODELS ---
@@ -335,6 +339,9 @@ document.addEventListener('DOMContentLoaded', () => {
         };
         network.nodes[id] = node;
         layer.add(node.konvaShape);
+        if (typeof setupSynchroNodeDrag === 'function') {
+            setupSynchroNodeDrag(node);
+        }
         return node;
     }
 
@@ -1578,6 +1585,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
 
+            if (typeof drawSynchroGroundArrowsOnLink === 'function') {
+                drawSynchroGroundArrowsOnLink(link);
+            }
             return; // Lane-based 畫完直接返回
         }
 
@@ -1665,6 +1675,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 tension: 0,
             });
             link.konvaGroup.add(divider);
+        }
+
+        if (typeof drawSynchroGroundArrowsOnLink === 'function') {
+            drawSynchroGroundArrowsOnLink(link);
         }
 
         const clickableArea = new Konva.Line({
@@ -2072,18 +2086,29 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function drawNode(node, ctx, shape) {
-        const polygonPoints = getNodePolygonPoints(node);
+        const isTerminal = typeof isSynchroTerminalNode === 'function' ? isSynchroTerminalNode(node) : false;
+        const polygonPoints = isTerminal ? [] : getNodePolygonPoints(node);
 
-        if (polygonPoints.length < 6) {
-            // Fallback to a simple circle if polygon can't be computed
+        if (isTerminal || polygonPoints.length < 6) {
+            // Terminal / Standalone Node: draw a clear Synchro-style Node circle
+            const radius = isSynchroMode ? 9.5 : 8.5;
             ctx.beginPath();
-            ctx.arc(node.x, node.y, 10, 0, Math.PI * 2, true);
+            ctx.arc(node.x, node.y, radius, 0, Math.PI * 2, false);
             ctx.closePath();
             ctx.fillStrokeShape(shape);
+
+            if (isSynchroMode) {
+                ctx.save();
+                ctx.beginPath();
+                ctx.arc(node.x, node.y, radius * 0.42, 0, Math.PI * 2, false);
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+                ctx.fill();
+                ctx.restore();
+            }
             return;
         }
 
-        // Draw the computed polygon
+        // Draw the computed intersection polygon
         ctx.beginPath();
         ctx.moveTo(polygonPoints[0], polygonPoints[1]);
         for (let i = 2; i < polygonPoints.length; i += 2) {
@@ -2091,6 +2116,18 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         ctx.closePath();
         ctx.fillStrokeShape(shape);
+
+        if (isSynchroMode) {
+            ctx.save();
+            ctx.beginPath();
+            ctx.arc(node.x, node.y, 5.5, 0, Math.PI * 2, false);
+            ctx.fillStyle = 'rgba(245, 158, 11, 0.9)';
+            ctx.fill();
+            ctx.lineWidth = 1.2;
+            ctx.strokeStyle = '#ffffff';
+            ctx.stroke();
+            ctx.restore();
+        }
         // Reset transform to avoid affecting other drawings on the layer
         ctx.setTransform(1, 0, 0, 1, 0, 0);
     }
@@ -2236,6 +2273,15 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         activeTool = toolName;
+        Object.values(network.nodes || {}).forEach(n => {
+            if (n && n.konvaShape) n.konvaShape.draggable(toolName === 'select');
+        });
+        if (typeof cleanupSynchroDraft === 'function' && toolName !== 'add-link') {
+            cleanupSynchroDraft(true);
+        }
+        if (typeof updateSynchroCanvasHint === 'function') {
+            updateSynchroCanvasHint();
+        }
         if (toolName !== 'add-zone' && window.redrawingZone) {
             window.redrawingZone = null;
         }
@@ -2374,71 +2420,72 @@ document.addEventListener('DOMContentLoaded', () => {
         updateStatusBar();
     }
 
-    // --- 新增：顯示交通號誌編輯圖示 ---
+    // --- 顯示交通號誌編輯圖示 (純向量三色號誌燈箱 + 縮放 LOD) ---
     function showTrafficLightIcons() {
-        clearTrafficLightIcons(); // 先清除舊的，避免重複
-        const scale = 1 / stage.scaleX(); // 計算反向縮放比例，確保圖示大小恆定
+        clearTrafficLightIcons();
+        const currentScale = stage.scaleX();
+        const scale = 1 / currentScale;
+        const isVisible = currentScale >= 0.55; // 縮小低於 55% 時自動隱藏
 
         Object.values(network.nodes).forEach(node => {
-            // 建立一個群組包裹圖示
             const group = new Konva.Group({
                 x: node.x,
                 y: node.y,
-                name: 'tfl-icon-wrapper', // 設定名稱以便縮放時選取
-                listening: true, // 確保可被點擊
+                name: 'tfl-icon-wrapper',
+                listening: true,
                 scaleX: scale,
-                scaleY: scale
+                scaleY: scale,
+                visible: isVisible
             });
 
-            // 1. 白色圓形背景 (確保容易點擊且與背景有對比)
+            // 1. 圓形白底徽章
             const bg = new Konva.Circle({
-                radius: 12,
-                fill: '#f8f9fa',
-                stroke: '#333',
-                strokeWidth: 1,
-                shadowColor: 'black',
-                shadowBlur: 3,
-                shadowOpacity: 0.3
+                radius: 13,
+                fill: '#ffffff',
+                stroke: '#334155',
+                strokeWidth: 1.5,
+                shadowColor: 'rgba(15, 23, 42, 0.25)',
+                shadowBlur: 4,
+                shadowOffsetY: 1
             });
 
-            // 2. 號誌 Emoji 圖示
-            const icon = new Konva.Text({
-                text: '🚦',
-                fontSize: 18,
-                align: 'center',
-                verticalAlign: 'middle',
-                listening: false // 讓點擊事件穿透到群組
+            // 2. 向量號誌燈箱外殼
+            const housing = new Konva.Rect({
+                x: -4.5,
+                y: -8.5,
+                width: 9,
+                height: 17,
+                cornerRadius: 2.5,
+                fill: '#1e293b',
+                listening: false
             });
-            // 將 Emoji 居中
-            icon.offsetX(icon.width() / 2);
-            icon.offsetY(icon.height() / 2 - 1); // 微調垂直位置
 
-            group.add(bg, icon);
+            // 3. 紅、黃、綠三顆向量燈號
+            const redDot = new Konva.Circle({ x: 0, y: -5, radius: 1.9, fill: '#ef4444', listening: false });
+            const yellowDot = new Konva.Circle({ x: 0, y: 0, radius: 1.9, fill: '#f59e0b', listening: false });
+            const greenDot = new Konva.Circle({ x: 0, y: 5, radius: 1.9, fill: '#22c55e', listening: false });
 
-            // --- 事件處理 ---
+            group.add(bg, housing, redDot, yellowDot, greenDot);
 
-            // 滑鼠移入效果
             group.on('mouseenter', () => {
                 stage.container().style.cursor = 'pointer';
-                bg.fill('#e2e6ea'); // 變深色
-                bg.stroke('blue');
+                bg.fill('#eff6ff');
+                bg.stroke('#2563eb');
+                bg.strokeWidth(2);
                 layer.batchDraw();
             });
 
-            // 滑鼠移出效果
             group.on('mouseleave', () => {
                 stage.container().style.cursor = 'default';
-                bg.fill('#f8f9fa'); // 恢復原色
-                bg.stroke('#333');
+                bg.fill('#ffffff');
+                bg.stroke('#334155');
+                bg.strokeWidth(1.5);
                 layer.batchDraw();
             });
 
-            // 點擊開啟編輯器
             group.on('click tap', (e) => {
-                e.cancelBubble = true; // 阻止事件冒泡，避免觸發底下的 Node 點擊
+                e.cancelBubble = true;
                 showTrafficLightEditor(node);
-
-                // 選項：點擊後自動切回選取模式，或者保持在編輯模式
                 setTool('select');
             });
 
@@ -2456,66 +2503,85 @@ document.addEventListener('DOMContentLoaded', () => {
         layer.batchDraw();
     }
 
-    // --- 新增：顯示路口(Node)設定圖示 ---
+    // --- 顯示路口(Node)設定圖示 (純向量幾何齒輪徽章 + 縮放 LOD) ---
     function showNodeSettingsIcons() {
-        clearNodeSettingsIcons(); // 清除舊的
-        const scale = 1 / stage.scaleX(); // 反向縮放
+        clearNodeSettingsIcons();
+        const currentScale = stage.scaleX();
+        const scale = 1 / currentScale;
+        const isVisible = currentScale >= 0.55; // 縮小低於 55% 時自動隱藏
 
         Object.values(network.nodes).forEach(node => {
-            // 建立群組
             const group = new Konva.Group({
                 x: node.x,
                 y: node.y,
-                name: 'node-setting-icon-wrapper', // 用於縮放識別
+                name: 'node-setting-icon-wrapper',
                 listening: true,
                 scaleX: scale,
-                scaleY: scale
+                scaleY: scale,
+                visible: isVisible,
+                opacity: 0.85
             });
 
-            // 1. 圓形背景 (淺藍色以示區別，帶陰影)
+            // 1. 圓形淺藍底徽章
             const bg = new Konva.Circle({
-                radius: 10,
-                fill: '#e3f2fd', // 淺藍色
-                stroke: '#1565c0', // 深藍邊框
-                strokeWidth: 1,
-                shadowColor: 'black',
+                radius: 10.5,
+                fill: '#f8fafc',
+                stroke: '#3b82f6',
+                strokeWidth: 1.5,
+                shadowColor: 'rgba(15, 23, 42, 0.2)',
                 shadowBlur: 3,
-                shadowOpacity: 0.3
+                shadowOffsetY: 1
             });
 
-            // 2. 設定(齒輪)圖示
-            const icon = new Konva.Text({
-                text: '⚙️',
-                fontSize: 14,
-                align: 'center',
-                verticalAlign: 'middle',
-                listening: false
+            // 2. 純向量齒輪 (跨平台零跑位)
+            const gear = new Konva.Shape({
+                listening: false,
+                sceneFunc: (ctx, shape) => {
+                    const teeth = 6;
+                    const outerR = 6.2;
+                    const innerR = 4.6;
+                    ctx.beginPath();
+                    for (let i = 0; i < teeth * 2; i++) {
+                        const r = (i % 2 === 0) ? outerR : innerR;
+                        const angle = (i * Math.PI) / teeth;
+                        const gx = Math.cos(angle) * r;
+                        const gy = Math.sin(angle) * r;
+                        if (i === 0) ctx.moveTo(gx, gy);
+                        else ctx.lineTo(gx, gy);
+                    }
+                    ctx.closePath();
+                    ctx.fillStyle = '#2563eb';
+                    ctx.fill();
+
+                    // 中心孔
+                    ctx.beginPath();
+                    ctx.arc(0, 0, 2.2, 0, Math.PI * 2);
+                    ctx.fillStyle = '#f8fafc';
+                    ctx.fill();
+                }
             });
-            icon.offsetX(icon.width() / 2);
-            icon.offsetY(icon.height() / 2 - 1);
 
-            group.add(bg, icon);
-
-            // --- 事件處理 ---
+            group.add(bg, gear);
 
             group.on('mouseenter', () => {
                 stage.container().style.cursor = 'pointer';
-                bg.fill('#bbdefb'); // 移入變色
+                group.opacity(1);
+                bg.fill('#dbeafe');
                 bg.strokeWidth(2);
                 layer.batchDraw();
             });
 
             group.on('mouseleave', () => {
                 stage.container().style.cursor = 'default';
-                bg.fill('#e3f2fd'); // 恢復
-                bg.strokeWidth(1);
+                group.opacity(0.85);
+                bg.fill('#f8fafc');
+                bg.strokeWidth(1.5);
                 layer.batchDraw();
             });
 
-            // 點擊選取該 Node
             group.on('click tap', (e) => {
-                e.cancelBubble = true; // 阻止冒泡
-                selectObject(node);    // 激活 Node 設定
+                e.cancelBubble = true;
+                selectObject(node);
             });
 
             layer.add(group);
@@ -2704,6 +2770,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const newPortScale = 1 / newScale;
 
+            // 當畫布縮小低於 55% 時自動隱藏路口小圖示，放大時自動恢復
+            const showNodeBadges = newScale >= 0.55;
+            layer.find('.tfl-icon-wrapper, .node-setting-icon-wrapper').forEach(badge => {
+                badge.visible(showNodeBadges);
+            });
+
             // 【修改】加入 .bg-setting-icon-wrapper 讓背景圖示也具有無比例尺特性
             layer.find('.lane-port, .group-connect-port, .control-point, .waypoint-handle, .measurement-handle, .tfl-icon-wrapper, .node-setting-icon-wrapper, .node-vertex-handle, .bg-setting-icon-wrapper, .zone-vertex-handle, .zone-midpoint-handle').forEach(p => {
                 p.scale({ x: newPortScale, y: newPortScale });
@@ -2769,6 +2841,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 x: (pointer.x - stage.x()) / stage.scaleX(),
                 y: (pointer.y - stage.y()) / stage.scaleY(),
             };
+
+            // --- ⚡ Synchro Mode: 免按右鍵、直接左鍵點兩點(或拖曳)建立兩端 Node 與雙向 Link ---
+            if (isSynchroMode && activeTool === 'add-link' && e.evt.button === 0 && typeof handleSynchroMouseDown === 'function') {
+                handleSynchroMouseDown(worldPos, e);
+                return;
+            }
 
             // --- SubNetwork Tool 邏輯 ---
             if (activeTool === 'subnetwork') {
@@ -2852,6 +2930,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 y: (pointer.y - stage.y()) / stage.scaleY(),
             };
 
+            // --- ⚡ Synchro Mode: 磁吸圓圈 (Node / Road) 與即時雙向道路預覽 ---
+            if (isSynchroMode && activeTool === 'add-link' && typeof handleSynchroMouseMove === 'function') {
+                handleSynchroMouseMove(worldPos, e);
+                return;
+            }
+
+            // --- [新增] 一般 Link 工具與手繪標線模式：顯示游標處左右鍵提示 ---
+            if (!isSynchroMode && (activeTool === 'add-link' || activeTool === 'append-lane-stroke')) {
+                updateSynchroSnapIndicator(worldPos);
+                layer.batchDraw();
+            }
+
             // --- SubNetwork Tool 預覽線條 ---
             if (activeTool === 'subnetwork') {
                 if (window.SubNetworkTool) {
@@ -2915,6 +3005,17 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         stage.on('mouseup', (e) => {
+            if (isSynchroMode && activeTool === 'add-link' && e.evt.button === 0 && typeof handleSynchroMouseUp === 'function') {
+                const pointer = stage.getPointerPosition();
+                if (pointer) {
+                    const worldPos = {
+                        x: (pointer.x - stage.x()) / stage.scaleX(),
+                        y: (pointer.y - stage.y()) / stage.scaleY(),
+                    };
+                    handleSynchroMouseUp(worldPos, e);
+                }
+            }
+
             // --- [修改] 支援 Connect Box 和 Merge Box 的結束框選邏輯 ---
             if (activeTool === 'connect-lanes' && (connectMode === 'box' || connectMode === 'merge') && tempShape) {
                 const width = tempShape.width();
@@ -3100,6 +3201,20 @@ document.addEventListener('DOMContentLoaded', () => {
         // 在 init() 函數中，找到 'contextmenu' 事件監聽器並替換它
         stage.on('contextmenu', (e) => {
             e.evt.preventDefault();
+            if (isSynchroMode && activeTool === 'add-link') {
+                const pointer = stage.getPointerPosition();
+                const worldPos = pointer ? {
+                    x: (pointer.x - stage.x()) / stage.scaleX(),
+                    y: (pointer.y - stage.y()) / stage.scaleY(),
+                } : null;
+
+                if (typeof finishSynchroDraft === 'function') {
+                    finishSynchroDraft(worldPos);
+                } else if (typeof cleanupSynchroDraft === 'function') {
+                    cleanupSynchroDraft(false);
+                }
+                return;
+            }
 
             if ((activeTool === 'add-link' || activeTool === 'measure' || activeTool === 'append-lane-stroke') && tempShape) {
                 const currentPoints = tempShape.points();
@@ -3157,6 +3272,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     // --- [修正重點]：將 parametric 模式與 standard 模式合併處理建立邏輯 ---
                     if (linkCreationSettings.mode === 'standard' || linkCreationSettings.mode === 'parametric' || !linkCreationSettings.mode) {
                         if (finalPoints.length > 1) {
+                            let createdSynchroLinks = [];
+                            if (isSynchroMode && typeof extendSynchroPointsForTJunctions === 'function') {
+                                extendSynchroPointsForTJunctions(finalPoints);
+                            }
                             if (linkCreationSettings.isTwoWay) {
                                 const lanes = linkCreationSettings.lanesPerDir;
                                 const roadWidth = lanes * LANE_WIDTH;
@@ -3177,13 +3296,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
                                 linkF.pairInfo = { pairId: linkB.id, type: 'forward', medianWidth: median };
                                 linkB.pairInfo = { pairId: linkF.id, type: 'backward', medianWidth: median };
+                                createdSynchroLinks = [linkF, linkB];
                                 selectObject(linkF);
                             } else {
                                 const newLink = createLink(finalPoints, linkCreationSettings.lanesPerDir);
+                                createdSynchroLinks = [newLink];
                                 selectObject(newLink);
-                                saveState();
                             }
                             updateAllOverpasses();
+                            if (isSynchroMode && typeof handleSynchroAutoIntersections === 'function') {
+                                handleSynchroAutoIntersections(createdSynchroLinks);
+                            }
+                            saveState();
                         }
                         if (tempShape) tempShape.destroy();
                         tempShape = null;
@@ -3361,20 +3485,46 @@ document.addEventListener('DOMContentLoaded', () => {
                 deselectAll();
             }
         });
-        // --- 修改後 (新代碼) ---
-        document.getElementById('toolbar').addEventListener('click', (e) => {
-            // [修正] 使用 closest 以支援 FontAwesome 圖示點擊
+        const toolbarEl = document.getElementById('toolbar');
+        toolbarEl.addEventListener('click', (e) => {
+            // 1. 點擊收納群組的下拉切換鈕
+            const toggleBtn = e.target.closest('.tool-dropdown-toggle');
+            if (toggleBtn) {
+                e.stopPropagation();
+                const parentDropdown = toggleBtn.closest('.tool-dropdown');
+                const wasOpen = parentDropdown.classList.contains('open');
+                document.querySelectorAll('.tool-dropdown.open').forEach(d => d.classList.remove('open'));
+                if (!wasOpen) parentDropdown.classList.add('open');
+                return;
+            }
+
+            // 2. 點擊一般工具或收納選單內的工具
             const btn = e.target.closest('.tool-btn');
             if (btn) {
-                setTool(btn.dataset.tool);
+                document.querySelectorAll('.tool-dropdown.open').forEach(d => d.classList.remove('open'));
+                if (btn.dataset.tool) {
+                    setTool(btn.dataset.tool);
+
+                    // 同步更新收納母鈕的高亮狀態與當前圖示
+                    document.querySelectorAll('.tool-dropdown').forEach(dropdown => {
+                        const activeChild = dropdown.querySelector(`.tool-btn[data-tool="${btn.dataset.tool}"]`);
+                        dropdown.classList.toggle('active', Boolean(activeChild));
+                        if (activeChild) {
+                            const childIcon = activeChild.querySelector('i');
+                            const groupIcon = dropdown.querySelector('.group-icon');
+                            if (childIcon && groupIcon) {
+                                groupIcon.className = `${childIcon.className} group-icon`;
+                            }
+                        }
+                    });
+                }
             }
         });
 
-        document.getElementById('toolbar').addEventListener('click', (e) => {
-            // [修正] 使用 closest 以支援 FontAwesome 圖示點擊
-            const btn = e.target.closest('.tool-btn');
-            if (btn) {
-                setTool(btn.dataset.tool);
+        // 點擊畫布或其他區域時自動收起下拉選單
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.tool-dropdown')) {
+                document.querySelectorAll('.tool-dropdown.open').forEach(d => d.classList.remove('open'));
             }
         });
 
@@ -4061,13 +4211,23 @@ document.addEventListener('DOMContentLoaded', () => {
         // (避免刪除線後，號誌還以為這條線存在)
         const nodeId = conn.nodeId;
         const tfl = network.trafficLights[nodeId];
-        if (tfl && tfl.signalGroups) {
-            Object.values(tfl.signalGroups).forEach(group => {
-                const index = group.connIds.indexOf(connId);
-                if (index > -1) {
-                    group.connIds.splice(index, 1);
-                }
-            });
+        if (tfl) {
+            if (tfl.signalGroupSets) {
+                Object.values(tfl.signalGroupSets).forEach(gs => {
+                    Object.values(gs.groups || {}).forEach(group => {
+                        const idx = group.connIds.indexOf(connId);
+                        if (idx > -1) group.connIds.splice(idx, 1);
+                    });
+                });
+            }
+            if (tfl.signalGroups) {
+                Object.values(tfl.signalGroups).forEach(group => {
+                    const index = group.connIds.indexOf(connId);
+                    if (index > -1) {
+                        group.connIds.splice(index, 1);
+                    }
+                });
+            }
         }
 
         // 2. 銷毀 Konva 圖形
@@ -7645,44 +7805,115 @@ document.addEventListener('DOMContentLoaded', () => {
         layer.batchDraw();
     }
 
-    // 完整替換 updatePropertiesPanel 函數
+    // =========================================================================
+    // [UI 優化輔助函式] 置頂物件識別卡 & 手風琴摺疊面板
+    // =========================================================================
+    function renderObjectHeaderHTML(obj) {
+        const iconMap = {
+            'Link': 'fa-road',
+            'Node': 'fa-arrows-to-circle',
+            'PointDetector': 'fa-video',
+            'SectionDetector': 'fa-video-slash',
+            'RoadSign': 'fa-sign-hanging',
+            'Connection': 'fa-link',
+            'ConnectionGroup': 'fa-code-branch',
+            'Origin': 'fa-circle-play',
+            'Destination': 'fa-flag-checkered',
+            'ParkingLot': 'fa-square-parking',
+            'ParkingGate': 'fa-door-open',
+            'Zone': 'fa-city',
+            'RoadMarking': 'fa-lines-leaning',
+            'Background': 'fa-image',
+            'Pushpin': 'fa-thumbtack',
+            'Overpass': 'fa-layer-group'
+        };
+        const icon = iconMap[obj.type] || 'fa-cube';
+        const displayName = (obj.name && obj.name !== obj.id) ? `${obj.name} (${obj.id})` : obj.id;
+
+        return `
+            <div class="prop-object-header">
+                <div class="prop-object-title-group">
+                    <div class="prop-object-icon"><i class="fa-solid ${icon}"></i></div>
+                    <div class="prop-object-meta">
+                        <span class="prop-object-type">${obj.type}</span>
+                        <span class="prop-object-id" title="${displayName}">${displayName}</span>
+                    </div>
+                </div>
+                <button type="button" id="btn-universal-delete-obj" class="btn-header-delete" title="Delete (Del)">
+                    <i class="fa-solid fa-trash-can"></i>
+                </button>
+            </div>
+        `;
+    }
+
+    function renderAccordionHTML(title, iconClass, bodyHtml, isOpen = true, badgeText = '') {
+        const openAttr = isOpen ? 'open' : '';
+        const badgeHtml = badgeText ? `<span class="prop-accordion-badge">${badgeText}</span>` : '';
+        return `
+            <details class="prop-accordion" ${openAttr}>
+                <summary>
+                    <span style="display:flex; align-items:center; gap:6px;">
+                        <i class="${iconClass}" style="color:var(--primary); width:14px; text-align:center;"></i>
+                        <span>${title}</span>
+                    </span>
+                    ${badgeHtml}
+                    <i class="fa-solid fa-chevron-down prop-accordion-arrow"></i>
+                </summary>
+                <div class="prop-accordion-body">
+                    ${bodyHtml}
+                </div>
+            </details>
+        `;
+    }
+
+    // =========================================================================
+    // [核心重構] 更新右側屬性面板
+    // =========================================================================
     function updatePropertiesPanel(obj) {
         propertiesContent.innerHTML = '';
 
+        // -----------------------------------------------------------------
+        // A. 工具專屬設定面板 (當尚未選取任何物件 !obj 時)
+        // -----------------------------------------------------------------
+
+        // 1. Add Zone 工具
         if (activeTool === 'add-zone' && !obj) {
             const _t = (key) => (window.I18N && window.I18N.t ? window.I18N.t(key) : key);
             const isRedraw = !!window.redrawingZone;
             const zoneName = isRedraw ? (window.redrawingZone.name || window.redrawingZone.id) : '';
             propertiesContent.innerHTML = `
-            <div class="prop-section-header">${isRedraw ? _t('Redraw Boundary') : _t('Land Use Zoning')}</div>
-            <div class="prop-group">
-                <div class="prop-hint" style="margin-top:5px; line-height: 1.6;">
-                    <i class="fa-solid fa-draw-polygon" style="color: #ea580c; margin-right: 5px;"></i>
-                    <strong>${isRedraw ? `${_t('Redraw Boundary')}: ${zoneName}` : _t('Land Use Zone (Z)')}</strong><br>
-                    • ${_t('Click to add zone polygon points. Double-click to finish, Esc to cancel.')}<br>
-                    • Press <kbd style="background:#e2e8f0; padding:1px 5px; border-radius:3px;">Esc</kbd> to cancel.
-                </div>
-            </div>`;
+                <div class="prop-section-header">${isRedraw ? _t('Redraw Boundary') : _t('Land Use Zoning')}</div>
+                <div class="prop-card">
+                    <div style="font-weight:700; font-size:0.85rem; color:#ea580c; margin-bottom:6px;">
+                        <i class="fa-solid fa-draw-polygon"></i> ${isRedraw ? `${_t('Redraw Boundary')}: ${zoneName}` : _t('Land Use Zone (Z)')}
+                    </div>
+                    <div style="font-size:0.78rem; color:var(--text-muted); line-height:1.6;">
+                        • ${_t('Click to add zone polygon points. Double-click to finish, Esc to cancel.')}<br>
+                        • Press <kbd style="background:#e2e8f0; padding:1px 5px; border-radius:3px;">Esc</kbd> to cancel.
+                    </div>
+                </div>`;
             return;
         }
 
+        // 2. Add Marking 工具 (分段控制器)
         if (activeTool === 'add-marking' && !obj) {
             propertiesContent.innerHTML = `
-            <div class="prop-section-header">Marking Tool Settings</div>
-            <div class="prop-group">
-                <label class="prop-label">Mode</label>
-                <div style="display:flex; flex-direction:column; gap:8px; margin-top:5px;">
-                    <label style="cursor:pointer; display:flex; align-items:center; gap:5px;">
+                <div class="prop-section-header">Marking Tool Mode</div>
+                <div class="segmented-control">
+                    <label class="segmented-option">
                         <input type="radio" name="markingMode" value="standard" ${markingMode === 'standard' ? 'checked' : ''}>
-                        Standard Marking (Click to place)
+                        <span><i class="fa-solid fa-Lines-leaning"></i> Standard</span>
                     </label>
-                    <label style="cursor:pointer; display:flex; align-items:center; gap:5px;">
+                    <label class="segmented-option">
                         <input type="radio" name="markingMode" value="channelization" ${markingMode === 'channelization' ? 'checked' : ''}>
-                        Channelization Polygon (槽化線)
+                        <span><i class="fa-solid fa-draw-polygon"></i> 槽化線</span>
                     </label>
                 </div>
-            </div>
-            <div class="prop-hint" style="margin-top:10px;"><i class="fa-solid fa-pen-nib"></i> Channelization Mode: Click points to draw, Double-Click to finish.</div>`;
+                <div class="prop-hint">
+                    <i class="fa-solid fa-circle-info"></i> 
+                    <b>Standard:</b> 點擊路段或路口放置停止線/行穿線/待轉區。<br>
+                    <b>槽化線:</b> 連續點擊繪製多邊形，雙擊完成。
+                </div>`;
             document.querySelectorAll('input[name="markingMode"]').forEach(radio => {
                 radio.addEventListener('change', (e) => {
                     markingMode = e.target.value;
@@ -7693,61 +7924,48 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        // ============================================================
-        // [修復開始] 恢復 Connect 工具的面板顯示 (來自 editor_old.js)
-        // ============================================================
+        // 3. Connect Lanes 工具 (分段控制器)
         if (activeTool === 'connect-lanes' && !obj) {
             propertiesContent.innerHTML = `
-            <div class="prop-section-header">Connection Tool Mode</div>
-            <div class="prop-group">
-                <label style="display:flex; align-items:center; gap:8px; margin-bottom:8px; cursor:pointer;">
-                    <input type="radio" name="connMode" value="manual" ${connectMode === 'manual' ? 'checked' : ''}>
-                    <span><i class="fa-solid fa-hand-pointer"></i> Manual (Drag Ports)</span>
-                </label>
-                <div class="prop-hint">Drag from Red port to Blue port.</div>
-                
-                <label style="display:flex; align-items:center; gap:8px; margin-top:12px; cursor:pointer;">
-                    <input type="radio" name="connMode" value="box" ${connectMode === 'box' ? 'checked' : ''}>
-                    <span><i class="fa-regular fa-square-check"></i> Box Selection (Connect)</span>
-                </label>
-                <div class="prop-hint">Auto-connect lanes (Intersection logic).</div>
-
-                <label style="display:flex; align-items:center; gap:8px; margin-top:12px; cursor:pointer;">
-                    <input type="radio" name="connMode" value="merge" ${connectMode === 'merge' ? 'checked' : ''}>
-                    <span><i class="fa-solid fa-code-merge"></i> Box Selection (Merge)</span>
-                </label>
-                <div class="prop-hint" style="color:#e11d48;">
-                    <strong>Stitch Mode:</strong> Merges two aligned links into one continuous link.
-                    <br>(Requires: Same lane count & direction)
+                <div class="prop-section-header">Connection Tool Mode</div>
+                <div class="segmented-control">
+                    <label class="segmented-option">
+                        <input type="radio" name="connMode" value="manual" ${connectMode === 'manual' ? 'checked' : ''}>
+                        <span><i class="fa-solid fa-hand-pointer"></i> 手動</span>
+                    </label>
+                    <label class="segmented-option">
+                        <input type="radio" name="connMode" value="box" ${connectMode === 'box' ? 'checked' : ''}>
+                        <span><i class="fa-regular fa-square-check"></i> 框選連線</span>
+                    </label>
+                    <label class="segmented-option">
+                        <input type="radio" name="connMode" value="merge" ${connectMode === 'merge' ? 'checked' : ''}>
+                        <span><i class="fa-solid fa-code-merge"></i> 框選合併</span>
+                    </label>
                 </div>
-            </div>
-        `;
-
-            // 綁定切換事件
+                <div class="prop-card" style="font-size:0.78rem; color:var(--text-muted); line-height:1.5;">
+                    <div style="margin-bottom:6px;"><strong style="color:var(--text-main);">手動 (Manual):</strong> 由紅點拖曳至藍點建立車道連線。</div>
+                    <div style="margin-bottom:6px;"><strong style="color:var(--primary);">框選連線 (Box Connect):</strong> 框選路口範圍自動配對直行與左右轉車道。</div>
+                    <div><strong style="color:#e11d48;">框選合併 (Stitch Merge):</strong> 將兩條車道數與方向一致的斷開路段縫合為一。</div>
+                </div>
+            `;
             document.querySelectorAll('input[name="connMode"]').forEach(radio => {
                 radio.addEventListener('change', (e) => {
                     connectMode = e.target.value;
-                    // 切換游標樣式
                     stage.container().style.cursor = (connectMode === 'box' || connectMode === 'merge') ? 'crosshair' : 'default';
                 });
             });
             return;
         }
-        // ============================================================
-        // [修復結束]
-        // ============================================================
 
-        // --- [新增] 針對 Add Link 工具的面板顯示 ---
+        // 4. Add Link 工具
         if (activeTool === 'add-link' && !obj) {
             const twoWayDisplay = linkCreationSettings.isTwoWay ? 'block' : 'none';
             const laneBasedDisplay = linkCreationSettings.mode === 'lane-based' ? 'block' : 'none';
             const standardDisplay = (linkCreationSettings.mode === 'standard' || linkCreationSettings.mode === 'parametric') ? 'block' : 'none';
-            // 產生標線選擇器的 HTML
+
             let strokeOptionsHtml = '';
             for (const [key, prop] of Object.entries(STROKE_TYPES)) {
                 const isChecked = draftCurrentStrokeType === key ? 'checked' : '';
-
-                // 動態產生 CSS 視覺預覽
                 let previewCss = '';
                 if (prop.dual) {
                     const lStyle = prop.leftDash.length > 0 ? 'dashed' : 'solid';
@@ -7755,13 +7973,13 @@ document.addEventListener('DOMContentLoaded', () => {
                     previewCss = `border-top: 2px ${lStyle} ${prop.color}; border-bottom: 2px ${rStyle} ${prop.color}; height: 6px; width: 24px;`;
                 } else {
                     const style = prop.dash && prop.dash.length > 0 ? 'dashed' : 'solid';
-                    previewCss = `border-top: ${prop.width}px ${style} ${prop.color}; width: 24px; height: 0px;`;
+                    previewCss = `border-top: 2px ${style} ${prop.color}; width: 24px; height: 0px;`;
                 }
 
                 strokeOptionsHtml += `
-                    <label style="cursor:pointer; display:flex; align-items:center; gap:8px; margin-bottom:6px; padding:4px; border:1px solid #e2e8f0; border-radius:4px; background:#fff;">
+                    <label style="cursor:pointer; display:flex; align-items:center; gap:8px; margin-bottom:5px; padding:5px 8px; border:1px solid var(--border-light); border-radius:6px; background:#fff;">
                         <input type="radio" name="strokeType" value="${key}" ${isChecked}>
-                        <div style="background:#555; padding:4px; border-radius:2px; display:flex; align-items:center; justify-content:center;">
+                        <div style="background:#475569; padding:4px; border-radius:3px; display:flex; align-items:center; justify-content:center;">
                             <div style="${previewCss}"></div>
                         </div>
                         <span style="font-size:0.75rem; font-weight:600;">${prop.label}</span>
@@ -7770,101 +7988,88 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             propertiesContent.innerHTML = `
-        <div class="prop-section-header">Link Creation Mode</div>
-        <div class="prop-group">
-            <div style="display:flex; flex-direction:column; gap:10px; margin-top:5px;">
-                <label style="cursor:pointer; display:flex; align-items:flex-start; gap:5px;">
-                    <input type="radio" name="linkMode" value="parametric" ${linkCreationSettings.mode === 'parametric' ? 'checked' : ''}>
-                    <div>
-                        <strong style="color:var(--text-main);"><i class="fa-solid fa-sliders"></i> Parametric (Synchro-Style)</strong>
-                        <div style="font-size:0.75rem; color:#64748b;">Auto-generate turn pockets and tapers. (自動生成轉向附加車道)</div>
-                    </div>
-                </label>
-                <label style="cursor:pointer; display:flex; align-items:flex-start; gap:5px;">
-                    <input type="radio" name="linkMode" value="standard" ${linkCreationSettings.mode === 'standard' ? 'checked' : ''}>
-                    <div>
-                        <strong style="color:var(--text-main);">Standard (Centerline)</strong>
-                        <div style="font-size:0.75rem; color:#64748b;">Constant lane width.</div>
-                    </div>
-                </label>
-                <label style="cursor:pointer; display:flex; align-items:flex-start; gap:5px;">
-                    <input type="radio" name="linkMode" value="lane-based" ${linkCreationSettings.mode === 'lane-based' ? 'checked' : ''}>
-                    <div>
-                        <strong style="color:var(--text-main);">Lane-Based (Freeform)</strong>
-                        <div style="font-size:0.75rem; color:#64748b;">Draw exact bounds and dividers. Variable width.</div>
-                    </div>
-                </label>
-            </div>
-        </div>
-
-        <!-- ========================================== -->
-        <!-- Lane-Based Mode 專用控制面板 -->
-        <!-- ========================================== -->
-        <div id="lane-based-draft-panel" style="display: ${laneBasedDisplay}; background:#f8fafc; padding:10px; border-radius:6px; border:1px solid #cbd5e1; margin-top:10px;">
-            <div style="font-weight:600; margin-bottom:8px; font-size:0.85rem;">1. Select Line Type to Draw</div>
-            
-            ${strokeOptionsHtml}
-
-            <div style="font-size:0.75rem; color:#64748b; margin-top:12px; margin-bottom:12px;">
-                <strong>Draft Lines:</strong> ${draftLaneStrokes.length} (Requires at least 2 boundaries)
-            </div>
-
-            <button id="btn-generate-lane-based" class="btn-action" style="width:100%; margin-bottom:6px; background:#10b981;">
-                <i class="fa-solid fa-code-branch"></i> Generate Link
-            </button>
-            <button id="btn-clear-drafts" class="btn-danger-outline btn-sm" style="width:100%;">
-                <i class="fa-solid fa-trash-can"></i> Clear Drafts
-            </button>
-        </div>
-
-        <!-- ========================================== -->
-        <!-- Standard Mode 專用設定 -->
-        <!-- ========================================== -->
-        <div id="standard-settings-panel" style="display: ${standardDisplay};">
-            <div class="prop-section-header" style="margin-top:10px;">Standard Settings</div>
-            
-            <div class="prop-group">
-                <label class="prop-label">Directionality</label>
-                <div style="display:flex; gap:10px; margin-top:5px;">
-                    <label style="cursor:pointer; display:flex; align-items:center; gap:5px;">
-                        <input type="radio" name="linkType" value="one-way" ${!linkCreationSettings.isTwoWay ? 'checked' : ''}> One-way
+                <div class="prop-section-header">Link Creation Mode</div>
+                <div class="segmented-control">
+                    <label class="segmented-option" title="自動生成轉向附加車道">
+                        <input type="radio" name="linkMode" value="parametric" ${linkCreationSettings.mode === 'parametric' ? 'checked' : ''}>
+                        <span><i class="fa-solid fa-sliders"></i> 參數化</span>
                     </label>
-                    <label style="cursor:pointer; display:flex; align-items:center; gap:5px;">
-                        <input type="radio" name="linkType" value="two-way" ${linkCreationSettings.isTwoWay ? 'checked' : ''}> Two-way
+                    <label class="segmented-option" title="固定車道寬度">
+                        <input type="radio" name="linkMode" value="standard" ${linkCreationSettings.mode === 'standard' ? 'checked' : ''}>
+                        <span><i class="fa-solid fa-road"></i> 標準</span>
+                    </label>
+                    <label class="segmented-option" title="手繪不規則標線">
+                        <input type="radio" name="linkMode" value="lane-based" ${linkCreationSettings.mode === 'lane-based' ? 'checked' : ''}>
+                        <span><i class="fa-solid fa-pen-nib"></i> 手繪</span>
                     </label>
                 </div>
-            </div>
 
-            <div class="prop-group" id="driving-side-group" style="display: ${twoWayDisplay};">
-                <label class="prop-label">Driving Side</label>
-                <div style="display:flex; gap:10px; margin-top:5px;">
-                    <label style="cursor:pointer; display:flex; align-items:center; gap:5px;">
-                        <input type="radio" name="driveSide" value="right" ${linkCreationSettings.drivingSide === 'right' ? 'checked' : ''}> RHT
-                    </label>
-                    <label style="cursor:pointer; display:flex; align-items:center; gap:5px;">
-                        <input type="radio" name="driveSide" value="left" ${linkCreationSettings.drivingSide === 'left' ? 'checked' : ''}> LHT
-                    </label>
+                <!-- Lane-Based Mode 專用控制面板 -->
+                <div id="lane-based-draft-panel" style="display: ${laneBasedDisplay};" class="prop-card">
+                    <div style="font-weight:700; margin-bottom:8px; font-size:0.8rem; color:var(--text-main);">1. 選擇要繪製的標線型態</div>
+                    <div style="max-height:220px; overflow-y:auto; padding-right:2px;">
+                        ${strokeOptionsHtml}
+                    </div>
+                    <div class="prop-stat-box" style="margin:10px 0;">
+                        <span class="prop-stat-label">已繪製草稿標線 (需至少2條邊界)</span>
+                        <span class="prop-stat-value">${draftLaneStrokes.length} 條</span>
+                    </div>
+                    <button id="btn-generate-lane-based" class="btn-primary" style="width:100%; margin-bottom:6px;">
+                        <i class="fa-solid fa-code-branch"></i> Generate Link
+                    </button>
+                    <button id="btn-clear-drafts" class="btn-soft" style="color:var(--danger); border-color:#fecaca;">
+                        <i class="fa-solid fa-trash-can"></i> Clear Drafts
+                    </button>
                 </div>
-            </div>
 
-            <div class="prop-group" id="median-width-group" style="display: ${twoWayDisplay};">
-                <label class="prop-label">Median Width (m)</label>
-                <input type="number" id="creation-median" class="prop-input" value="${linkCreationSettings.medianWidth}" min="0" step="0.5">
-            </div>
+                <!-- Standard / Parametric Mode 專用設定 -->
+                <div id="standard-settings-panel" style="display: ${standardDisplay};" class="prop-card">
+                    <div class="prop-section-header" style="margin-top:0;">Road Configuration</div>
+                    
+                    <div style="margin-bottom:10px;">
+                        <span class="prop-label" style="display:block; margin-bottom:4px;">Directionality</span>
+                        <div class="segmented-control" style="margin-bottom:0;">
+                            <label class="segmented-option">
+                                <input type="radio" name="linkType" value="one-way" ${!linkCreationSettings.isTwoWay ? 'checked' : ''}>
+                                <span>單向 (One-way)</span>
+                            </label>
+                            <label class="segmented-option">
+                                <input type="radio" name="linkType" value="two-way" ${linkCreationSettings.isTwoWay ? 'checked' : ''}>
+                                <span>雙向 (Two-way)</span>
+                            </label>
+                        </div>
+                    </div>
 
-            <hr>
-            <div class="prop-group">
-                <label class="prop-label">Lanes per Direction</label>
-                <input type="number" id="creation-lanes" class="prop-input" value="${linkCreationSettings.lanesPerDir}" min="1" max="10">
-            </div>
-        </div>
-    `;
+                    <div id="driving-side-group" style="display: ${twoWayDisplay}; margin-bottom:10px;">
+                        <span class="prop-label" style="display:block; margin-bottom:4px;">Driving Side</span>
+                        <div class="segmented-control" style="margin-bottom:0;">
+                            <label class="segmented-option">
+                                <input type="radio" name="driveSide" value="right" ${linkCreationSettings.drivingSide === 'right' ? 'checked' : ''}>
+                                <span>靠右行駛 (RHT)</span>
+                            </label>
+                            <label class="segmented-option">
+                                <input type="radio" name="driveSide" value="left" ${linkCreationSettings.drivingSide === 'left' ? 'checked' : ''}>
+                                <span>靠左行駛 (LHT)</span>
+                            </label>
+                        </div>
+                    </div>
 
-            // --- 綁定事件 ---
+                    <div class="prop-row" id="median-width-group" style="display: ${twoWayDisplay ? 'flex' : 'none'};">
+                        <span class="prop-label">Median Width (m)</span>
+                        <input type="number" id="creation-median" class="prop-input" value="${linkCreationSettings.medianWidth}" min="0" step="0.5" style="max-width:90px;">
+                    </div>
+
+                    <div class="prop-row" style="margin-top:8px;">
+                        <span class="prop-label">Lanes per Direction</span>
+                        <input type="number" id="creation-lanes" class="prop-input" value="${linkCreationSettings.lanesPerDir}" min="1" max="10" style="max-width:90px;">
+                    </div>
+                </div>
+            `;
+
             document.querySelectorAll('input[name="linkMode"]').forEach(radio => {
                 radio.addEventListener('change', (e) => {
                     linkCreationSettings.mode = e.target.value;
-                    updatePropertiesPanel(null); // 刷新面板
+                    updatePropertiesPanel(null);
                 });
             });
 
@@ -7874,117 +8079,80 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             });
 
-            const btnClear = document.getElementById('btn-clear-drafts');
-            if (btnClear) {
-                btnClear.addEventListener('click', () => {
-                    draftLaneStrokes.forEach(s => s.konvaLine.destroy());
-                    draftLaneStrokes = [];
-                    if (tempShape) { tempShape.destroy(); tempShape = null; }
-                    layer.batchDraw();
-                    updatePropertiesPanel(null);
-                });
-            }
+            document.getElementById('btn-clear-drafts')?.addEventListener('click', () => {
+                draftLaneStrokes.forEach(s => s.konvaLine.destroy());
+                draftLaneStrokes = [];
+                if (tempShape) { tempShape.destroy(); tempShape = null; }
+                layer.batchDraw();
+                updatePropertiesPanel(null);
+            });
 
-            const btnGen = document.getElementById('btn-generate-lane-based');
-            if (btnGen) {
-                btnGen.addEventListener('click', () => {
-                    const bounds = draftLaneStrokes.filter(s => s.type === 'boundary');
-                    if (bounds.length < 2) {
-                        alert("Require at least 2 Boundary lines (Left & Right edge) to generate.");
-                        return;
-                    }
-                    generateLaneBasedLink(draftLaneStrokes);
+            document.getElementById('btn-generate-lane-based')?.addEventListener('click', () => {
+                const bounds = draftLaneStrokes.filter(s => s.type === 'boundary');
+                if (bounds.length < 2) {
+                    alert("Require at least 2 Boundary lines (Left & Right edge) to generate.");
+                    return;
+                }
+                generateLaneBasedLink(draftLaneStrokes);
+                draftLaneStrokes.forEach(s => s.konvaLine.destroy());
+                draftLaneStrokes = [];
+                layer.batchDraw();
+                updatePropertiesPanel(null);
+                setTool('select');
+            });
 
-                    draftLaneStrokes.forEach(s => s.konvaLine.destroy());
-                    draftLaneStrokes = [];
-                    layer.batchDraw();
-                    updatePropertiesPanel(null);
-                    setTool('select');
-                });
-            }
-
-            // 監聽單/雙向切換
             document.querySelectorAll('input[name="linkType"]').forEach(radio => {
                 radio.addEventListener('change', (e) => {
                     linkCreationSettings.isTwoWay = (e.target.value === 'two-way');
-                    const display = linkCreationSettings.isTwoWay ? 'block' : 'none';
-
-                    // 控制 Driving Side 與 Median Width 的顯示
                     const sideGroup = document.getElementById('driving-side-group');
                     const medianGroup = document.getElementById('median-width-group');
-                    if (sideGroup) sideGroup.style.display = display;
-                    if (medianGroup) medianGroup.style.display = display;
+                    if (sideGroup) sideGroup.style.display = linkCreationSettings.isTwoWay ? 'block' : 'none';
+                    if (medianGroup) medianGroup.style.display = linkCreationSettings.isTwoWay ? 'flex' : 'none';
                 });
             });
 
-            // 監聽靠左/靠右
             document.querySelectorAll('input[name="driveSide"]').forEach(radio => {
                 radio.addEventListener('change', (e) => {
                     linkCreationSettings.drivingSide = e.target.value;
                 });
             });
 
-            // [新增] 監聽分隔島寬度
-            const medianInput = document.getElementById('creation-median');
-            if (medianInput) {
-                medianInput.addEventListener('change', (e) => {
-                    let val = parseFloat(e.target.value);
-                    if (isNaN(val) || val < 0) val = 0;
-                    linkCreationSettings.medianWidth = val;
-                    e.target.value = val;
-                });
-            }
+            document.getElementById('creation-median')?.addEventListener('change', (e) => {
+                let val = parseFloat(e.target.value);
+                if (isNaN(val) || val < 0) val = 0;
+                linkCreationSettings.medianWidth = val;
+                e.target.value = val;
+            });
 
-            // 監聽車道數
-            const laneInput = document.getElementById('creation-lanes');
-            if (laneInput) {
-                laneInput.addEventListener('change', (e) => {
-                    let val = parseInt(e.target.value) || 1;
-                    if (val < 1) val = 1;
-                    linkCreationSettings.lanesPerDir = val;
-                    e.target.value = val;
-                });
-            }
-
+            document.getElementById('creation-lanes')?.addEventListener('change', (e) => {
+                let val = parseInt(e.target.value) || 1;
+                if (val < 1) val = 1;
+                linkCreationSettings.lanesPerDir = val;
+                e.target.value = val;
+            });
             return;
         }
 
-        // [新增] 針對 Add Intersection 工具的面板顯示
+        // 5. Add Intersection 工具
         if (activeTool === 'add-intersection' && !obj) {
             propertiesContent.innerHTML = `
-            <div class="prop-section-header">Intersection Tool Settings</div>
-            
-            <div class="prop-group">
-                <label class="prop-label">Creation Mode</label>
-                
-                <label style="display:flex; align-items:start; gap:8px; margin-bottom:12px; cursor:pointer;">
-                    <input type="radio" name="intMode" value="zone" ${intersectionMode === 'zone' ? 'checked' : ''}>
-                    <div>
-                        <span style="font-weight:600;">Zone Mode (Clip)</span>
-                        <div style="font-size:0.75rem; color:var(--text-muted);">
-                            Removes road segments inside the polygon. Creates a visual "plaza".
-                        </div>
-                    </div>
-                </label>
-
-                <label style="display:flex; align-items:start; gap:8px; margin-bottom:8px; cursor:pointer;">
-                    <input type="radio" name="intMode" value="point" ${intersectionMode === 'point' ? 'checked' : ''}>
-                    <div>
-                        <span style="font-weight:600;">Point Mode (Snap)</span>
-                        <div style="font-size:0.75rem; color:var(--text-muted);">
-                            Links converge to the center. Only overlaps are removed.
-                        </div>
-                    </div>
-                </label>
-            </div>
-
-            <div class="prop-hint">
-                <i class="fa-solid fa-pen-nib"></i> 
-                Click to draw outline, Double-Click to finish.
-            </div>
-        `;
-
-            // 綁定事件
+                <div class="prop-section-header">Intersection Tool Mode</div>
+                <div class="segmented-control">
+                    <label class="segmented-option">
+                        <input type="radio" name="intMode" value="zone" ${intersectionMode === 'zone' ? 'checked' : ''}>
+                        <span><i class="fa-solid fa-Vector-square"></i> Zone (挖空)</span>
+                    </label>
+                    <label class="segmented-option">
+                        <input type="radio" name="intMode" value="point" ${intersectionMode === 'point' ? 'checked' : ''}>
+                        <span><i class="fa-solid fa-compress"></i> Point (聚合)</span>
+                    </label>
+                </div>
+                <div class="prop-card" style="font-size:0.78rem; color:var(--text-muted); line-height:1.5;">
+                    <div style="margin-bottom:6px;"><strong style="color:var(--text-main);">Zone Mode (Clip):</strong> 挖除多邊形內的路段，形成寬敞的路口廣場。</div>
+                    <div><strong style="color:var(--text-main);">Point Mode (Snap):</strong> 僅裁切交叉重疊處並將端點聚合至中心。</div>
+                </div>
+                <div class="prop-hint"><i class="fa-solid fa-pen-nib"></i> 左鍵點擊繪製外框，雙擊完成建立。</div>
+            `;
             document.querySelectorAll('input[name="intMode"]').forEach(radio => {
                 radio.addEventListener('change', (e) => {
                     intersectionMode = e.target.value;
@@ -7993,37 +8161,34 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        // [新增] 針對 SubNetwork Tool 的面板顯示 (從 SubNetworkTool 物件取得)
+        // 6. SubNetwork 工具
         if (activeTool === 'subnetwork' && !obj && window.SubNetworkTool) {
             window.SubNetworkTool.updatePropertiesPanel();
             return;
         }
 
-        // ============================================================
-        // [新增] 針對 Image (Add Background) 工具的圖層清單顯示
-        // ============================================================
+        // 7. Add Background 工具 (圖層清單)
         if (activeTool === 'add-background' && !obj) {
             let content = `
-            <div class="prop-section-header">Background Layers</div>
-            <div class="prop-hint" style="margin-bottom:12px;">
-                <i class="fa-solid fa-image"></i> Click on the canvas to add a new placeholder, or select an existing layer below to edit.
-            </div>`;
+                <div class="prop-section-header">Background Layers</div>
+                <div class="prop-hint" style="margin-top:0; margin-bottom:8px;">
+                    <i class="fa-solid fa-image"></i> 點擊畫布空白處新增底圖，或從下方選擇圖層進行編輯。
+                </div>`;
 
             const bgs = Object.values(network.backgrounds);
             if (bgs.length > 0) {
-                content += `<div style="display:flex; flex-direction:column; gap:8px;">`;
-                // 越新的圖層顯示在越上方
+                content += `<div style="display:flex; flex-direction:column; gap:6px;">`;
                 [...bgs].reverse().forEach(bg => {
                     const imgThumb = bg.imageDataUrl
-                        ? `<img src="${bg.imageDataUrl}" style="width:40px; height:40px; object-fit:cover; border-radius:4px; border:1px solid #e2e8f0;">`
-                        : `<div style="width:40px; height:40px; background:#e2e8f0; border-radius:4px; display:flex; align-items:center; justify-content:center; font-size:10px; color:#94a3b8;">N/A</div>`;
+                        ? `<img src="${bg.imageDataUrl}" style="width:38px; height:38px; object-fit:cover; border-radius:4px; border:1px solid #e2e8f0;">`
+                        : `<div style="width:38px; height:38px; background:#e2e8f0; border-radius:4px; display:flex; align-items:center; justify-content:center; font-size:10px; color:#94a3b8;">N/A</div>`;
 
                     content += `
-                    <div class="prop-card bg-layer-item" data-id="${bg.id}" style="display:flex; align-items:center; justify-content:space-between; padding:8px; cursor:pointer; transition:all 0.2s;">
+                    <div class="prop-card bg-layer-item" data-id="${bg.id}" style="display:flex; align-items:center; justify-content:space-between; padding:8px; margin-bottom:0; cursor:pointer; transition:all 0.2s;">
                         <div style="display:flex; align-items:center; gap:10px; overflow:hidden;">
                             ${imgThumb}
                             <div style="display:flex; flex-direction:column; overflow:hidden;">
-                                <span style="font-weight:600; font-size:0.85rem; color:var(--text-main); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; width: 120px;" title="${bg.name || bg.id}">${bg.name || bg.id}</span>
+                                <span style="font-weight:600; font-size:0.82rem; color:var(--text-main); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; width: 140px;" title="${bg.name || bg.id}">${bg.name || bg.id}</span>
                                 <span style="font-size:0.7rem; color:var(--text-muted);">${bg.locked ? '<i class="fa-solid fa-lock" style="color:#ef4444;"></i> Locked' : '<i class="fa-solid fa-lock-open" style="color:#10b981;"></i> Unlocked'}</span>
                             </div>
                         </div>
@@ -8040,7 +8205,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 content += `</div>`;
             } else {
                 content += `
-                <div style="text-align:center; padding:20px 0; color:#cbd5e1;">
+                <div style="text-align:center; padding:24px 0; color:#cbd5e1;">
                     <i class="fa-regular fa-images" style="font-size:2rem; margin-bottom:8px;"></i>
                     <p style="font-size:0.85rem; margin:0;">No background layers yet.</p>
                 </div>`;
@@ -8048,9 +8213,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
             propertiesContent.innerHTML = content;
 
-            // ==========================================
-            // [新增] 畫布背景高亮輔助函數
-            // ==========================================
             function clearBgHighlights() {
                 layer.find('.bg-list-highlight').forEach(shape => shape.destroy());
                 layer.batchDraw();
@@ -8059,52 +8221,37 @@ document.addEventListener('DOMContentLoaded', () => {
             function highlightBg(bgId) {
                 const bg = network.backgrounds[bgId];
                 if (!bg || !bg.konvaGroup) return;
-
                 clearBgHighlights();
-
-                // 計算精確的線寬：抵銷 Stage (畫布) 與 Group (背景圖層) 的雙重縮放，
-                // 確保紅色邊框在螢幕上看起來始終是固定的 2px 細線
                 const scaleFactor = stage.scaleX() * bg.konvaGroup.scaleX();
-
                 const highlightRect = new Konva.Rect({
-                    x: 0,
-                    y: 0,
+                    x: 0, y: 0,
                     width: bg.konvaGroup.width(),
                     height: bg.konvaGroup.height(),
                     stroke: 'red',
                     strokeWidth: 2 / scaleFactor,
-                    listening: false, // 確保高亮框不會攔截任何滑鼠事件
+                    listening: false,
                     name: 'bg-list-highlight'
                 });
-
                 bg.konvaGroup.add(highlightRect);
-                highlightRect.moveToTop(); // 確保紅框疊在該背景圖片的最上層
+                highlightRect.moveToTop();
                 layer.batchDraw();
             }
 
-            // ==========================================
-            // 綁定圖層清單事件
-            // ==========================================
             document.querySelectorAll('.bg-layer-item').forEach(item => {
-                // 點擊事件：進入該圖層編輯
                 item.addEventListener('click', (e) => {
-                    if (e.target.closest('button')) return; // 防止點擊操作按鈕時誤觸發
-                    clearBgHighlights(); // 選取後即清除 Hover 的高亮框
+                    if (e.target.closest('button')) return;
+                    clearBgHighlights();
                     const bg = network.backgrounds[item.dataset.id];
                     if (bg) selectObject(bg);
                 });
-
-                // 滑鼠移入：UI 面板變色，同時在畫布上標示紅框
                 item.addEventListener('mouseenter', () => {
                     item.style.borderColor = 'var(--primary)';
                     item.style.backgroundColor = '#eef2ff';
                     highlightBg(item.dataset.id);
                 });
-
-                // 滑鼠移出：還原 UI 面板，並清除畫布上的紅框
                 item.addEventListener('mouseleave', () => {
                     item.style.borderColor = 'var(--border-light)';
-                    item.style.backgroundColor = 'var(--bg-card)';
+                    item.style.backgroundColor = '#ffffff';
                     clearBgHighlights();
                 });
             });
@@ -8120,7 +8267,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             bg.konvaGroup.listening(!bg.locked);
                             if (bg.konvaHitArea) bg.konvaHitArea.listening(!bg.locked);
                         }
-                        updatePropertiesPanel(null); // 重新繪製清單以更新鎖頭圖示
+                        updatePropertiesPanel(null);
                         saveState();
                         layer.batchDraw();
                     }
@@ -8132,9 +8279,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     e.stopPropagation();
                     const bgId = btn.dataset.id;
                     if (confirm(typeof I18N !== 'undefined' && I18N.t ? I18N.t("Delete this background layer?") : "Delete this background layer?")) {
-                        clearBgHighlights(); // 刪除前先清理可能存在的紅框
+                        clearBgHighlights();
                         deleteBackground(bgId);
-                        updatePropertiesPanel(null); // 重新繪製清單
+                        updatePropertiesPanel(null);
                         saveState();
                     }
                 });
@@ -8145,33 +8292,45 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             return;
         }
-        // ============================================================
 
+        // 8. 未選取任何物件時的空狀態
         if (!obj) {
-            propertiesContent.innerHTML = '<p>Select an element to edit</p>';
+            propertiesContent.innerHTML = `
+                <div class="empty-state">
+                    <i class="fa-solid fa-arrow-pointer"></i>
+                    <p>Select an element to edit</p>
+                </div>`;
             return;
         }
 
-        // ... (以下維持原有的物件屬性編輯代碼，不需要更動) ...
-        // 檢查是否需要顯示「返回節點」按鈕...
+        // -----------------------------------------------------------------
+        // B. 已選取物件面板 (Unified Object Inspector)
+        // -----------------------------------------------------------------
         let content = '';
+
+        // 若從 Node 點進 Connection / ConnectionGroup，提供返回按鈕
         if (lastSelectedNodeForProperties && (obj.type === 'Connection' || obj.type === 'ConnectionGroup')) {
-            content += `<button id="back-to-node-btn" class="tool-btn-secondary">⬅️ Back to Node ${lastSelectedNodeForProperties.id}</button><hr>`;
+            content += `
+                <button id="back-to-node-btn" class="btn-soft">
+                    <i class="fa-solid fa-arrow-left"></i> Back to Node ${lastSelectedNodeForProperties.id}
+                </button>`;
         }
-        content += `<h4>${obj.type}: ${obj.id}</h4>`;
 
-        // ... (後續 switch case 代碼省略，請保持原樣) ...
+        // 1. 統一置頂物件識別卡 (含類型、名稱/ID、右上角刪除圖示)
+        content += renderObjectHeaderHTML(obj);
 
-        // 這裡為了完整性，只顯示 switch 的開始，請保留您原本的 switch 結構
+        // 2. Connection / ConnectionGroup 頂部號誌群組快速綁定
         if (obj.type === 'Connection' || obj.type === 'ConnectionGroup') {
             const nodeId = obj.nodeId;
             const tfl = network.trafficLights[nodeId];
+            if (tfl) ensureTflGroupSets(tfl);
 
-            if (tfl && tfl.signalGroups && Object.keys(tfl.signalGroups).length > 0) {
+            const hasAnyGroupSet = tfl && tfl.signalGroupSets && Object.keys(tfl.signalGroupSets).length > 0;
+            if (hasAnyGroupSet && (Object.keys(tfl.signalGroups || {}).length > 0 || Object.keys(tfl.signalGroupSets).length > 1)) {
                 let currentGroupId = '';
                 const firstConnId = (obj.type === 'Connection') ? obj.id : obj.connectionIds[0];
 
-                if (firstConnId) {
+                if (firstConnId && tfl.signalGroups) {
                     for (const group of Object.values(tfl.signalGroups)) {
                         if (group.connIds.includes(firstConnId)) {
                             currentGroupId = group.id;
@@ -8180,126 +8339,181 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
 
-                content += `<div class="prop-group">
-                        <label for="prop-tfl-group">🚦 Signal Group</label>
-                        <select id="prop-tfl-group">
-                            <option value="">None</option>
-                            ${Object.keys(tfl.signalGroups).map(id =>
+                content += `
+                    <div class="prop-card" style="background:#f8fafc; margin-bottom:0;">
+                        <div class="prop-row">
+                            <span class="prop-label" style="font-weight:600; color:#6d28d9;"><i class="fa-solid fa-microchip"></i> 硬體群組</span>
+                            <select id="prop-conn-groupset-select" class="prop-select">
+                                ${Object.values(tfl.signalGroupSets).map(gs =>
+                    `<option value="${gs.id}" ${gs.id === tfl.activeGroupSetId ? 'selected' : ''}>${gs.name || gs.id} (${Object.keys(gs.groups || {}).length}組)</option>`
+                ).join('')}
+                            </select>
+                        </div>
+                        <div class="prop-row" style="margin-bottom:0;">
+                            <span class="prop-label" style="font-weight:600;"><i class="fa-solid fa-traffic-light"></i> 點燈群組</span>
+                            <select id="prop-tfl-group" class="prop-select">
+                                <option value="">None</option>
+                                ${Object.keys(tfl.signalGroups || {}).map(id =>
                     `<option value="${id}" ${id === currentGroupId ? 'selected' : ''}>${id}</option>`
                 ).join('')}
-                        </select>
+                            </select>
+                        </div>
                     </div>`;
             }
         }
 
+        // 3. 各類型物件專屬內容
         switch (obj.type) {
-            // ... (請保留您原本的 Link, Node, Detector 等 case) ...
-            case 'Link':
+            // =============================================================
+            // CASE: LINK (路段)
+            // =============================================================
+            case 'Link': {
                 const getLinkTabClass = (tabName) => lastActiveLinkTab === tabName ? 'active' : '';
-                const getLinkContentClass = (tabName) => lastActiveLinkTab === tabName ? 'active' : '';
+                const outgoingConns = Object.values(network.connections)
+                    .filter(c => c.sourceLinkId === obj.id)
+                    .sort((a, b) => a.sourceLaneIndex - b.sourceLaneIndex || a.destLaneIndex - b.destLaneIndex);
 
                 content += `
-             <div class="prop-tab-header">
-                 <button class="prop-tab-btn ${getLinkTabClass('tab-link-general')}" data-target="tab-link-general">
-                     <i class="fa-solid fa-road"></i> General
-                 </button>
-                 <button class="prop-tab-btn ${getLinkTabClass('tab-link-conns')}" data-target="tab-link-conns">
-                     <i class="fa-solid fa-link"></i> Connections
-                 </button>
-             </div>`;
+                    <div class="prop-tab-header" style="margin-bottom:4px;">
+                        <button class="prop-tab-btn ${getLinkTabClass('tab-link-general')}" data-target="tab-link-general">
+                            <i class="fa-solid fa-road"></i> General
+                        </button>
+                        <button class="prop-tab-btn ${getLinkTabClass('tab-link-conns')}" data-target="tab-link-conns">
+                            <i class="fa-solid fa-link"></i> Connections (${outgoingConns.length})
+                        </button>
+                    </div>`;
 
                 // --- TAB 1: GENERAL ---
-                content += `<div id="tab-link-general" class="prop-tab-content ${getLinkContentClass('tab-link-general')}">`;
+                content += `<div id="tab-link-general" class="prop-tab-content ${getLinkTabClass('tab-link-general')}">`;
 
-                // 1. 基本資訊 (Name/ID)
-                content += `<div class="prop-section-header">General</div>`;
-                content += `<div class="prop-row">
-                             <span class="prop-label">Name</span>
-                             <input type="text" id="prop-link-name" class="prop-input" value="${obj.name || obj.id}">
-                         </div>`;
-                content += `<div class="prop-row">
-                             <span class="prop-label">ID</span>
-                             <input type="text" class="prop-input" value="${obj.id}" disabled>
-                         </div>`;
+                // (A) 頂部唯讀幾何儀表板
+                content += `
+                    <div class="prop-stat-grid cols-3" style="margin-bottom:10px;">
+                        <div class="prop-stat-box">
+                            <span class="prop-stat-label">Length</span>
+                            <span class="prop-stat-value">${getPolylineLength(obj.waypoints).toFixed(1)}m</span>
+                        </div>
+                        <div class="prop-stat-box">
+                            <span class="prop-stat-label">Width</span>
+                            <span class="prop-stat-value">${getLinkTotalWidth(obj).toFixed(1)}m</span>
+                        </div>
+                        <div class="prop-stat-box">
+                            <span class="prop-stat-label">Lanes</span>
+                            <span class="prop-stat-value">${obj.lanes.length}L</span>
+                        </div>
+                    </div>`;
 
-                // =====================================
-                // [新增] 路面透明度選項 (僅改變畫布顯示用)
-                // =====================================
-                content += `<div class="prop-row">
-                             <span class="prop-label" title="僅影響編輯器顯示，方便對齊底圖">Opacity</span>
-                             <div style="display:flex; align-items:center; gap:8px;">
-                                 <input type="range" id="prop-link-opacity" min="0" max="1" step="0.1" value="${obj.roadOpacity !== undefined ? obj.roadOpacity : 1}" style="flex:1; cursor:pointer;">
-                                 <span id="prop-link-opacity-val" style="font-size:0.75rem; width:20px; text-align:right;">${obj.roadOpacity !== undefined ? obj.roadOpacity : 1}</span>
-                             </div>
-                         </div>`;
-                // =====================================
-                // ============================================================
-                // ★★★ [修正重點] Two-way Settings 必須插在這裡 (TAB 內容內部) ★★★
-                // ============================================================
+                // (B) 基本與雙向設定卡
+                const isLaneBasedFreeform = (obj.geometryType === 'lane-based');
+                content += `<div class="prop-card">`;
+                content += `
+                    <div class="prop-row">
+                        <span class="prop-label">Name</span>
+                        <input type="text" id="prop-link-name" class="prop-input" value="${obj.name || obj.id}">
+                    </div>
+                    <div class="prop-row">
+                        <span class="prop-label" title="僅影響編輯器顯示，方便對齊底圖">Opacity</span>
+                        <div style="display:flex; align-items:center; gap:8px; flex:1;">
+                            <input type="range" id="prop-link-opacity" min="0" max="1" step="0.1" value="${obj.roadOpacity !== undefined ? obj.roadOpacity : 1}" style="flex:1; cursor:pointer;">
+                            <span id="prop-link-opacity-val" style="font-size:0.75rem; width:24px; text-align:right; font-family:'Roboto Mono',monospace;">${obj.roadOpacity !== undefined ? obj.roadOpacity : 1}</span>
+                        </div>
+                    </div>
+                    <div class="prop-row" style="margin-bottom:0;">
+                        <span class="prop-label">Lane Count</span>
+                        <input type="number" id="prop-lanes" class="prop-input" value="${obj.lanes.length}" min="1" max="10" style="max-width:80px;" ${isLaneBasedFreeform ? 'disabled title="手繪標線模式由標線數量決定"' : (obj.geometryType === 'parametric' ? 'disabled title="請由下方參數化設定或 Synchro 面板調整"' : '')}>
+                    </div>`;
+
                 if (obj.pairInfo && obj.pairInfo.pairId) {
                     const pairLink = network.links[obj.pairInfo.pairId];
                     if (pairLink) {
-                        content += `<div class="prop-section-header" style="color:#2563eb; margin-top:10px;">Two-way Settings</div>`;
-
-                        content += `<div class="prop-row">
-                                     <span class="prop-label">Paired with</span>
-                                     <span style="font-size:0.8rem; color:#64748b;">${pairLink.name || pairLink.id}</span>
-                                 </div>`;
-
-                        content += `<div class="prop-row">
-                                     <span class="prop-label">Median (m)</span>
-                                     <input type="number" id="prop-edit-median" class="prop-input" 
-                                            value="${obj.pairInfo.medianWidth}" step="0.5" min="0">
-                                 </div>`;
-
-                        content += `<div class="prop-hint">
-                                     Adjusting median width moves both roads.
-                                 </div>`;
-                    } else {
-                        // 如果配對的路找不到 (可能被刪除)
-                        content += `<div class="prop-hint" style="color:orange; margin-top:10px;">
-                                     <i class="fa-solid fa-link-slash"></i> Paired link missing.
-                                 </div>`;
+                        content += `
+                            <div style="border-top:1px dashed var(--border-light); margin-top:8px; padding-top:8px;">
+                                <div class="prop-row" style="margin-bottom:4px;">
+                                    <span class="prop-label" style="color:var(--primary); font-weight:600;"><i class="fa-solid fa-arrows-left-right"></i> Paired Link</span>
+                                    <span style="font-size:0.78rem; font-weight:600; color:#475569;">${pairLink.name || pairLink.id}</span>
+                                </div>
+                                <div class="prop-row" style="margin-bottom:0;">
+                                    <span class="prop-label">Median Width (m)</span>
+                                    <input type="number" id="prop-edit-median" class="prop-input" value="${obj.pairInfo.medianWidth}" step="0.5" min="0" style="max-width:80px;">
+                                </div>
+                            </div>`;
                     }
                 }
-                // ============================================================
-                // ============================================================
-                // [新增] Lane-Based 專屬標線編輯器
-                // ============================================================
+                content += `</div>`;
+
+                // (C) 手風琴 1：Synchro 視覺化車道數與轉向圖案選單 (預設展開)
+                if (typeof renderSynchroLanePickerHTML === 'function') {
+                    const synchroHtml = renderSynchroLanePickerHTML(obj, 'link');
+                    const turnsBadge = inferSynchroLaneTurns(obj).join(' · ');
+                    content += renderAccordionHTML('Synchro 車道與轉向配置', 'fa-solid fa-bolt', synchroHtml, true, turnsBadge);
+                }
+
+                // (D) 手風琴 2：Parametric 參數化附加車道設定 或 Lane-Based 標線設定
+                if (obj.geometryType === 'parametric' && obj.parametricConfig) {
+                    const c = obj.parametricConfig;
+                    const lpCount = c.leftPocket.exists ? c.leftPocket.lanes : 0;
+                    const rpCount = c.rightPocket.exists ? c.rightPocket.lanes : 0;
+                    const paraBadge = `左${lpCount} / 直${c.throughLanes} / 右${rpCount}`;
+                    const hasPocketOpen = c.leftPocket.exists || c.rightPocket.exists;
+
+                    const paraBodyHtml = `
+                        <div class="prop-row">
+                            <span class="prop-label">Through Lanes (主線)</span>
+                            <input type="number" id="prop-para-through" class="prop-input" value="${c.throughLanes}" min="1" style="max-width:75px;">
+                        </div>
+
+                        <div style="background:#f8fafc; border:1px solid #e2e8f0; padding:8px; margin-top:6px; border-radius:6px;">
+                            <label style="display:flex; align-items:center; gap:6px; font-size:0.8rem; font-weight:700; color:#334155; cursor:pointer;">
+                                <input type="checkbox" id="prop-para-lp-exists" ${c.leftPocket.exists ? 'checked' : ''}> ↰ 左轉附加車道 (Left Pocket)
+                            </label>
+                            <div id="prop-para-lp-config" style="display:${c.leftPocket.exists ? 'grid' : 'none'}; grid-template-columns:repeat(3, 1fr); gap:6px; margin-top:8px;">
+                                <div><span style="font-size:0.68rem; color:#64748b; display:block;">車道數</span><input type="number" id="prop-para-lp-lanes" class="prop-input" value="${c.leftPocket.lanes}" min="1"></div>
+                                <div><span style="font-size:0.68rem; color:#64748b; display:block;">儲車長(m)</span><input type="number" id="prop-para-lp-len" class="prop-input" value="${c.leftPocket.length}" min="5" step="0.5"></div>
+                                <div><span style="font-size:0.68rem; color:#64748b; display:block;">漸變段(m)</span><input type="number" id="prop-para-lp-tap" class="prop-input" value="${c.leftPocket.taper}" min="5" step="0.5"></div>
+                            </div>
+                        </div>
+
+                        <div style="background:#f8fafc; border:1px solid #e2e8f0; padding:8px; margin-top:6px; border-radius:6px;">
+                            <label style="display:flex; align-items:center; gap:6px; font-size:0.8rem; font-weight:700; color:#334155; cursor:pointer;">
+                                <input type="checkbox" id="prop-para-rp-exists" ${c.rightPocket.exists ? 'checked' : ''}> ↱ 右轉附加車道 (Right Pocket)
+                            </label>
+                            <div id="prop-para-rp-config" style="display:${c.rightPocket.exists ? 'grid' : 'none'}; grid-template-columns:repeat(3, 1fr); gap:6px; margin-top:8px;">
+                                <div><span style="font-size:0.68rem; color:#64748b; display:block;">車道數</span><input type="number" id="prop-para-rp-lanes" class="prop-input" value="${c.rightPocket.lanes}" min="1"></div>
+                                <div><span style="font-size:0.68rem; color:#64748b; display:block;">儲車長(m)</span><input type="number" id="prop-para-rp-len" class="prop-input" value="${c.rightPocket.length}" min="5" step="0.5"></div>
+                                <div><span style="font-size:0.68rem; color:#64748b; display:block;">漸變段(m)</span><input type="number" id="prop-para-rp-tap" class="prop-input" value="${c.rightPocket.taper}" min="5" step="0.5"></div>
+                            </div>
+                        </div>
+
+                        <button id="btn-bake-to-mesh" class="btn-soft" style="margin-top:8px;" title="轉換後可自由拖曳每一個標線頂點">
+                            <i class="fa-solid fa-hammer" style="color:#f59e0b;"></i> 轉為手繪標線模式 (Freeform)
+                        </button>
+                    `;
+                    content += renderAccordionHTML('參數化袋狀車道設定', 'fa-solid fa-sliders', paraBodyHtml, hasPocketOpen, paraBadge);
+                }
+
                 if (obj.geometryType === 'lane-based' && obj.strokes) {
-                    content += `<div class="prop-section-header" style="color:#10b981; margin-top:10px;">Lane-Based Strokes</div>`;
-                    content += `<div class="prop-hint" style="margin-bottom:8px;">
-                                 Manage the individual lines that make up this road.
-                               </div>`;
-
-                    content += `<div style="display:flex; flex-direction:column; gap:6px; margin-bottom:10px;">`;
-
-                    // 產生清單 (每一條已存在的標線)
+                    let strokesBodyHtml = `<div style="display:flex; flex-direction:column; gap:5px; margin-bottom:10px;">`;
                     obj.strokes.forEach((stroke, idx) => {
-                        let selectHtml = `<select class="prop-select lb-stroke-type-select" data-index="${idx}" style="flex:1;">`;
+                        let selectHtml = `<select class="prop-select lb-stroke-type-select" data-index="${idx}" style="flex:1; padding:3px 6px; font-size:0.78rem;">`;
                         for (const [key, prop] of Object.entries(STROKE_TYPES)) {
                             selectHtml += `<option value="${key}" ${stroke.type === key ? 'selected' : ''}>${prop.label}</option>`;
                         }
                         selectHtml += `</select>`;
 
-                        // 最左與最右邊界不可刪除
                         const isBoundary = (idx === 0 || idx === obj.strokes.length - 1);
                         const delBtnHtml = isBoundary
-                            ? `<button class="btn-mini" disabled style="background:#f1f5f9; color:#cbd5e1; border-color:#e2e8f0;"><i class="fa-solid fa-lock"></i></button>`
+                            ? `<button class="btn-mini" disabled style="background:#f1f5f9; color:#cbd5e1;"><i class="fa-solid fa-lock"></i></button>`
                             : `<button class="btn-mini btn-mini-danger lb-stroke-del-btn" data-index="${idx}"><i class="fa-solid fa-trash-can"></i></button>`;
 
-                        content += `
-                            <div class="prop-card" style="display:flex; align-items:center; gap:6px; padding:6px;">
-                                <div style="width:20px; text-align:center; font-weight:bold; color:#64748b;">${idx}</div>
+                        strokesBodyHtml += `
+                            <div style="display:flex; align-items:center; gap:6px; background:#f8fafc; padding:4px 6px; border:1px solid var(--border-light); border-radius:5px;">
+                                <span style="width:18px; text-align:center; font-size:0.75rem; font-weight:700; color:#64748b;">#${idx}</span>
                                 ${selectHtml}
                                 ${delBtnHtml}
-                            </div>
-                        `;
+                            </div>`;
                     });
+                    strokesBodyHtml += `</div>`;
 
-                    content += `</div>`;
-
-                    // 動態產生 CSS 視覺預覽的輔助函數
                     const getPreviewCss = (prop) => {
                         if (prop.dual) {
                             const lStyle = prop.leftDash.length > 0 ? 'dashed' : 'solid';
@@ -8307,273 +8521,170 @@ document.addEventListener('DOMContentLoaded', () => {
                             return `border-top: 2px ${lStyle} ${prop.color}; border-bottom: 2px ${rStyle} ${prop.color}; height: 6px; width: 24px;`;
                         } else {
                             const style = prop.dash && prop.dash.length > 0 ? 'dashed' : 'solid';
-                            // 這裡強制 CSS 使用 2px 顯示，無視真實的 prop.width
                             return `border-top: 2px ${style} ${prop.color}; width: 24px; height: 0px;`;
                         }
                     };
 
-                    // 取得預設選項
                     let defaultKey = draftCurrentStrokeType === 'boundary' ? 'white_dashed' : draftCurrentStrokeType;
                     if (!STROKE_TYPES[defaultKey]) defaultKey = 'white_dashed';
                     const defaultProp = STROKE_TYPES[defaultKey];
 
-                    // 產生下拉選單的目前選取標頭 HTML
                     let selectedHtml = `
                         <div style="background:#555; padding:4px; border-radius:2px; display:flex; align-items:center; justify-content:center; width:32px;">
                             <div style="${getPreviewCss(defaultProp)}"></div>
                         </div>
-                        <span style="font-size:0.75rem; font-weight:600; color:var(--text-main);">${defaultProp.label}</span>
-                    `;
+                        <span style="font-size:0.75rem; font-weight:600; color:var(--text-main);">${defaultProp.label}</span>`;
 
-                    // 產生下拉選單的所有選項 HTML
                     let customOptionsHtml = '';
                     for (const [key, prop] of Object.entries(STROKE_TYPES)) {
                         customOptionsHtml += `
-                            <div class="custom-stroke-option" data-value="${key}" style="display:flex; align-items:center; gap:8px; padding:6px; cursor:pointer; border-bottom:1px solid #e2e8f0; transition:background 0.2s;">
+                            <div class="custom-stroke-option" data-value="${key}" style="display:flex; align-items:center; gap:8px; padding:6px; cursor:pointer; border-bottom:1px solid #e2e8f0;">
                                 <div style="background:#555; padding:4px; border-radius:2px; display:flex; align-items:center; justify-content:center; width:32px;">
                                     <div style="${getPreviewCss(prop)}"></div>
                                 </div>
                                 <span style="font-size:0.75rem; font-weight:600; color:var(--text-main);">${prop.label}</span>
-                            </div>
-                        `;
+                            </div>`;
                     }
 
-                    // 自訂的圖文並存下拉選單 UI
-                    content += `
-                    <div style="display:flex; flex-direction:column; gap:6px; margin-bottom:15px; padding:8px; background:#f1f5f9; border-radius:6px; border: 1px solid #cbd5e1;">
-                        <span style="font-size:0.75rem; font-weight:bold; color:#475569;">Draw New Line (手繪新標線)</span>
-
-                        <div id="custom-stroke-dropdown" style="position:relative; width:100%; user-select:none;">
-                            <!-- 下拉選單標頭 (點擊展開) -->
-                            <div id="custom-stroke-header" style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px; background:#fff; border:1px solid #cbd5e1; border-radius:4px; cursor:pointer;">
-                                <div id="custom-stroke-selected" style="display:flex; align-items:center; gap:8px;">
-                                    ${selectedHtml}
+                    strokesBodyHtml += `
+                        <div style="display:flex; flex-direction:column; gap:6px; padding:8px; background:#f8fafc; border-radius:6px; border:1px solid #e2e8f0;">
+                            <span style="font-size:0.72rem; font-weight:700; color:#475569;">手繪新增標線 (Append Stroke)</span>
+                            <div id="custom-stroke-dropdown" style="position:relative; width:100%; user-select:none;">
+                                <div id="custom-stroke-header" style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:5px 8px; background:#fff; border:1px solid #cbd5e1; border-radius:4px; cursor:pointer;">
+                                    <div id="custom-stroke-selected" style="display:flex; align-items:center; gap:8px;">${selectedHtml}</div>
+                                    <i class="fa-solid fa-chevron-down" style="color:#64748b; font-size:0.75rem;"></i>
                                 </div>
-                                <i class="fa-solid fa-chevron-down" style="color:#64748b; font-size:0.8rem;"></i>
-                            </div>
-                            
-                            <!-- 下拉選單清單 -->
-                            <div id="custom-stroke-list" style="display:none; position:absolute; top:100%; left:0; width:100%; background:#fff; border:1px solid #cbd5e1; border-radius:4px; margin-top:4px; z-index:100; max-height:220px; overflow-y:auto; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-                                ${customOptionsHtml}
-                            </div>
-                        </div>
-
-                        <button id="btn-lb-add-stroke" class="btn-action" style="width:100%; background:#fff; color:var(--text-main); border:1px dashed #cbd5e1; margin-top:4px;">
-                            <i class="fa-solid fa-pen"></i> Start Drawing
-                        </button>
-                    </div>`;
-                }
-                // ============================================================
-                // [新增] Parametric 參數化專屬編輯器
-                // ============================================================
-                if (obj.geometryType === 'parametric' && obj.parametricConfig) {
-                    const c = obj.parametricConfig;
-                    content += `<div class="prop-section-header" style="color:#8b5cf6; margin-top:10px;">
-                                 <i class="fa-solid fa-sliders"></i> Parametric Settings
-                               </div>`;
-
-                    content += `<div class="prop-row">
-                                 <span class="prop-label">Through Lanes</span>
-                                 <input type="number" id="prop-para-through" class="prop-input" value="${c.throughLanes}" min="1">
-                               </div>`;
-
-                    // 左轉附加車道
-                    content += `<div style="background:#f8fafc; border:1px solid #e2e8f0; padding:8px; margin-top:8px; border-radius:4px;">
-                                    <label style="display:flex; align-items:center; gap:6px; font-weight:bold; color:#475569; cursor:pointer;">
-                                        <input type="checkbox" id="prop-para-lp-exists" ${c.leftPocket.exists ? 'checked' : ''}> Left Turn Pocket (左轉道)
-                                    </label>
-                                    <div id="prop-para-lp-config" style="display:${c.leftPocket.exists ? 'block' : 'none'}; margin-top:8px;">
-                                        <div class="prop-row"><span class="prop-label">Lanes</span><input type="number" id="prop-para-lp-lanes" class="prop-input" value="${c.leftPocket.lanes}" min="1"></div>
-                                        <div class="prop-row"><span class="prop-label">Length (m)</span><input type="number" id="prop-para-lp-len" class="prop-input" value="${c.leftPocket.length}" min="5" step="0.5"></div>
-                                        <div class="prop-row"><span class="prop-label">Taper (m)</span><input type="number" id="prop-para-lp-tap" class="prop-input" value="${c.leftPocket.taper}" min="5" step="0.5"></div>
-                                    </div>
-                                </div>`;
-
-                    // 右轉附加車道
-                    content += `<div style="background:#f8fafc; border:1px solid #e2e8f0; padding:8px; margin-top:8px; border-radius:4px;">
-                                <label style="display:flex; align-items:center; gap:6px; font-weight:bold; color:#475569; cursor:pointer;">
-                                    <input type="checkbox" id="prop-para-rp-exists" ${c.rightPocket.exists ? 'checked' : ''}> Right Turn Pocket (右轉道)
-                                </label>
-                                <div id="prop-para-rp-config" style="display:${c.rightPocket.exists ? 'block' : 'none'}; margin-top:8px;">
-                                    <div class="prop-row"><span class="prop-label">Lanes</span><input type="number" id="prop-para-rp-lanes" class="prop-input" value="${c.rightPocket.lanes}" min="1"></div>
-                                    <div class="prop-row"><span class="prop-label">Length (m)</span><input type="number" id="prop-para-rp-len" class="prop-input" value="${c.rightPocket.length}" min="5" step="0.5"></div>
-                                    <div class="prop-row"><span class="prop-label">Taper (m)</span><input type="number" id="prop-para-rp-tap" class="prop-input" value="${c.rightPocket.taper}" min="5" step="0.5"></div>
+                                <div id="custom-stroke-list" style="display:none; position:absolute; top:100%; left:0; width:100%; background:#fff; border:1px solid #cbd5e1; border-radius:4px; margin-top:4px; z-index:100; max-height:200px; overflow-y:auto; box-shadow:0 4px 6px rgba(0,0,0,0.1);">
+                                    ${customOptionsHtml}
                                 </div>
-                            </div>`;
+                            </div>
+                            <button id="btn-lb-add-stroke" class="btn-soft">
+                                <i class="fa-solid fa-pen"></i> Start Drawing Stroke
+                            </button>
+                        </div>`;
 
-                    content += `<button id="btn-bake-to-mesh" class="btn-action" style="width:100%; margin-top:12px; background:#f59e0b;">
-                                  <i class="fa-solid fa-hammer"></i> Convert to Freeform (手動微調)
-                                </button>`;
-                    content += `<div class="prop-hint" style="color:#f59e0b;"><i class="fa-solid fa-triangle-exclamation"></i> 轉換後將失去參數連動能力，但可自由拖曳每一個標線頂點。</div>`;
+                    content += renderAccordionHTML('手繪標線管理 (Strokes)', 'fa-solid fa-pen-nib', strokesBodyHtml, true, `${obj.strokes.length} 條`);
                 }
 
-                // ============================================================
-                // 2. 幾何資訊 (Geometry)                content += `<div class="prop-section-header">Geometry</div>`;
-                content += `<div class="prop-row">
-                             <span class="prop-label">Length</span>
-                             <span class="prop-value-text">${getPolylineLength(obj.waypoints).toFixed(2)} m</span>
-                         </div>`;
-                content += `<div class="prop-row">
-                             <span class="prop-label">Total Width</span>
-                             <span class="prop-value-text">${getLinkTotalWidth(obj).toFixed(2)} m</span>
-                         </div>`;
-
-                // ============================================================
-                // 3. 車道配置 (Lanes Configuration - 支援動態拓撲分析)
-                // ============================================================
-                content += `<div class="prop-section-header">Lanes Configuration</div>`;
-
-                // ★★★ [修正重點]：確保 Parametric 模式也被當成 isLaneBased 看待，以正確凍結個別車寬輸入框 ★★★
-                const isLaneBasedFreeform = (obj.geometryType === 'lane-based'); // 只鎖定真正的 Freeform 手繪模式
-                const portsInfo = (obj.geometryType === 'lane-based' || obj.geometryType === 'parametric') ? getLaneBasedPorts(obj) : null;
-
-                content += `<div class="prop-row">
-                             <span class="prop-label">Count</span>
-                             <input type="number" id="prop-lanes" class="prop-input" value="${obj.lanes.length}" min="1" max="10" ${isLaneBasedFreeform ? 'disabled title="Lane-based 路段的車道數由標線數量自動決定"' : (obj.geometryType === 'parametric' ? 'disabled title="請由上方 Parametric Settings 調整數量"' : '')}>
-                         </div>`;
-
-                // 確保預設車種存在
+                // (E) 手風琴 3：各車道寬度與禁行車種微調 (單行緊湊膠囊列，預設收起以保持清爽)
                 if (Object.keys(network.vehicleProfiles).length === 0) {
                     network.vehicleProfiles['car'] = { id: 'car', length: 4.5, width: 1.8, maxSpeed: 16.67, maxAcceleration: 3.0, comfortDeceleration: 2.5, minDistance: 2.5, desiredHeadwayTime: 1.5 };
                     network.vehicleProfiles['motor'] = { id: 'motor', length: 2.0, width: 0.8, maxSpeed: 16.67, maxAcceleration: 3.5, comfortDeceleration: 3.0, minDistance: 1.0, desiredHeadwayTime: 0.8 };
                     network.vehicleProfiles['Truck/Bus'] = { id: 'Truck/Bus', length: 12.0, width: 2.6, maxSpeed: 16.67, maxAcceleration: 0.8, comfortDeceleration: 1.0, minDistance: 3.0, desiredHeadwayTime: 3.0 };
                 }
                 const availableProfiles = Object.keys(network.vehicleProfiles);
+                const portsInfo = (obj.geometryType === 'lane-based' || obj.geometryType === 'parametric') ? getLaneBasedPorts(obj) : null;
+                const vehShortLabel = { 'car': '🚗Car', 'motor': '🛵Moto', 'Truck/Bus': '🚌Bus' };
 
-                content += `<label class="prop-label" style="font-size:0.75rem; margin-top:8px; display:block;">Individual Lanes Setup</label>`;
-
-                // 只要是 Parametric 或 Lane-based，都顯示預覽提示
-                if (portsInfo) {
-                    content += `<div class="prop-hint" style="margin-bottom:8px;"><i class="fa-solid fa-mouse-pointer"></i> 游標移至下方車道卡片，可在畫布上預覽該車道的實體範圍。</div>`;
-                }
-
-                content += `<div class="prop-grid-container" id="lane-widths-container" style="display:flex; flex-direction:column; gap:8px;">`;
+                let lanesSetupHtml = `<div style="font-size:0.7rem; color:var(--text-muted); margin-bottom:6px;">游標移至車道列可於畫布高亮預覽；點擊右側車種標籤切換通行權限：</div>`;
+                lanesSetupHtml += `<div id="lane-widths-container">`;
 
                 obj.lanes.forEach((lane, index) => {
-                    let laneDesc = `L${index + 1}`;
                     let statusBadge = '';
-
                     if (portsInfo) {
                         const hasStart = portsInfo.startPorts.some(p => p.laneIndex === index);
                         const hasEnd = portsInfo.endPorts.some(p => p.laneIndex === index);
-
-                        if (hasStart && hasEnd) {
-                            laneDesc += ' (Through)';
-                            statusBadge = '<span style="font-size:0.65rem; background:#dcfce7; color:#059669; padding:2px 4px; border-radius:3px; margin-left:6px;">貫通</span>';
-                        } else if (!hasStart && hasEnd) {
-                            laneDesc += ' (Added)';
-                            statusBadge = '<span style="font-size:0.65rem; background:#fef3c7; color:#d97706; padding:2px 4px; border-radius:3px; margin-left:6px;">附加/漸寬</span>';
-                        } else if (hasStart && !hasEnd) {
-                            laneDesc += ' (Dropped)';
-                            statusBadge = '<span style="font-size:0.65rem; background:#fee2e2; color:#dc2626; padding:2px 4px; border-radius:3px; margin-left:6px;">縮減/消失</span>';
-                        } else {
-                            laneDesc += ' (Island)';
-                            statusBadge = '<span style="font-size:0.65rem; background:#f1f5f9; color:#64748b; padding:2px 4px; border-radius:3px; margin-left:6px;">封閉/槽化</span>';
-                        }
+                        if (hasStart && hasEnd) statusBadge = '<span style="font-size:0.62rem; background:#dcfce7; color:#059669; padding:1px 4px; border-radius:3px;">貫通</span>';
+                        else if (!hasStart && hasEnd) statusBadge = '<span style="font-size:0.62rem; background:#fef3c7; color:#d97706; padding:1px 4px; border-radius:3px;">附加</span>';
+                        else if (hasStart && !hasEnd) statusBadge = '<span style="font-size:0.62rem; background:#fee2e2; color:#dc2626; padding:1px 4px; border-radius:3px;">縮減</span>';
+                        else statusBadge = '<span style="font-size:0.62rem; background:#f1f5f9; color:#64748b; padding:1px 4px; border-radius:3px;">槽化</span>';
                     }
 
-                    // 加入 lane-config-card class 以供互動監聽
-                    content += `<div class="prop-card lane-config-card" data-lane-index="${index}" style="padding:8px; background:#f8fafc; border:1px solid #e2e8f0; transition: border-color 0.2s, box-shadow 0.2s;">
-                                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-                                        <span style="font-weight:bold; color:#475569; font-size:0.8rem; display:flex; align-items:center;">${laneDesc} ${statusBadge}</span>
-                                        <div style="display:flex; align-items:center; gap:4px;">
-                                            <span style="font-size:0.7rem; color:#64748b;">Width(m)</span>
-                                            <!-- 注意這裡的 disabled 判斷，只有 isLaneBasedFreeform 才會鎖定，Parametric 是允許編輯的 -->
-                                            <input type="number" id="prop-lane-width-${index}" class="prop-grid-input prop-lane-width" data-index="${index}" value="${lane.width.toFixed(2)}" step="0.1" min="1" style="width:55px;" ${isLaneBasedFreeform ? 'disabled title="Lane-based 的寬度由實體標線自動計算"' : ''}>
-                                        </div>
-                                    </div>
-                                    <div style="font-size:0.7rem; color:#64748b; margin-bottom:4px;">Allowed Vehicles (Uncheck to restrict)</div>
-                                    <div style="display:flex; flex-wrap:wrap; gap:6px;">`;
-
-                    availableProfiles.forEach(profId => {
+                    const chipsHtml = availableProfiles.map(profId => {
                         const isChecked = (!lane.allowedVehicleProfiles || lane.allowedVehicleProfiles.length === 0 || lane.allowedVehicleProfiles.includes(profId)) ? 'checked' : '';
-                        content += `<label style="font-size:0.75rem; display:flex; align-items:center; gap:2px; cursor:pointer;">
-                                        <input type="checkbox" class="prop-lane-vehicle-cb" data-lane="${index}" value="${profId}" ${isChecked}> ${profId}
-                                    </label>`;
-                    });
-                    content += `    </div>
-                                </div>`;
+                        const chipText = vehShortLabel[profId] || profId;
+                        return `
+                            <label class="veh-chip" title="允許/禁止車種: ${profId}">
+                                <input type="checkbox" class="prop-lane-vehicle-cb" data-lane="${index}" value="${profId}" ${isChecked}>
+                                ${chipText}
+                            </label>`;
+                    }).join('');
+
+                    lanesSetupHtml += `
+                        <div class="lane-compact-row lane-config-card" data-lane-index="${index}">
+                            <div style="display:flex; align-items:center; gap:4px; min-width:56px;">
+                                <span style="font-weight:700; font-size:0.78rem; color:#334155;">L${index + 1}</span>
+                                ${statusBadge}
+                            </div>
+                            <div style="display:flex; align-items:center; gap:2px;">
+                                <input type="number" id="prop-lane-width-${index}" class="prop-input prop-lane-width" data-index="${index}" value="${lane.width.toFixed(2)}" step="0.1" min="1" style="width:52px; padding:2px 4px; font-size:0.76rem;" ${isLaneBasedFreeform ? 'disabled' : ''}>
+                                <span style="font-size:0.68rem; color:#64748b;">m</span>
+                            </div>
+                            <div class="veh-chip-group">${chipsHtml}</div>
+                        </div>`;
                 });
-                content += `</div>`;
+                lanesSetupHtml += `</div>`;
 
-                content += `</div>`; // [注意] 這是 id="tab-link-general" 的結束標籤
+                content += renderAccordionHTML('各車道寬度與車種限制', 'fa-solid fa-car-side', lanesSetupHtml, false, `${obj.lanes.length} 車道`);
+                content += `</div>`; // End Tab 1
 
-
-                // --- TAB 2: CONNECTIONS (連結清單) ---
-                content += `<div id="tab-link-conns" class="prop-tab-content ${getLinkContentClass('tab-link-conns')}">`;
-                content += `<div class="prop-section-header">Outgoing Connections</div>`;
-
-                // 搜尋所有以此 Link 為起點的連接
-                const outgoingConns = Object.values(network.connections)
-                    .filter(c => c.sourceLinkId === obj.id)
-                    .sort((a, b) => a.sourceLaneIndex - b.sourceLaneIndex || a.destLaneIndex - b.destLaneIndex);
-
+                // --- TAB 2: CONNECTIONS (下游連接清單) ---
+                content += `<div id="tab-link-conns" class="prop-tab-content ${getLinkTabClass('tab-link-conns')}">`;
                 if (outgoingConns.length > 0) {
-                    content += `<div class="conn-list-container" style="display:flex; flex-direction:column; gap:8px;">`;
+                    content += `<div class="conn-list-container" style="display:flex; flex-direction:column; gap:6px;">`;
                     outgoingConns.forEach(conn => {
                         const destLink = network.links[conn.destLinkId];
                         const destName = destLink ? (destLink.name || destLink.id) : conn.destLinkId;
-
-                        // [修正] 加入 class "conn-list-item" 與 data-conn-id，用於滑鼠移入高亮
                         content += `
-                     <div class="prop-card conn-list-item" data-conn-id="${conn.id}" style="padding: 8px; border-left: 3px solid #3b82f6; cursor:pointer; transition: background 0.2s;">
-                         <div style="display:flex; justify-content:space-between; align-items:center;">
-                             <div style="font-size:0.85rem; color:var(--text-main);">
-                                 <span style="font-weight:bold; color:#2563eb;">Lane ${conn.sourceLaneIndex + 1}</span>
-                                 <i class="fa-solid fa-arrow-right" style="margin:0 6px; color:#94a3b8; font-size:0.75rem;"></i>
-                                 <span>${destName}</span>
-                                 <span style="font-size:0.75rem; color:#64748b; background:#f1f5f9; padding:1px 4px; border-radius:3px;">L${conn.destLaneIndex + 1}</span>
-                             </div>
-                             <button class="btn-mini btn-del-single-conn" data-id="${conn.id}" title="Remove Connection" style="color:#ef4444; border:1px solid #fecaca; background:#fff;">
-                                 <i class="fa-solid fa-xmark"></i>
-                             </button>
-                         </div>
-                     </div>`;
+                            <div class="prop-card conn-list-item" data-conn-id="${conn.id}" style="padding:8px 10px; margin-bottom:0; border-left:3px solid var(--primary); cursor:pointer; transition:background 0.15s;">
+                                <div style="display:flex; justify-content:space-between; align-items:center;">
+                                    <div style="font-size:0.82rem; color:var(--text-main);">
+                                        <span style="font-weight:700; color:var(--primary);">L${conn.sourceLaneIndex + 1}</span>
+                                        <i class="fa-solid fa-arrow-right" style="margin:0 6px; color:#94a3b8; font-size:0.7rem;"></i>
+                                        <span style="font-weight:600;">${destName}</span>
+                                        <span style="font-size:0.72rem; color:#64748b; background:#f1f5f9; padding:1px 5px; border-radius:4px; margin-left:4px;">L${conn.destLaneIndex + 1}</span>
+                                    </div>
+                                    <button class="btn-mini btn-del-single-conn" data-id="${conn.id}" title="Remove Connection" style="color:#ef4444; border:1px solid #fecaca; background:#fff;">
+                                        <i class="fa-solid fa-xmark"></i>
+                                    </button>
+                                </div>
+                            </div>`;
                     });
                     content += `</div>`;
                 } else {
-                    content += `<div class="prop-hint" style="text-align:center; padding:20px 0;">
-                                 <i class="fa-solid fa-link-slash" style="font-size:1.5rem; color:#cbd5e1; margin-bottom:8px;"></i><br>
-                                 No outgoing connections.
-                             </div>`;
+                    content += `
+                        <div class="prop-hint" style="text-align:center; padding:24px 0;">
+                            <i class="fa-solid fa-link-slash" style="font-size:1.4rem; color:#cbd5e1; margin-bottom:6px;"></i><br>
+                            尚無下游車道連接 (No outgoing connections)
+                        </div>`;
                 }
-
                 content += `</div>`; // End Tab 2
                 break;
+            }
 
-            case 'Node':
+            // =============================================================
+            // CASE: NODE (路口節點)
+            // =============================================================
+            case 'Node': {
                 const getTabClass = (tabName) => lastActiveNodeTab === tabName ? 'active' : '';
-
                 content += `
-            <div class="prop-tab-header">
-                <button class="prop-tab-btn ${getTabClass('tab-settings')}" data-target="tab-settings">
-                    <i class="fa-solid fa-sliders"></i> Settings
-                </button>
-                <button class="prop-tab-btn ${getTabClass('tab-conn')}" data-target="tab-conn">
-                    <i class="fa-solid fa-network-wired"></i> Links
-                </button>
-                <button class="prop-tab-btn ${getTabClass('tab-flow')}" data-target="tab-flow">
-                    <i class="fa-solid fa-arrow-right-arrow-left"></i> Flow
-                </button>
-            </div>`;
+                    <div class="prop-tab-header" style="margin-bottom:6px;">
+                        <button class="prop-tab-btn ${getTabClass('tab-synchro')}" data-target="tab-synchro" title="Synchro 路口各方向車道與轉向設定">
+                            <i class="fa-solid fa-bolt" style="color:#f59e0b;"></i> Synchro
+                        </button>
+                        <button class="prop-tab-btn ${getTabClass('tab-settings')}" data-target="tab-settings">
+                            <i class="fa-solid fa-sliders"></i> 號誌/行人
+                        </button>
+                        <button class="prop-tab-btn ${getTabClass('tab-conn')}" data-target="tab-conn">
+                            <i class="fa-solid fa-network-wired"></i> 動線
+                        </button>
+                        <button class="prop-tab-btn ${getTabClass('tab-flow')}" data-target="tab-flow">
+                            <i class="fa-solid fa-arrow-right-arrow-left"></i> 比例
+                        </button>
+                    </div>`;
 
-                const getContentClass = (tabName) => lastActiveNodeTab === tabName ? 'active' : '';
+                // --- TAB 0: SYNCHRO APPROACH MATRIX (支援方向分頁切換器) ---
+                content += `<div id="tab-synchro" class="prop-tab-content ${getTabClass('tab-synchro')}">`;
+                if (typeof renderSynchroNodePanelHTML === 'function') {
+                    content += renderSynchroNodePanelHTML(obj);
+                }
+                content += `</div>`;
 
-                // --- TAB 1: SETTINGS (Signal Control Only) ---
-                content += `<div id="tab-settings" class="prop-tab-content ${getContentClass('tab-settings')}">`;
-
-                content += `<div class="prop-section-header">Signal Control</div>`;
-
+                // --- TAB 1: SETTINGS (號誌與行人設定) ---
+                content += `<div id="tab-settings" class="prop-tab-content ${getTabClass('tab-settings')}">`;
                 const tflData = network.trafficLights[obj.id] || { timeShift: 0 };
                 const hasSignal = (tflData.schedule && tflData.schedule.length > 0) ||
                     (tflData.advanced && Object.keys(tflData.advanced.schedules).length > 0);
-
-                content += `<div class="prop-row">
-                            <span class="prop-label">Status</span>
-                            ${hasSignal
-                        ? '<span class="prop-status-indicator success" style="padding:2px 8px; margin:0;">Active</span>'
-                        : '<span class="prop-status-indicator" style="padding:2px 8px; margin:0; background:#f1f5f9; color:#94a3b8;">No Signal</span>'}
-                        </div>`;
 
                 let displayTimeShift = tflData.timeShift || 0;
                 if (tflData.advanced && tflData.advanced.weekly) {
@@ -8586,47 +8697,47 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
 
-                content += `<div class="prop-row">
+                content += `
+                    <div class="prop-card">
+                        <div class="prop-section-header" style="margin-top:0;">Signal Control</div>
+                        <div class="prop-row">
+                            <span class="prop-label">Signal Status</span>
+                            ${hasSignal
+                        ? '<span class="prop-status-indicator success" style="padding:2px 8px; margin:0; font-size:0.75rem;">Active</span>'
+                        : '<span class="prop-status-indicator" style="padding:2px 8px; margin:0; font-size:0.75rem; background:#f1f5f9; color:#64748b;">No Signal</span>'}
+                        </div>
+                        <div class="prop-row">
                             <span class="prop-label">Time Shift (s)</span>
-                            <input type="number" id="prop-tfl-shift" class="prop-input" value="${displayTimeShift}" min="0" step="1">
-                        </div>`;
+                            <input type="number" id="prop-tfl-shift" class="prop-input" value="${displayTimeShift}" min="0" step="1" style="max-width:90px;">
+                        </div>
+                        <button id="edit-tfl-btn" class="btn-primary" style="width:100%; margin-top:6px;">
+                            <i class="fa-solid fa-traffic-light"></i> 開啟號誌時制編輯器
+                        </button>
+                    </div>
 
-                content += `<button id="edit-tfl-btn" class="btn-action" style="width:100%; margin-top:8px;">
-                            <i class="fa-solid fa-traffic-light"></i> Edit Schedule
-                        </button>`;
+                    <div class="prop-card">
+                        <div class="prop-section-header" style="margin-top:0;">Pedestrian Settings</div>
+                        <div class="prop-row">
+                            <span class="prop-label">Volume (ped/h)</span>
+                            <input type="number" id="prop-node-ped-vol" class="prop-input" value="${obj.pedestrianVolume || 0}" min="0" step="10" style="max-width:90px;">
+                        </div>
+                        <div class="prop-row">
+                            <span class="prop-label">Cross Once (%)</span>
+                            <input type="number" id="prop-node-cross-once" class="prop-input" value="${obj.crossOnceProb !== undefined ? obj.crossOnceProb : 100}" min="0" max="100" step="1" style="max-width:90px;">
+                        </div>
+                        <div class="prop-row" style="margin-bottom:0;">
+                            <span class="prop-label">Cross Twice (%)</span>
+                            <input type="number" id="prop-node-cross-twice" class="prop-input" value="${obj.crossTwiceProb || 0}" min="0" max="100" step="1" style="max-width:90px;">
+                        </div>
+                    </div>
 
-                // --- Pedestrian Settings ---
-                content += `<div class="prop-section-header" style="margin-top:16px;">Pedestrian Settings</div>`;
+                    <button id="btn-delete-node" class="btn-danger-outline">
+                        <i class="fa-solid fa-trash-can"></i> Delete Intersection
+                    </button>
+                </div>`;
 
-                content += `<div class="prop-row">
-                                <span class="prop-label" title="Hourly Pedestrian Volume">Volume (ped/h)</span>
-                                <input type="number" id="prop-node-ped-vol" class="prop-input" value="${obj.pedestrianVolume || 0}" min="0" step="10">
-                            </div>`;
-
-                content += `<div class="prop-row">
-                                <span class="prop-label" title="Cross Once Probability">Cross Once (%)</span>
-                                <input type="number" id="prop-node-cross-once" class="prop-input" value="${obj.crossOnceProb !== undefined ? obj.crossOnceProb : 100}" min="0" max="100" step="1">
-                            </div>`;
-
-                content += `<div class="prop-row">
-                                <span class="prop-label" title="Cross Twice Probability">Cross Twice (%)</span>
-                                <input type="number" id="prop-node-cross-twice" class="prop-input" value="${obj.crossTwiceProb || 0}" min="0" max="100" step="1">
-                            </div>`;
-
-                // --- [新增] SECTION: ACTIONS ---
-                content += `<div class="prop-section-header" style="margin-top:16px;">Actions</div>`;
-                content += `<button id="btn-delete-node" class="btn-danger-outline" style="width:100%;">
-                            <i class="fa-solid fa-trash-can"></i> Delete Intersection
-                        </button>`;
-
-                content += `</div>`; // End Tab 1
-
-
-                // --- TAB 2: LINKS (Connection Groups) ---
-                content += `<div id="tab-conn" class="prop-tab-content ${getContentClass('tab-conn')}">`;
-                content += `<div class="prop-section-header">Connection Groups</div>`;
-
-                // Logic for groups
+                // --- TAB 2: LINKS (Connection Groups 與幾何微調) ---
+                content += `<div id="tab-conn" class="prop-tab-content ${getTabClass('tab-conn')}">`;
                 const relatedGroups = [];
                 layer.find('.group-connection-visual').forEach(groupShape => {
                     const meta = groupShape.getAttr('meta');
@@ -8640,11 +8751,22 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
 
                 if (relatedGroups.length > 0) {
-                    const tflDataForGroup = network.trafficLights[obj.id] || { signalGroups: {} };
+                    if (network.trafficLights[obj.id]) ensureTflGroupSets(network.trafficLights[obj.id]);
+                    const tflDataForGroup = network.trafficLights[obj.id] || { signalGroups: {}, signalGroupSets: {} };
                     const signalGroupOptions = Object.keys(tflDataForGroup.signalGroups || {});
+                    const groupSetList = Object.values(tflDataForGroup.signalGroupSets || {});
+
+                    if (groupSetList.length > 0) {
+                        content += `
+                            <div class="prop-row" style="background:#f5f3ff; padding:6px 8px; border-radius:6px; border:1px solid #ddd6fe; margin-bottom:8px;">
+                                <span class="prop-label" style="color:#6d28d9; font-weight:600; font-size:0.78rem;"><i class="fa-solid fa-microchip"></i> 硬體群組:</span>
+                                <select id="prop-node-groupset-select" class="prop-select" style="border-color:#c4b5fd; font-size:0.78rem; padding:3px 6px;">
+                                    ${groupSetList.map(gs => `<option value="${gs.id}" ${gs.id === tflDataForGroup.activeGroupSetId ? 'selected' : ''}>${gs.name || gs.id} (${Object.keys(gs.groups || {}).length}組)</option>`).join('')}
+                                </select>
+                            </div>`;
+                    }
 
                     relatedGroups.forEach(group => {
-                        // Logic to find current signal group ... (保持不變)
                         let currentSignalGroupId = "";
                         const firstConnId = group.connectionIds[0];
                         if (firstConnId) {
@@ -8656,8 +8778,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             }
                         }
 
-                        // Dropdown HTML ... (保持不變)
-                        let signalSelectHtml = `<select class="prop-select prop-group-signal-select" data-group-json='${JSON.stringify(group.connectionIds)}' style="font-size:0.8rem; padding:2px;">`;
+                        let signalSelectHtml = `<select class="prop-select prop-group-signal-select" data-group-json='${JSON.stringify(group.connectionIds)}' style="font-size:0.78rem; padding:3px 6px;">`;
                         signalSelectHtml += `<option value="">(No Signal)</option>`;
                         signalGroupOptions.forEach(sgId => {
                             const selected = sgId === currentSignalGroupId ? "selected" : "";
@@ -8665,113 +8786,80 @@ document.addEventListener('DOMContentLoaded', () => {
                         });
                         signalSelectHtml += `</select>`;
 
-                        // --- [新增] 判斷是否為右轉，以顯示產生引道按鈕與設定區塊 ---
+                        // 右轉專用引道摺疊抽屜 (平時收起，不佔用卡片空間)
                         let slipConfigHtml = '';
                         const srcLink = network.links[group.sourceLinkId];
                         const dstLink = network.links[group.destLinkId];
-                        if (srcLink && dstLink) {
-                            const turnDir = getTurnDirection(srcLink, dstLink);
-                            // 只要是右轉，就顯示這個區塊
-                            if (turnDir === 'right') {
-                                slipConfigHtml = `
-                                <div class="prop-card-row" style="margin-top:8px; padding-top:8px; border-top:1px dashed #cbd5e1; display:flex; flex-direction:column; gap:6px;">
-                                    <div style="display:flex; justify-content:space-between; align-items:center;">
-                                        <span style="font-weight:600; color:#10b981; font-size:0.8rem;"><i class="fa-solid fa-code-branch"></i> Slip Lane (引道設定)</span>
-                                        <button class="btn-mini btn-macro-slip" title="Generate Slip Lane" data-source="${group.sourceLinkId}" data-dest="${group.destLinkId}" style="background:#10b981; border:1px solid #059669; color:white;">
-                                            產生
+                        if (srcLink && dstLink && getTurnDirection(srcLink, dstLink) === 'right') {
+                            slipConfigHtml = `
+                                <details style="margin-top:6px; padding-top:6px; border-top:1px dashed #e2e8f0;">
+                                    <summary style="font-size:0.72rem; font-weight:600; color:#059669; cursor:pointer; user-select:none;">
+                                        <i class="fa-solid fa-code-branch"></i> 展開右轉槽化引道生成器 (Slip Lane)
+                                    </summary>
+                                    <div style="display:flex; align-items:center; justify-content:space-between; gap:6px; margin-top:6px;">
+                                        <div style="display:flex; align-items:center; gap:3px;">
+                                            <span style="font-size:0.68rem; color:#64748b;">上游(m)</span>
+                                            <input type="number" id="slip-up-${group.sourceLinkId}-${group.destLinkId}" class="prop-input" value="20" min="5" step="1" style="width:44px; padding:2px; text-align:center;">
+                                        </div>
+                                        <div style="display:flex; align-items:center; gap:3px;">
+                                            <span style="font-size:0.68rem; color:#64748b;">下游(m)</span>
+                                            <input type="number" id="slip-down-${group.sourceLinkId}-${group.destLinkId}" class="prop-input" value="20" min="5" step="1" style="width:44px; padding:2px; text-align:center;">
+                                        </div>
+                                        <button class="btn-mini btn-macro-slip" data-source="${group.sourceLinkId}" data-dest="${group.destLinkId}" style="background:#10b981; color:#fff; padding:3px 8px; font-weight:600;">
+                                            產生引道
                                         </button>
                                     </div>
-                                    <div style="display:flex; justify-content:space-between; align-items:center; gap:4px;">
-                                        <div style="display:flex; align-items:center; gap:4px;">
-                                            <span style="font-size:0.7rem; color:#64748b;">上游起點(m)</span>
-                                            <input type="number" id="slip-up-${group.sourceLinkId}-${group.destLinkId}" class="prop-input" value="20" min="5" step="1" style="width:45px; padding:2px; text-align:center;">
-                                        </div>
-                                        <div style="display:flex; align-items:center; gap:4px;">
-                                            <span style="font-size:0.7rem; color:#64748b;">下游終點(m)</span>
-                                            <input type="number" id="slip-down-${group.sourceLinkId}-${group.destLinkId}" class="prop-input" value="20" min="5" step="1" style="width:45px; padding:2px; text-align:center;">
-                                        </div>
-                                    </div>
-                                </div>`;
-                            }
+                                </details>`;
                         }
-                        // ------------------------------------------------
 
-                        // 3. 渲染卡片 (將 slipConfigHtml 放置於卡片底部)
-                        content += `<div class="prop-card connection-group-card" 
-                                     data-source="${group.sourceLinkId}" 
-                                     data-dest="${group.destLinkId}"
-                                     id="${group.domId}" 
-                                     style="cursor:default;">
-                                     
-                                    <!-- Header Row -->
-                                    <div class="prop-card-row" style="margin-bottom:8px; border-bottom:1px solid #f1f5f9; padding-bottom:6px;">
-                                        <span style="font-weight:700; font-size:0.85rem; color:var(--text-main);">
-                                            ${group.sourceLinkId} <i class="fa-solid fa-arrow-right" style="font-size:0.7rem; color:#94a3b8;"></i> ${group.destLinkId}
-                                        </span>
-                                        
-                                        <!-- Buttons -->
-                                        <div style="display:flex; gap:6px;">
-                                            <button class="btn-mini group-edit-btn" title="Edit Lanes" data-source="${group.sourceLinkId}" data-dest="${group.destLinkId}" style="background:#f1f5f9; border:1px solid #e2e8f0; color:var(--text-muted);">
-                                                <i class="fa-solid fa-pen"></i>
-                                            </button>
-                                            <button class="btn-mini group-delete-btn" title="Delete Group" data-source="${group.sourceLinkId}" data-dest="${group.destLinkId}" style="background:#fff; border:1px solid #fecaca; color:#ef4444;">
-                                                <i class="fa-solid fa-trash-can"></i>
-                                            </button>
-                                        </div>
+                        content += `
+                            <div class="prop-card connection-group-card" data-source="${group.sourceLinkId}" data-dest="${group.destLinkId}" id="${group.domId}">
+                                <div class="prop-card-row" style="margin-bottom:6px;">
+                                    <span style="font-weight:700; font-size:0.82rem; color:var(--text-main);">
+                                        ${group.sourceLinkId} <i class="fa-solid fa-arrow-right" style="font-size:0.68rem; color:#94a3b8;"></i> ${group.destLinkId}
+                                        <span style="font-size:0.7rem; font-weight:600; color:var(--primary); background:#eff6ff; padding:1px 5px; border-radius:4px; margin-left:4px;">${group.connectionIds.length}L</span>
+                                    </span>
+                                    <div style="display:flex; gap:4px;">
+                                        <button class="btn-mini group-edit-btn" title="Edit Lanes" data-source="${group.sourceLinkId}" data-dest="${group.destLinkId}" style="background:#f1f5f9; border:1px solid #e2e8f0; color:var(--text-muted);">
+                                            <i class="fa-solid fa-pen"></i>
+                                        </button>
+                                        <button class="btn-mini group-delete-btn" title="Delete Group" data-source="${group.sourceLinkId}" data-dest="${group.destLinkId}" style="background:#fff; border:1px solid #fecaca; color:#ef4444;">
+                                            <i class="fa-solid fa-trash-can"></i>
+                                        </button>
                                     </div>
-                                    
-                                    <!-- Info Row -->
-                                    <div class="prop-card-row">
-                                        <span class="prop-card-label">Lanes Connected</span>
-                                        <span style="font-size:0.8rem; font-weight:600; color:var(--text-main);">${group.connectionIds.length}</span>
-                                    </div>
-
-                                    <!-- Control Row -->
-                                    <div class="prop-card-row" style="margin-top:6px;">
-                                        <span class="prop-card-label"><i class="fa-solid fa-traffic-light"></i> Signal Group</span>
-                                        <div style="flex:1; margin-left:8px;">
-                                            ${signalSelectHtml}
-                                        </div>
-                                    </div>
-                                    
-                                    <!-- Slip Lane Control Area -->
-                                    ${slipConfigHtml}
-                                </div>`;
+                                </div>
+                                <div class="prop-card-row">
+                                    <span class="prop-card-label"><i class="fa-solid fa-traffic-light"></i> Signal Group</span>
+                                    <div style="flex:1; margin-left:8px;">${signalSelectHtml}</div>
+                                </div>
+                                ${slipConfigHtml}
+                            </div>`;
                     });
                 } else {
-                    content += `<div style="font-size:0.8rem; color:#94a3b8; font-style:italic; padding:4px;">No connection groups found.</div>`;
+                    content += `<div class="prop-hint">此路口尚無車道群組連線 (No connection groups)。</div>`;
                 }
 
-                content += `<div class="prop-section-header" style="margin-top:16px;">Tools</div>`;
-                content += `<button id="redraw-node-connections-btn" class="btn-action" style="width:100%; margin-bottom: 8px;">
-                            <i class="fa-solid fa-rotate"></i> Redraw Connections
-                        </button>`;
-
-                // --- 新增：如果有自訂形狀，顯示重設按鈕與操作提示 ---
-                if (obj.customPolygonPoints) {
-                    content += `<button id="reset-node-shape-btn" class="btn-action" style="width:100%; background:#f59e0b; margin-bottom:8px;">
-                                <i class="fa-solid fa-eraser"></i> Reset Custom Shape
-                            </button>`;
-                    content += `<div class="prop-hint">
-                                <i class="fa-solid fa-lightbulb"></i> 
-                                <b>形狀編輯：</b> 拖曳粉紅點新增頂點。雙擊紅點可刪除頂點。
-                            </div>`;
-                } else {
-                    content += `<div class="prop-hint">
-                                <i class="fa-solid fa-lightbulb"></i> 
-                                <b>形狀編輯：</b> 拖曳任何紅點或粉紅點即可解開自動形狀，創建自訂圓潤路口。
-                            </div>`;
-                }
-                // ------------------------------------------------
-                content += `</div>`; // End Tab 2
-
+                content += `
+                    <div style="display:flex; gap:6px; margin-top:8px;">
+                        <button id="redraw-node-connections-btn" class="btn-soft">
+                            <i class="fa-solid fa-rotate"></i> 重繪連線
+                        </button>
+                        ${obj.customPolygonPoints ? `
+                        <button id="reset-node-shape-btn" class="btn-soft" style="color:#d97706; border-color:#fde68a;">
+                            <i class="fa-solid fa-eraser"></i> 重設外框
+                        </button>` : ''}
+                    </div>
+                </div>`; // End Tab 2
 
                 // --- TAB 3: FLOW (Turning Ratios) ---
-                content += `<div id="tab-flow" class="prop-tab-content ${getContentClass('tab-flow')}">`;
-                content += `<div class="prop-section-header" style="display:flex; justify-content:space-between; align-items:center;">
-                            Turning Ratios
-                            <button id="btn-auto-calc-turns" class="btn-mini" style="background:#e0f2fe; color:#0284c7;">Auto-Calc</button>
-                        </div>`;
+                content += `<div id="tab-flow" class="prop-tab-content ${getTabClass('tab-flow')}">`;
+                content += `
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                        <span style="font-size:0.75rem; font-weight:700; color:#64748b; text-transform:uppercase;">Turning Ratios</span>
+                        <button id="btn-auto-calc-turns" class="btn-mini" style="background:#e0f2fe; color:#0284c7; font-weight:600; padding:3px 8px;">
+                            <i class="fa-solid fa-wand-magic-sparkles"></i> 依下游偵測器自動推估
+                        </button>
+                    </div>`;
 
                 const incomingLinks = [...obj.incomingLinkIds];
                 const outgoingLinks = [...obj.outgoingLinkIds];
@@ -8780,492 +8868,416 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (incomingLinks.length > 0 && outgoingLinks.length > 0) {
                     content += `<div id="turning-ratios-container">`;
                     incomingLinks.forEach(inLink => {
-                        content += `<div class="prop-card" style="padding:8px; background:#f8fafc;">`;
-
-                        // [修正] 加入 class "turn-ratio-header" 與 data-link，用於滑鼠移入高亮來源路段
-                        content += `<div class="turn-ratio-header" data-link="${inLink}" style="font-size:0.8rem; font-weight:700; color:#475569; margin-bottom:6px; border-bottom:1px solid #e2e8f0; padding-bottom:4px; cursor:default;">
+                        content += `
+                            <div class="prop-card" style="padding:8px; background:#f8fafc;">
+                                <div class="turn-ratio-header" data-link="${inLink}" style="font-size:0.78rem; font-weight:700; color:#334155; margin-bottom:6px; border-bottom:1px solid #e2e8f0; padding-bottom:4px; cursor:default;">
                                     From ${inLink}
                                 </div>`;
-
                         outgoingLinks.forEach(outLink => {
                             const ratio = (obj.turningRatios[inLink] && obj.turningRatios[inLink][outLink] !== undefined)
                                 ? obj.turningRatios[inLink][outLink] : 0;
                             const percent = (ratio * 100).toFixed(1);
-
-                            // [修正] 加入 class "turn-ratio-row" 與 data-from/to，用於滑鼠移入高亮轉向路徑
-                            content += `<div class="prop-row turn-ratio-row" data-from="${inLink}" data-to="${outLink}" style="margin-bottom:4px; padding:2px; border-radius:4px; cursor:default;">
-                                        <span class="prop-label" style="font-size:0.75rem;">To ${outLink}</span>
-                                        <div style="display:flex; align-items:center; gap:4px;">
-                                            <input type="number" class="prop-turn-ratio prop-input" style="width:50px; padding:2px;" data-from="${inLink}" data-to="${outLink}" value="${percent}" min="0" max="100" step="1">
-                                            <span style="font-size:0.75rem; color:#64748b;">%</span>
-                                        </div>
-                                    </div>`;
+                            content += `
+                                <div class="prop-row turn-ratio-row" data-from="${inLink}" data-to="${outLink}" style="margin-bottom:4px; padding:2px 4px; border-radius:4px; cursor:default;">
+                                    <span class="prop-label" style="font-size:0.75rem;">To ${outLink}</span>
+                                    <div style="display:flex; align-items:center; gap:4px;">
+                                        <input type="number" class="prop-turn-ratio prop-input" style="width:58px; padding:2px 4px; font-size:0.78rem;" data-from="${inLink}" data-to="${outLink}" value="${percent}" min="0" max="100" step="1">
+                                        <span style="font-size:0.72rem; color:#64748b;">%</span>
+                                    </div>
+                                </div>`;
                         });
                         content += `</div>`;
                     });
                     content += `</div>`;
                 } else {
-                    content += `<div class="prop-hint">Connect links to configure flow ratios.</div>`;
+                    content += `<div class="prop-hint">請先連接進出此路口的車道以設定轉向比例。</div>`;
                 }
                 content += `</div>`; // End Tab 3
-
                 break;
+            }
 
+            // =============================================================
+            // CASE: DETECTOR (偵測器)
+            // =============================================================
             case 'PointDetector':
-            case 'SectionDetector':
+            case 'SectionDetector': {
                 const isSection = obj.type === 'SectionDetector';
+                content += `
+                    <div class="prop-stat-grid" style="margin-bottom:8px;">
+                        <div class="prop-stat-box">
+                            <span class="prop-stat-label">Parent Link</span>
+                            <span class="prop-stat-value">${obj.linkId}</span>
+                        </div>
+                        <div class="prop-stat-box">
+                            <span class="prop-stat-label">Detector Type</span>
+                            <span class="prop-stat-value">${isSection ? '區段 (Section)' : '單點 (Point)'}</span>
+                        </div>
+                    </div>
 
-                // --- SECTION: GENERAL ---
-                content += `<div class="prop-section-header">General</div>`;
-                content += `<div class="prop-row">
+                    <div class="prop-card">
+                        <div class="prop-row">
                             <span class="prop-label">Name</span>
                             <input type="text" id="prop-det-name" class="prop-input" value="${obj.name}">
-                        </div>`;
-                content += `<div class="prop-row">
-                            <span class="prop-label">Parent Link</span>
-                            <input type="text" class="prop-input" value="${obj.linkId}" disabled>
-                        </div>`;
-                content += `<div class="prop-row">
+                        </div>
+                        <div class="prop-row">
                             <span class="prop-label">Position (m)</span>
-                            <input type="number" step="0.5" id="prop-det-pos" class="prop-input" value="${obj.position.toFixed(2)}">
-                        </div>`;
+                            <input type="number" step="0.5" id="prop-det-pos" class="prop-input" value="${obj.position.toFixed(2)}" style="max-width:95px;">
+                        </div>
+                        ${isSection ? `
+                        <div class="prop-row">
+                            <span class="prop-label">Length (m)</span>
+                            <input type="number" step="0.5" id="prop-det-len" class="prop-input" value="${(obj.length || 0).toFixed(2)}" style="max-width:95px;">
+                        </div>` : ''}
+                        <div class="prop-row" style="margin-bottom:0;">
+                            <span class="prop-label">Flow (veh/h)</span>
+                            <input type="number" id="prop-det-flow" class="prop-input" value="${obj.observedFlow || 0}" min="0" style="max-width:95px;">
+                        </div>
+                    </div>
 
-                if (isSection) {
-                    content += `<div class="prop-row">
-                                <span class="prop-label">Length (m)</span>
-                                <input type="number" step="0.5" id="prop-det-len" class="prop-input" value="${(obj.length || 0).toFixed(2)}">
-                            </div>`;
-                }
-
-                // --- SECTION: TRAFFIC DATA ---
-                content += `<div class="prop-section-header">Traffic Data</div>`;
-                content += `<div class="prop-row">
-                            <span class="prop-label">Observed Flow</span>
-                            <input type="number" id="prop-det-flow" class="prop-input" value="${obj.observedFlow || 0}" min="0">
-                        </div>`;
-                content += `<div class="prop-hint" style="margin-top:4px; font-size:0.7rem; padding:4px;">
-                            Unit: Vehicles per Hour (veh/h)
-                        </div>`;
-
-                // --- SECTION: SOURCE CONFIG ---
-                content += `<div class="prop-section-header">Source Configuration</div>`;
-
-                // Checkbox Row
-                content += `<div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; padding: 6px; background: #fff; border: 1px solid var(--border-light); border-radius: 4px;">
-                            <label for="prop-det-is-source" style="font-size:0.85rem; color:var(--text-main); font-weight:500; cursor:pointer;">
-                                Act as Flow Source
+                    <div class="prop-card">
+                        <div style="display:flex; align-items:center; justify-content:space-between;">
+                            <label for="prop-det-is-source" style="font-size:0.82rem; color:var(--text-main); font-weight:700; cursor:pointer;">
+                                <i class="fa-solid fa-circle-play" style="color:var(--success);"></i> 作為車流產生源 (Flow Source)
                             </label>
-                            <input type="checkbox" id="prop-det-is-source" ${obj.isSource ? 'checked' : ''} style="cursor:pointer;">
+                            <input type="checkbox" id="prop-det-is-source" ${obj.isSource ? 'checked' : ''} style="cursor:pointer; width:16px; height:16px;">
                         </div>`;
 
-                // Vehicle Mix List (Conditional)
                 if (obj.isSource) {
-                    // Ensure profiles exist
                     if (!network.vehicleProfiles) network.vehicleProfiles = {};
                     const profileOptions = Object.keys(network.vehicleProfiles);
-                    // --- [修改開始] 初始化 Car, Motor, Truck/Bus ---
                     if (profileOptions.length === 0) {
-                        network.vehicleProfiles['car'] = {
-                            id: 'car', length: 4.5, width: 1.8, maxSpeed: 16.67,
-                            maxAcceleration: 3.0, comfortDeceleration: 2.5, minDistance: 2.5, desiredHeadwayTime: 1.5
-                        };
-                        network.vehicleProfiles['motor'] = {
-                            id: 'motor', length: 2.0, width: 0.8, maxSpeed: 16.67,
-                            maxAcceleration: 3.5, comfortDeceleration: 3.0, minDistance: 1.0, desiredHeadwayTime: 0.8
-                        };
-                        network.vehicleProfiles['Truck/Bus'] = {
-                            id: 'Truck/Bus', length: 12.0, width: 2.6, maxSpeed: 16.67,
-                            maxAcceleration: 0.8, comfortDeceleration: 1.0, minDistance: 3.0, desiredHeadwayTime: 3.0
-                        };
+                        network.vehicleProfiles['car'] = { id: 'car', length: 4.5, width: 1.8, maxSpeed: 16.67, maxAcceleration: 3.0, comfortDeceleration: 2.5, minDistance: 2.5, desiredHeadwayTime: 1.5 };
+                        network.vehicleProfiles['motor'] = { id: 'motor', length: 2.0, width: 0.8, maxSpeed: 16.67, maxAcceleration: 3.5, comfortDeceleration: 3.0, minDistance: 1.0, desiredHeadwayTime: 0.8 };
+                        network.vehicleProfiles['Truck/Bus'] = { id: 'Truck/Bus', length: 12.0, width: 2.6, maxSpeed: 16.67, maxAcceleration: 0.8, comfortDeceleration: 1.0, minDistance: 3.0, desiredHeadwayTime: 3.0 };
                         profileOptions.push('car', 'motor', 'Truck/Bus');
                     }
-                    // --- [修改結束] ---
                     if (!obj.spawnProfiles) obj.spawnProfiles = [];
-                    if (obj.spawnProfileId) { // Compatibility migration
+                    if (obj.spawnProfileId) {
                         obj.spawnProfiles.push({ profileId: obj.spawnProfileId, weight: 1.0 });
                         delete obj.spawnProfileId;
                     }
                     if (obj.spawnProfiles.length === 0) {
-                        // [修正] 動態獲取目前存在的車種，避免寫死 'car' 導致模擬器找不到
-                        const availableProfiles = Object.keys(network.vehicleProfiles);
-                        const defaultProfId = availableProfiles.length > 0 ? availableProfiles[0] : 'car';
+                        const defaultProfId = profileOptions[0] || 'car';
                         obj.spawnProfiles.push({ profileId: defaultProfId, weight: 1.0 });
                     }
 
-                    content += `<label class="prop-label" style="margin-bottom:6px; display:block;">Vehicle Mix (Weighted)</label>`;
-                    content += `<div id="det-profiles-list">`;
-
+                    content += `<div style="border-top:1px solid var(--border-light); margin-top:8px; padding-top:8px;" id="det-profiles-list">`;
                     obj.spawnProfiles.forEach((entry, idx) => {
-                        const dropdownHtml = generateDropdown(`det-prof-sel-${idx}`, profileOptions, entry.profileId);
-                        // Inject class into generated dropdown
-                        const styledDropdown = dropdownHtml.replace('<select', '<select class="prop-select" style="padding:2px 4px; font-size:0.8rem;"');
-
+                        const dropdownHtml = generateDropdown(`det-prof-sel-${idx}`, profileOptions, entry.profileId)
+                            .replace('<select', '<select class="prop-select" style="padding:3px 6px; font-size:0.78rem; flex:1;"');
                         content += `
-                    <div class="prop-card">
-                        <div class="prop-card-row">
-                            <span class="prop-card-label">Type</span>
-                            <div style="flex:1; margin-left:8px;">${styledDropdown}</div>
-                        </div>
-                        <div class="prop-card-row">
-                            <div style="display:flex; align-items:center; gap:6px;">
-                                <span class="prop-card-label">Weight</span>
-                                <input type="number" step="0.1" class="det-prof-weight prop-card-input" data-index="${idx}" value="${entry.weight}">
-                            </div>
-                            <button class="det-prof-del-btn btn-mini btn-mini-danger" data-index="${idx}">
-                                <i class="fa-solid fa-trash-can"></i>
-                            </button>
-                        </div>
-                    </div>`;
+                            <div style="display:flex; align-items:center; gap:6px; margin-bottom:6px; background:#f8fafc; padding:4px 6px; border-radius:5px; border:1px solid var(--border-light);">
+                                ${dropdownHtml}
+                                <span style="font-size:0.7rem; color:#64748b;">權重</span>
+                                <input type="number" step="0.1" class="det-prof-weight prop-card-input" data-index="${idx}" value="${entry.weight}" style="width:48px;">
+                                <button class="det-prof-del-btn btn-mini btn-mini-danger" data-index="${idx}">
+                                    <i class="fa-solid fa-trash-can"></i>
+                                </button>
+                            </div>`;
                     });
-                    content += `</div>`; // End list
-
-                    // Add Buttons
-                    content += `<button id="btn-add-det-profile" class="btn-full">
-                                <i class="fa-solid fa-plus"></i> Add Vehicle Type
-                            </button>`;
-                    content += `<button id="btn-manage-profiles" class="btn-full" style="background:#f1f5f9; color:var(--text-muted); border-style:solid; margin-top:8px;">
-                                <i class="fa-solid fa-gear"></i> Manage Definitions
-                            </button>`;
+                    content += `</div>`;
+                    content += `
+                        <div style="display:flex; gap:6px; margin-top:6px;">
+                            <button id="btn-add-det-profile" class="btn-soft" style="flex:1;"><i class="fa-solid fa-plus"></i> 新增車種</button>
+                            <button id="btn-manage-profiles" class="btn-soft" style="flex:1;"><i class="fa-solid fa-gear"></i> 車種參數</button>
+                        </div>`;
                 }
-
-                // --- [新增] SECTION: ACTIONS ---
-                content += `<div class="prop-section-header">Actions</div>`;
-                content += `<button id="btn-delete-detector" class="btn-danger-outline">
-                            <i class="fa-solid fa-trash-can"></i> Delete Detector
-                        </button>`;
+                content += `</div>`;
                 break;
+            }
 
-            case 'RoadSign':
-                // --- SECTION: GENERAL ---
-                content += `<div class="prop-section-header">General</div>`;
+            // =============================================================
+            // CASE: ROAD SIGN (速限標誌 / 交通錐)
+            // =============================================================
+            case 'RoadSign': {
+                content += `
+                    <div class="prop-stat-grid" style="margin-bottom:8px;">
+                        <div class="prop-stat-box">
+                            <span class="prop-stat-label">Parent Link</span>
+                            <span class="prop-stat-value">${obj.linkId}</span>
+                        </div>
+                        <div class="prop-stat-box">
+                            <span class="prop-stat-label">Position</span>
+                            <span class="prop-stat-value">${obj.position.toFixed(1)}m</span>
+                        </div>
+                    </div>
 
-                content += `<div class="prop-row">
-                            <span class="prop-label">ID</span>
-                            <input type="text" class="prop-input" value="${obj.id}" disabled>
-                        </div>`;
-                content += `<div class="prop-row">
-                            <span class="prop-label">Parent Link</span>
-                            <input type="text" class="prop-input" value="${obj.linkId}" disabled>
-                        </div>`;
-
-                // --- SECTION: CONFIGURATION ---
-                content += `<div class="prop-section-header">Configuration</div>`;
-
-                content += `<div class="prop-row">
+                    <div class="prop-card">
+                        <div class="prop-row">
                             <span class="prop-label">Element Type</span>
                             <select id="prop-sign-type" class="prop-select">
                                 <option value="start" ${obj.signType === 'start' ? 'selected' : ''}>Speed Limit Start</option>
                                 <option value="end" ${obj.signType === 'end' ? 'selected' : ''}>Speed Limit End</option>
-                                <option value="traffic_cone" ${obj.signType === 'traffic_cone' ? 'selected' : ''}>Traffic Cone (0.4m Box)</option>
+                                <option value="traffic_cone" ${obj.signType === 'traffic_cone' ? 'selected' : ''}>Traffic Cone (交通錐)</option>
                             </select>
-                        </div>`;
-
-                const limitDisplay = (obj.signType === 'start') ? 'flex' : 'none';
-                content += `<div class="prop-row" id="prop-speed-limit-row" style="display: ${limitDisplay};">
+                        </div>
+                        <div class="prop-row" id="prop-speed-limit-row" style="display: ${obj.signType === 'start' ? 'flex' : 'none'};">
                             <span class="prop-label">Limit (km/h)</span>
-                            <input type="number" id="prop-speed-limit" class="prop-input" value="${obj.speedLimit}" min="0">
-                        </div>`;
-
-                const coneDisplay = (obj.signType === 'traffic_cone') ? 'flex' : 'none';
-                content += `<div class="prop-row" id="prop-cone-offset-row" style="display: ${coneDisplay};">
+                            <input type="number" id="prop-speed-limit" class="prop-input" value="${obj.speedLimit}" min="0" style="max-width:90px;">
+                        </div>
+                        <div class="prop-row" id="prop-cone-offset-row" style="display: ${obj.signType === 'traffic_cone' ? 'flex' : 'none'};">
                             <span class="prop-label">Lateral Offset (m)</span>
-                            <input type="number" step="0.1" id="prop-cone-offset" class="prop-input" value="${(obj.lateralOffset || 0).toFixed(2)}">
-                        </div>`;
-
-                content += `<div class="prop-row">
+                            <input type="number" step="0.1" id="prop-cone-offset" class="prop-input" value="${(obj.lateralOffset || 0).toFixed(2)}" style="max-width:90px;">
+                        </div>
+                        <div class="prop-row" style="margin-bottom:0;">
                             <span class="prop-label">Position (m)</span>
-                            <input type="number" step="0.1" id="prop-sign-pos" class="prop-input" value="${obj.position.toFixed(2)}">
-                        </div>`;
-
-                // --- SECTION: ACTIONS ---
-                content += `<div class="prop-section-header">Actions</div>`;
-                content += `<button id="btn-delete-sign" class="btn-danger-outline">
-                            <i class="fa-solid fa-trash-can"></i> Delete Element
-                        </button>`;
+                            <input type="number" step="0.1" id="prop-sign-pos" class="prop-input" value="${obj.position.toFixed(2)}" style="max-width:90px;">
+                        </div>
+                    </div>`;
                 break;
-            case 'Connection':
-                // --- SECTION: GENERAL ---
-                content += `<div class="prop-section-header">General</div>`;
-                content += `<div class="prop-row">
-                            <span class="prop-label">ID</span>
-                            <input type="text" class="prop-input" value="${obj.id}" disabled>
-                        </div>`;
+            }
 
-                // --- SECTION: TOPOLOGY ---
-                content += `<div class="prop-section-header">Topology</div>`;
-
-                // Source
-                content += `<div class="prop-row">
-                            <span class="prop-label">From Link</span>
-                            <input type="text" class="prop-input" value="${obj.sourceLinkId}" disabled>
-                        </div>`;
-                content += `<div class="prop-row">
-                            <span class="prop-label">From Lane</span>
-                            <input type="text" class="prop-input" value="L${obj.sourceLaneIndex + 1}" disabled>
-                        </div>`;
-
-                // Destination
-                content += `<div class="prop-row" style="margin-top:8px;">
-                            <span class="prop-label">To Link</span>
-                            <input type="text" class="prop-input" value="${obj.destLinkId}" disabled>
-                        </div>`;
-                content += `<div class="prop-row">
-                            <span class="prop-label">To Lane</span>
-                            <input type="text" class="prop-input" value="L${obj.destLaneIndex + 1}" disabled>
-                        </div>`;
-
-                // Via Node
-                content += `<div class="prop-row" style="margin-top:8px;">
-                            <span class="prop-label">Via Node</span>
-                            <input type="text" class="prop-input" value="${obj.nodeId}" disabled>
-                        </div>`;
-
-                // --- SECTION: ACTIONS ---
-                content += `<div class="prop-section-header">Actions</div>`;
-                content += `<button id="prop-conn-delete-btn" class="btn-danger-outline">
-                            <i class="fa-solid fa-trash-can"></i> Delete Connection
-                        </button>`;
+            // =============================================================
+            // CASE: CONNECTION & CONNECTION GROUP (車道連線與群組)
+            // =============================================================
+            case 'Connection': {
+                content += `
+                    <div class="prop-stat-grid cols-3">
+                        <div class="prop-stat-box">
+                            <span class="prop-stat-label">From</span>
+                            <span class="prop-stat-value">${obj.sourceLinkId} <small style="color:var(--primary);">L${obj.sourceLaneIndex + 1}</small></span>
+                        </div>
+                        <div class="prop-stat-box">
+                            <span class="prop-stat-label">To</span>
+                            <span class="prop-stat-value">${obj.destLinkId} <small style="color:var(--primary);">L${obj.destLaneIndex + 1}</small></span>
+                        </div>
+                        <div class="prop-stat-box">
+                            <span class="prop-stat-label">Via Node</span>
+                            <span class="prop-stat-value">${obj.nodeId}</span>
+                        </div>
+                    </div>`;
                 break;
+            }
 
-            case 'ConnectionGroup':
-                // --- SECTION: GROUP INFO ---
-                content += `<div class="prop-section-header">Group Info</div>`;
-
-                content += `<div class="prop-row">
-                            <span class="prop-label">From Link</span>
-                            <input type="text" class="prop-input" value="${obj.sourceLinkId}" disabled>
-                        </div>`;
-                content += `<div class="prop-row">
-                            <span class="prop-label">To Link</span>
-                            <input type="text" class="prop-input" value="${obj.destLinkId}" disabled>
-                        </div>`;
-                content += `<div class="prop-row">
-                            <span class="prop-label">Via Node</span>
-                            <input type="text" class="prop-input" value="${obj.nodeId}" disabled>
-                        </div>`;
-
-                content += `<div class="prop-row">
-                            <span class="prop-label">Total Connections</span>
-                            <span class="prop-value-text" style="font-weight:bold; color:var(--primary);">${obj.connectionIds.length}</span>
-                        </div>`;
-
-                // --- SECTION: ACTIONS ---
-                content += `<div class="prop-section-header">Management</div>`;
-                content += `<div class="btn-group-row">
-                            <button id="edit-group-btn" class="btn-action">
-                                <i class="fa-solid fa-pen-to-square"></i> Edit
-                            </button>
-                            <button id="delete-group-btn" class="btn-action" style="color:#ef4444; border-color:#fecaca;">
-                                <i class="fa-solid fa-trash-can"></i> Delete
-                            </button>
-                        </div>`;
+            case 'ConnectionGroup': {
+                content += `
+                    <div class="prop-stat-grid">
+                        <div class="prop-stat-box">
+                            <span class="prop-stat-label">From Link</span>
+                            <span class="prop-stat-value">${obj.sourceLinkId}</span>
+                        </div>
+                        <div class="prop-stat-box">
+                            <span class="prop-stat-label">To Link</span>
+                            <span class="prop-stat-value">${obj.destLinkId}</span>
+                        </div>
+                        <div class="prop-stat-box">
+                            <span class="prop-stat-label">Via Node</span>
+                            <span class="prop-stat-value">${obj.nodeId}</span>
+                        </div>
+                        <div class="prop-stat-box">
+                            <span class="prop-stat-label">Connected Lanes</span>
+                            <span class="prop-stat-value" style="color:var(--primary);">${obj.connectionIds.length} 條</span>
+                        </div>
+                    </div>
+                    <button id="edit-group-btn" class="btn-soft" style="margin-top:8px;">
+                        <i class="fa-solid fa-pen-to-square"></i> 調整車道對應範圍 (Edit Range)
+                    </button>`;
                 break;
+            }
 
-            case 'Origin':
-                // --- SECTION: GENERAL ---
-                content += `<div class="prop-section-header">General</div>`;
-                content += `<div class="prop-row">
-                            <span class="prop-label">ID</span>
-                            <input type="text" class="prop-input" value="${obj.id}" disabled>
-                        </div>`;
-                content += `<div class="prop-row">
-                            <span class="prop-label">Parent Link</span>
-                            <input type="text" class="prop-input" value="${obj.linkId}" disabled>
-                        </div>`;
-
-                // --- SECTION: GENERATION ---
-                content += `<div class="prop-section-header">Traffic Generation</div>`;
-
-                content += `<button id="configure-spawner-btn" class="btn-action" style="width:100%; justify-content:center; gap:6px;">
-                            <i class="fa-solid fa-clock"></i> Configure Schedule
-                        </button>`;
-
-                content += `<div class="prop-hint">
-                            <i class="fa-solid fa-circle-info"></i> 
-                            Defines time-based vehicle spawn rates and destinations (OD Mode).
-                        </div>`;
+            // =============================================================
+            // CASE: ORIGIN & DESTINATION (起點與迄點)
+            // =============================================================
+            case 'Origin': {
+                content += `
+                    <div class="prop-stat-grid" style="margin-bottom:8px;">
+                        <div class="prop-stat-box">
+                            <span class="prop-stat-label">Parent Link</span>
+                            <span class="prop-stat-value">${obj.linkId}</span>
+                        </div>
+                        <div class="prop-stat-box">
+                            <span class="prop-stat-label">Time Periods</span>
+                            <span class="prop-stat-value">${(obj.periods || []).length} 段</span>
+                        </div>
+                    </div>
+                    <button id="configure-spawner-btn" class="btn-primary" style="width:100%;">
+                        <i class="fa-solid fa-clock"></i> Configure Spawner Schedule
+                    </button>
+                    <div class="prop-hint">設定依時段變化的發車量、車種比例與目的地權重 (OD Mode)。</div>`;
                 break;
+            }
 
-            case 'Destination':
-                // --- SECTION: GENERAL ---
-                content += `<div class="prop-section-header">General</div>`;
-                content += `<div class="prop-row">
-                            <span class="prop-label">ID</span>
-                            <input type="text" class="prop-input" value="${obj.id}" disabled>
-                        </div>`;
-                content += `<div class="prop-row">
-                            <span class="prop-label">Parent Link</span>
-                            <input type="text" class="prop-input" value="${obj.linkId}" disabled>
-                        </div>`;
-                content += `<div class="prop-hint">
-                            Vehicles reaching this point will be removed from the simulation.
-                        </div>`;
+            case 'Destination': {
+                content += `
+                    <div class="prop-stat-grid">
+                        <div class="prop-stat-box">
+                            <span class="prop-stat-label">Parent Link</span>
+                            <span class="prop-stat-value">${obj.linkId}</span>
+                        </div>
+                        <div class="prop-stat-box">
+                            <span class="prop-stat-label">Role</span>
+                            <span class="prop-stat-value">車流吸收迄點</span>
+                        </div>
+                    </div>`;
                 break;
+            }
 
-            case 'Background':
-                // [新增] 如果當前工具是 add-background，給予返回清單的按鈕
+            // =============================================================
+            // CASE: BACKGROUND (背景底圖)
+            // =============================================================
+            case 'Background': {
                 if (activeTool === 'add-background') {
-                    content += `<button id="btn-bg-back-list" class="btn-action" style="width:100%; margin-bottom:12px; background:#f1f5f9; color:var(--text-main); border:1px solid #cbd5e1;">
-                                <i class="fa-solid fa-arrow-left"></i> Back to Layer List
-                            </button>`;
+                    content += `
+                        <button id="btn-bg-back-list" class="btn-soft">
+                            <i class="fa-solid fa-arrow-left"></i> Back to Layer List
+                        </button>`;
                 }
+                content += `
+                    <div class="prop-stat-grid cols-3">
+                        <div class="prop-stat-box">
+                            <span class="prop-stat-label">Width</span>
+                            <span class="prop-stat-value">${obj.width.toFixed(0)}px</span>
+                        </div>
+                        <div class="prop-stat-box">
+                            <span class="prop-stat-label">Height</span>
+                            <span class="prop-stat-value">${obj.height.toFixed(0)}px</span>
+                        </div>
+                        <div class="prop-stat-box">
+                            <span class="prop-stat-label">Format</span>
+                            <span class="prop-stat-value">${obj.imageType || 'IMG'}</span>
+                        </div>
+                    </div>
 
-                //[新增] General 區塊包含名稱編輯，方便在清單中識別
-                content += `<div class="prop-section-header">General</div>`;
-                content += `<div class="prop-row">
+                    <div class="prop-card">
+                        <div class="prop-row">
                             <span class="prop-label">Name</span>
                             <input type="text" id="prop-bg-name" class="prop-input" value="${obj.name || obj.id}">
-                        </div>`;
-
-                content += `<div class="prop-section-header">Image Source</div>`;
-                content += `<button id="prop-bg-file-btn" class="btn-action" style="width:100%; justify-content:center; gap:6px;">
-                            <i class="fa-regular fa-folder-open"></i> Replace Image...
-                        </button>`;
-                content += `<input type="file" id="prop-bg-file-input" style="display: none;" accept="image/*">`;
-                if (obj.imageType) {
-                    content += `<div class="prop-row" style="margin-top:8px;">
-                                <span class="prop-label">Format</span>
-                                <input type="text" class="prop-input" value="${obj.imageType}" disabled>
-                            </div>`;
-                }
-
-                content += `<div class="prop-section-header">State & Appearance</div>`;
-
-                content += `<div class="prop-row">
+                        </div>
+                        <div class="prop-row">
                             <span class="prop-label"><i class="fa-solid fa-lock"></i> Locked</span>
-                            <input type="checkbox" id="prop-bg-locked" ${obj.locked ? 'checked' : ''} style="cursor:pointer;">
-                        </div>`;
-
-                content += `<div class="prop-row">
+                            <input type="checkbox" id="prop-bg-locked" ${obj.locked ? 'checked' : ''} style="cursor:pointer; width:16px; height:16px;">
+                        </div>
+                        <div class="prop-row">
                             <span class="prop-label">Opacity (%)</span>
-                            <input type="number" id="prop-bg-opacity" class="prop-input" value="${obj.opacity}" min="0" max="100" step="10">
-                        </div>`;
-                content += `<div class="prop-row">
+                            <input type="number" id="prop-bg-opacity" class="prop-input" value="${obj.opacity}" min="0" max="100" step="10" style="max-width:90px;">
+                        </div>
+                        <div class="prop-row" style="margin-bottom:0;">
                             <span class="prop-label">Scale</span>
-                            <input type="number" id="prop-bg-scale" class="prop-input" value="${obj.scale.toFixed(2)}" min="0.01" step="0.01">
-                        </div>`;
+                            <input type="number" id="prop-bg-scale" class="prop-input" value="${obj.scale.toFixed(2)}" min="0.01" step="0.01" style="max-width:90px;">
+                        </div>
+                    </div>
 
-                content += `<div class="prop-section-header">Dimensions (px)</div>`;
-                content += `<div class="prop-row"><span class="prop-label">Width</span><input type="text" class="prop-input" value="${(obj.width).toFixed(0)}" disabled></div>`;
-                content += `<div class="prop-row"><span class="prop-label">Height</span><input type="text" class="prop-input" value="${(obj.height).toFixed(0)}" disabled></div>`;
-
-                content += `<div class="prop-section-header">Actions</div>`;
-                content += `<button id="btn-delete-bg" class="btn-danger-outline">
-                            <i class="fa-solid fa-trash-can"></i> Delete Background
-                        </button>`;
+                    <button id="prop-bg-file-btn" class="btn-soft">
+                        <i class="fa-regular fa-folder-open"></i> Replace Image...
+                    </button>
+                    <input type="file" id="prop-bg-file-input" style="display: none;" accept="image/*">`;
                 break;
+            }
 
-            case 'Overpass':
+            // =============================================================
+            // CASE: OVERPASS (立體交叉)
+            // =============================================================
+            case 'Overpass': {
                 const bottomLinkId = obj.linkId1 === obj.topLinkId ? obj.linkId2 : obj.linkId1;
-                content += `<div class="prop-group">
-                        <label>Top Layer</label>
-                        <p style="font-weight: bold;">${obj.topLinkId}</p>
-                    </div>`;
-                content += `<div class="prop-group">
-                        <label>Bottom Layer</label>
-                        <p>${bottomLinkId}</p>
-                    </div>`;
-                content += `<button id="swap-overpass-btn" class="tool-btn">Swap Layer Order</button>`;
-
-                // [新增] 快速建立路口按鈕
-                content += `<div class="prop-section-header" style="margin-top:16px;">Tools</div>`;
-                content += `<button id="btn-overpass-to-intersection" class="btn-action" style="width:100%; background-color:#10b981;">
-                                <i class="fa-solid fa-network-wired"></i> Create Intersection (Point)
-                            </button>`;
-                content += `<div class="prop-hint" style="margin-top:6px;">
-                                <i class="fa-solid fa-info-circle"></i> Convert this overpass into an intersection (Snap to center).
-                            </div>`;
+                content += `
+                    <div class="prop-stat-grid">
+                        <div class="prop-stat-box">
+                            <span class="prop-stat-label">Top Layer (高架)</span>
+                            <span class="prop-stat-value" style="color:var(--primary);">${obj.topLinkId}</span>
+                        </div>
+                        <div class="prop-stat-box">
+                            <span class="prop-stat-label">Bottom Layer (平面)</span>
+                            <span class="prop-stat-value">${bottomLinkId}</span>
+                        </div>
+                    </div>
+                    <button id="swap-overpass-btn" class="btn-soft">
+                        <i class="fa-solid fa-retweet"></i> Swap Layer Order (上下對調)
+                    </button>
+                    <button id="btn-overpass-to-intersection" class="btn-primary" style="width:100%;">
+                        <i class="fa-solid fa-network-wired"></i> 轉為平面交叉路口 (Create Intersection)
+                    </button>`;
                 break;
+            }
 
-            case 'Pushpin':
-                // --- SECTION: CANVAS COORDINATES ---
-                content += `<div class="prop-section-header">Canvas Position</div>`;
-
-                content += `<div class="prop-row">
-                            <span class="prop-label">X</span>
-                            <input type="number" class="prop-input" value="${obj.x.toFixed(2)}" disabled>
-                        </div>`;
-                content += `<div class="prop-row">
-                            <span class="prop-label">Y</span>
-                            <input type="number" class="prop-input" value="${obj.y.toFixed(2)}" disabled>
-                        </div>`;
-
-                // --- SECTION: GEO REFERENCE ---
-                content += `<div class="prop-section-header">Geo Reference</div>`;
-
-                // 使用 border-left 色條來區分 Lat/Lon
-                content += `<div class="prop-row" style="border-left: 3px solid #ef4444; padding-left: 8px;">
+            // =============================================================
+            // CASE: PUSHPIN (地理座標圖釘)
+            // =============================================================
+            case 'Pushpin': {
+                content += `
+                    <div class="prop-stat-grid">
+                        <div class="prop-stat-box">
+                            <span class="prop-stat-label">Canvas X</span>
+                            <span class="prop-stat-value">${obj.x.toFixed(2)}</span>
+                        </div>
+                        <div class="prop-stat-box">
+                            <span class="prop-stat-label">Canvas Y</span>
+                            <span class="prop-stat-value">${obj.y.toFixed(2)}</span>
+                        </div>
+                    </div>
+                    <div class="prop-card">
+                        <div class="prop-section-header" style="margin-top:0;">Geo Reference (WGS84)</div>
+                        <div class="prop-row" style="border-left:3px solid #ef4444; padding-left:8px;">
                             <span class="prop-label">Latitude</span>
                             <input type="number" id="prop-pin-lat" class="prop-input" value="${obj.lat}" step="0.000001">
-                        </div>`;
-
-                content += `<div class="prop-row" style="border-left: 3px solid #3b82f6; padding-left: 8px;">
+                        </div>
+                        <div class="prop-row" style="border-left:3px solid #3b82f6; padding-left:8px; margin-bottom:0;">
                             <span class="prop-label">Longitude</span>
                             <input type="number" id="prop-pin-lon" class="prop-input" value="${obj.lon}" step="0.000001">
-                        </div>`;
-
-                content += `<div class="prop-hint">
-                            <i class="fa-solid fa-map-pin"></i> 
-                            Used to align the simulation grid with real-world map coordinates (Max 2 pins).
-                        </div>`;
-
-                // --- SECTION: ACTIONS ---
-                content += `<div class="prop-section-header">Actions</div>`;
-                content += `<button id="btn-delete-pin" class="btn-danger-outline">
-                            <i class="fa-solid fa-trash-can"></i> Delete Pin
-                        </button>`;
+                        </div>
+                    </div>`;
                 break;
+            }
 
-            case 'ParkingLot':
-                // --- SECTION: GENERAL ---
-                content += `<div class="prop-section-header">General</div>`;
-
-                content += `<div class="prop-row">
+            // =============================================================
+            // CASE: PARKING LOT & GATE (停車場與出入口)
+            // =============================================================
+            case 'ParkingLot': {
+                content += `
+                    <div class="prop-card">
+                        <div class="prop-row">
                             <span class="prop-label">Name</span>
                             <input type="text" id="prop-pl-name" class="prop-input" value="${obj.name}">
-                        </div>`;
-                content += `<div class="prop-row">
-                            <span class="prop-label">ID</span>
-                            <input type="text" class="prop-input" value="${obj.id}" disabled>
-                        </div>`;
-
-                // --- SECTION: CAPACITY ---
-                content += `<div class="prop-section-header">Capacity</div>`;
-
-                content += `<div class="prop-row">
-                            <span class="prop-label"><i class="fa-solid fa-car"></i> Cars</span>
-                            <input type="number" id="prop-pl-car" class="prop-input" value="${obj.carCapacity}" min="0">
-                        </div>`;
-                content += `<div class="prop-row">
-                            <span class="prop-label"><i class="fa-solid fa-motorcycle"></i> Motos</span>
-                            <input type="number" id="prop-pl-moto" class="prop-input" value="${obj.motoCapacity}" min="0">
-                        </div>`;
-
-                // --- SECTION: SIMULATION ---
-                content += `<div class="prop-section-header">Simulation Behavior</div>`;
-
-                content += `<div class="prop-row">
+                        </div>
+                        <div class="prop-row">
+                            <span class="prop-label"><i class="fa-solid fa-car"></i> Cars Capacity</span>
+                            <input type="number" id="prop-pl-car" class="prop-input" value="${obj.carCapacity}" min="0" style="max-width:90px;">
+                        </div>
+                        <div class="prop-row">
+                            <span class="prop-label"><i class="fa-solid fa-motorcycle"></i> Motos Capacity</span>
+                            <input type="number" id="prop-pl-moto" class="prop-input" value="${obj.motoCapacity}" min="0" style="max-width:90px;">
+                        </div>
+                        <div class="prop-row">
                             <span class="prop-label">Attraction (%)</span>
-                            <input type="number" id="prop-pl-attr" class="prop-input" value="${obj.attractionProb || 0}" min="0" max="100" step="1">
-                        </div>`;
-
-                content += `<div class="prop-row">
+                            <input type="number" id="prop-pl-attr" class="prop-input" value="${obj.attractionProb || 0}" min="0" max="100" step="1" style="max-width:90px;">
+                        </div>
+                        <div class="prop-row" style="margin-bottom:0;">
                             <span class="prop-label">Stay Duration (min)</span>
-                            <input type="number" id="prop-pl-duration" class="prop-input" value="${obj.stayDuration || 0}" min="0" step="1">
-                        </div>`;
-
-                content += `<div class="prop-hint">
-                            <i class="fa-solid fa-circle-info"></i> 
-                            Double-click on canvas to finish drawing polygon.
-                        </div>`;
-
-                // --- SECTION: ACTIONS ---
-                content += `<div class="prop-section-header">Actions</div>`;
-                content += `<button id="btn-delete-pl" class="btn-danger-outline">
-                            <i class="fa-solid fa-trash-can"></i> Delete Parking Lot
-                        </button>`;
+                            <input type="number" id="prop-pl-duration" class="prop-input" value="${obj.stayDuration || 0}" min="0" step="1" style="max-width:90px;">
+                        </div>
+                    </div>`;
                 break;
+            }
 
+            case 'ParkingGate': {
+                const linkedPl = obj.parkingLotId ? network.parkingLots[obj.parkingLotId] : null;
+                content += `
+                    <div class="prop-status-indicator ${linkedPl ? 'success' : 'error'}" style="margin-bottom:0;">
+                        <i class="fa-solid ${linkedPl ? 'fa-link' : 'fa-link-slash'}"></i>
+                        <div>
+                            <div style="font-weight:700;">${linkedPl ? `Linked: ${linkedPl.name}` : 'Not Linked'}</div>
+                            <div style="font-size:0.72rem; opacity:0.85;">${linkedPl ? `Width: ${obj.width.toFixed(1)}m` : '請將出入口拖曳至停車場邊界上'}</div>
+                        </div>
+                    </div>
+                    <div class="prop-card">
+                        <div class="prop-row">
+                            <span class="prop-label">Gate Type</span>
+                            <select id="prop-gate-type" class="prop-select">
+                                <option value="entry" ${obj.gateType === 'entry' ? 'selected' : ''}>Entry Only (入口)</option>
+                                <option value="exit" ${obj.gateType === 'exit' ? 'selected' : ''}>Exit Only (出口)</option>
+                                <option value="bidirectional" ${obj.gateType === 'bidirectional' ? 'selected' : ''}>Bi-directional (雙向)</option>
+                            </select>
+                        </div>
+                        <div class="prop-row" style="margin-bottom:0;">
+                            <span class="prop-label">Rotation (deg)</span>
+                            <input type="number" id="prop-gate-rotation" class="prop-input" value="${(obj.rotation || 0).toFixed(1)}" style="max-width:90px;">
+                        </div>
+                    </div>`;
+                break;
+            }
+
+            // =============================================================
+            // CASE: ZONE (土地使用分區 - 2x2 儀表板 + 手風琴)
+            // =============================================================
             case 'Zone': {
                 const _t = (key) => (window.I18N && window.I18N.t ? window.I18N.t(key) : key);
                 const polygon = obj.konvaGroup.findOne('.zone-shape');
@@ -9281,23 +9293,39 @@ document.addEventListener('DOMContentLoaded', () => {
                 const effPop = (!isAuto && obj.customPop !== null && obj.customPop !== undefined && !isNaN(obj.customPop)) ? obj.customPop : autoPop;
                 const effEmp = (!isAuto && obj.customEmp !== null && obj.customEmp !== undefined && !isNaN(obj.customEmp)) ? obj.customEmp : autoEmp;
                 const trips = estimatePeakTrips(obj.zoneType, effPop, effEmp, gfa);
+                const curCfg = ZONE_CONFIGS[obj.zoneType] || ZONE_CONFIGS['R1'];
 
-                // --- SECTION: GENERAL ---
-                content += `<div class="prop-section-header">${_t('General')}</div>`;
-                content += `<div class="prop-row">
+                // (A) 頂部 2x2 建築量體儀表板
+                content += `
+                    <div class="prop-stat-grid">
+                        <div class="prop-stat-box">
+                            <span class="prop-stat-label">${_t('Site Area')}</span>
+                            <span id="prop-zone-site-area" class="prop-stat-value">${siteArea.toLocaleString(undefined, { maximumFractionDigits: 0 })} m²</span>
+                        </div>
+                        <div class="prop-stat-box">
+                            <span class="prop-stat-label">${_t('Footprint Area')}</span>
+                            <span id="prop-zone-footprint" class="prop-stat-value">${footprint.toLocaleString(undefined, { maximumFractionDigits: 0 })} m²</span>
+                        </div>
+                        <div class="prop-stat-box">
+                            <span class="prop-stat-label">${_t('Gross Floor Area (GFA)')}</span>
+                            <span id="prop-zone-gfa" class="prop-stat-value" style="color:var(--primary);">${gfa.toLocaleString(undefined, { maximumFractionDigits: 0 })} m²</span>
+                        </div>
+                        <div class="prop-stat-box">
+                            <span class="prop-stat-label">${_t('Equivalent Floors')}</span>
+                            <span id="prop-zone-floors" class="prop-stat-value" style="color:#d97706;">${floors} F</span>
+                        </div>
+                    </div>`;
+
+                // (B) 分區類別與建蔽率/容積率卡片
+                content += `
+                    <div class="prop-card" style="margin-bottom:0;">
+                        <div class="prop-row">
                             <span class="prop-label">${_t('Name')}</span>
                             <input type="text" id="prop-zone-name" class="prop-input" value="${obj.name || ''}">
-                        </div>`;
-                content += `<div class="prop-row">
-                            <span class="prop-label">ID</span>
-                            <input type="text" class="prop-input" value="${obj.id}" disabled>
-                        </div>`;
-
-                // --- SECTION: ZONING CLASSIFICATION ---
-                content += `<div class="prop-section-header">${_t('Zoning Classification')}</div>`;
-                content += `<div class="prop-row">
+                        </div>
+                        <div class="prop-row">
                             <span class="prop-label">${_t('Zoning Type')}</span>
-                            <select id="prop-zone-type" class="prop-input" style="flex:1.5;">
+                            <select id="prop-zone-type" class="prop-select">
                                 <option value="R1" ${obj.zoneType === 'R1' ? 'selected' : ''}>${_t('R1 - Low-Density Residential')}</option>
                                 <option value="R2" ${obj.zoneType === 'R2' ? 'selected' : ''}>${_t('R2 - Medium-Density Residential')}</option>
                                 <option value="R3" ${obj.zoneType === 'R3' ? 'selected' : ''}>${_t('R3 - High-Density Residential')}</option>
@@ -9309,412 +9337,293 @@ document.addEventListener('DOMContentLoaded', () => {
                                 <option value="G2" ${obj.zoneType === 'G2' ? 'selected' : ''}>${_t('G2 - Government / Hospital')}</option>
                                 <option value="P" ${obj.zoneType === 'P' ? 'selected' : ''}>${_t('P - Park / Green Space')}</option>
                             </select>
-                        </div>`;
-
-                const curCfg = ZONE_CONFIGS[obj.zoneType] || ZONE_CONFIGS['R1'];
-                content += `<div class="prop-hint" style="margin-top: 4px; margin-bottom: 8px;">
+                        </div>
+                        <div style="font-size:0.72rem; color:var(--text-muted); background:#f8fafc; padding:5px 8px; border-radius:4px; margin-bottom:8px;">
                             <i class="fa-solid fa-circle-info"></i> ${curCfg.desc || ''}
-                        </div>`;
-
-                // --- SECTION: REGULATIONS (BCR & FAR) ---
-                content += `<div class="prop-section-header">${_t('Regulations')}</div>`;
-                content += `<div class="prop-row">
-                            <span class="prop-label">${_t('Building Coverage Ratio (BCR)')}</span>
-                            <div style="display:flex; align-items:center; gap:6px; flex:1.2;">
+                        </div>
+                        <div class="prop-row">
+                            <span class="prop-label" title="${_t('Building Coverage Ratio (BCR)')}">建蔽率 BCR</span>
+                            <div style="display:flex; align-items:center; gap:6px; flex:1;">
                                 <input type="range" id="prop-zone-bcr-slider" min="5" max="100" step="1" value="${Math.round(bcr * 100)}" style="flex:1; cursor:pointer;">
-                                <input type="number" id="prop-zone-bcr" class="prop-input" min="5" max="100" step="1" value="${Math.round(bcr * 100)}" style="width:50px; text-align:right;">
-                                <span style="font-size:0.8rem; color:#6b7280;">%</span>
+                                <input type="number" id="prop-zone-bcr" class="prop-input" min="5" max="100" step="1" value="${Math.round(bcr * 100)}" style="width:48px; padding:3px 4px;">
+                                <span style="font-size:0.75rem; color:#6b7280;">%</span>
                             </div>
-                        </div>`;
-
-                content += `<div class="prop-row">
-                            <span class="prop-label">${_t('Floor Area Ratio (FAR)')}</span>
-                            <div style="display:flex; align-items:center; gap:6px; flex:1.2;">
+                        </div>
+                        <div class="prop-row" style="margin-bottom:0;">
+                            <span class="prop-label" title="${_t('Floor Area Ratio (FAR)')}">容積率 FAR</span>
+                            <div style="display:flex; align-items:center; gap:6px; flex:1;">
                                 <input type="range" id="prop-zone-far-slider" min="10" max="2500" step="5" value="${Math.round(far * 100)}" style="flex:1; cursor:pointer;">
-                                <input type="number" id="prop-zone-far" class="prop-input" min="10" max="2500" step="5" value="${Math.round(far * 100)}" style="width:55px; text-align:right;">
-                                <span style="font-size:0.8rem; color:#6b7280;">%</span>
+                                <input type="number" id="prop-zone-far" class="prop-input" min="10" max="2500" step="5" value="${Math.round(far * 100)}" style="width:54px; padding:3px 4px;">
+                                <span style="font-size:0.75rem; color:#6b7280;">%</span>
                             </div>
-                        </div>`;
+                        </div>
+                    </div>`;
 
-                // --- SECTION: GEOMETRY & MASSING INDICATORS ---
-                content += `<div class="prop-section-header">${_t('Site Area')} & ${_t('Gross Floor Area (GFA)')}</div>`;
-                content += `<div class="prop-row">
-                            <span class="prop-label">${_t('Site Area')}</span>
-                            <span id="prop-zone-site-area" style="font-weight:600; color:#1f2937;">${siteArea.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} m²</span>
-                        </div>`;
-                content += `<div class="prop-row">
-                            <span class="prop-label">${_t('Footprint Area')}</span>
-                            <span id="prop-zone-footprint" style="font-weight:600; color:#1f2937;">${footprint.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} m²</span>
-                        </div>`;
-                content += `<div class="prop-row">
-                            <span class="prop-label">${_t('Gross Floor Area (GFA)')}</span>
-                            <span id="prop-zone-gfa" style="font-weight:600; color:#2563eb;">${gfa.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} m²</span>
-                        </div>`;
-                content += `<div class="prop-row">
-                            <span class="prop-label">${_t('Equivalent Floors')}</span>
-                            <span id="prop-zone-floors" style="font-weight:bold; color:#d97706;">${floors} F</span>
-                        </div>`;
-
-                // --- SECTION: DEMANDS ESTIMATION ---
-                content += `<div class="prop-section-header">${_t('Demands Estimation')}</div>`;
-                content += `<div class="prop-row">
-                            <label style="display:flex; align-items:center; gap:8px; cursor:pointer; width:100%;">
-                                <input type="checkbox" id="prop-zone-autocalc" ${isAuto ? 'checked' : ''}>
-                                <span class="prop-label" style="flex:1;">${_t('Auto Calculate Demands')}</span>
-                            </label>
-                        </div>`;
-
-                content += `<div class="prop-row">
-                            <span class="prop-label">${_t('Estimated Population')}</span>
-                            <input type="number" id="prop-zone-pop" class="prop-input" value="${effPop}" min="0" ${isAuto ? 'disabled' : ''}>
-                        </div>`;
-
-                content += `<div class="prop-row">
-                            <span class="prop-label">${_t('Estimated Employment')}</span>
-                            <input type="number" id="prop-zone-emp" class="prop-input" value="${effEmp}" min="0" ${isAuto ? 'disabled' : ''}>
-                        </div>`;
-
-                content += `<div class="prop-row">
-                            <span class="prop-label" style="font-size:0.75rem;">${_t('AM Peak Trips')}</span>
-                            <span id="prop-zone-trips-am" style="font-size:0.8rem; font-weight:600; color:#059669;">P: ${trips.amP.toLocaleString()} / A: ${trips.amA.toLocaleString()} trips/h</span>
-                        </div>`;
-
-                content += `<div class="prop-row">
-                            <span class="prop-label" style="font-size:0.75rem;">${_t('PM Peak Trips')}</span>
-                            <span id="prop-zone-trips-pm" style="font-size:0.8rem; font-weight:600; color:#dc2626;">P: ${trips.pmP.toLocaleString()} / A: ${trips.pmA.toLocaleString()} trips/h</span>
-                        </div>`;
-
+                // (C) 手風琴 1：社經人口與尖離峰旅次推估 (預設展開)
                 const offP = trips.offP !== undefined ? trips.offP : 0;
                 const offA = trips.offA !== undefined ? trips.offA : 0;
-                content += `<div class="prop-row">
-                            <span class="prop-label" style="font-size:0.75rem;">Off-Peak Trips</span>
-                            <span id="prop-zone-trips-off" style="font-size:0.8rem; font-weight:600; color:#6b7280;">P: ${offP.toLocaleString()} / A: ${offA.toLocaleString()} trips/h</span>
-                        </div>`;
+                const demandsBodyHtml = `
+                    <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:0.78rem; font-weight:600; margin-bottom:8px;">
+                        <input type="checkbox" id="prop-zone-autocalc" ${isAuto ? 'checked' : ''}>
+                        <span>${_t('Auto Calculate Demands')}</span>
+                    </label>
+                    <div class="prop-stat-grid" style="margin-bottom:8px;">
+                        <div class="prop-stat-box">
+                            <span class="prop-stat-label">${_t('Estimated Population')}</span>
+                            <input type="number" id="prop-zone-pop" class="prop-input" value="${effPop}" min="0" ${isAuto ? 'disabled' : ''} style="margin-top:2px; padding:3px 6px;">
+                        </div>
+                        <div class="prop-stat-box">
+                            <span class="prop-stat-label">${_t('Estimated Employment')}</span>
+                            <input type="number" id="prop-zone-emp" class="prop-input" value="${effEmp}" min="0" ${isAuto ? 'disabled' : ''} style="margin-top:2px; padding:3px 6px;">
+                        </div>
+                    </div>
+                    <div style="background:#f8fafc; border:1px solid var(--border-light); border-radius:6px; padding:6px 8px;">
+                        <div class="prop-row" style="margin-bottom:4px;">
+                            <span style="font-size:0.72rem; color:#475569; font-weight:600;">🌅 ${_t('AM Peak Trips')}</span>
+                            <span id="prop-zone-trips-am" style="font-size:0.76rem; font-weight:700; color:#059669;">P: ${trips.amP.toLocaleString()} / A: ${trips.amA.toLocaleString()}</span>
+                        </div>
+                        <div class="prop-row" style="margin-bottom:4px;">
+                            <span style="font-size:0.72rem; color:#475569; font-weight:600;">🌇 ${_t('PM Peak Trips')}</span>
+                            <span id="prop-zone-trips-pm" style="font-size:0.76rem; font-weight:700; color:#dc2626;">P: ${trips.pmP.toLocaleString()} / A: ${trips.pmA.toLocaleString()}</span>
+                        </div>
+                        <div class="prop-row" style="margin-bottom:0;">
+                            <span style="font-size:0.72rem; color:#475569; font-weight:600;">🕒 Off-Peak Trips</span>
+                            <span id="prop-zone-trips-off" style="font-size:0.76rem; font-weight:700; color:#6b7280;">P: ${offP.toLocaleString()} / A: ${offA.toLocaleString()}</span>
+                        </div>
+                    </div>`;
+                content += renderAccordionHTML(_t('Demands Estimation'), 'fa-solid fa-users', demandsBodyHtml, true, `AM ${trips.amP + trips.amA}/h`);
 
-                // --- SECTION: CENTROID CONNECTOR ---
-                content += `<div class="prop-section-header">${_t('Centroid Connector')}</div>`;
+                // (D) 手風琴 2：形心聯絡道與預設重設
                 const conn = (obj.accessNodes && obj.accessNodes[0]) || null;
                 const targetLink = conn ? network.links[conn.linkId] : null;
+                let connectorBodyHtml = '';
                 if (conn && targetLink) {
                     const totalLen = getPolylineLength(targetLink.waypoints);
                     const distOnLink = (conn.offsetRatio || 0) * totalLen;
-                    content += `<div class="prop-status-indicator success" style="margin-bottom:6px;">
-                                <i class="fa-solid fa-link"></i>
-                                <div>
-                                    <div style="font-weight:600;">${_t('Linked')}: ${targetLink.name || targetLink.id}</div>
-                                    <div style="font-size:0.75rem; opacity:0.85;">Offset: ${((conn.offsetRatio || 0) * 100).toFixed(1)}% (${distOnLink.toFixed(1)}m / ${totalLen.toFixed(1)}m)</div>
-                                </div>
-                            </div>`;
-                } else {
-                    content += `<div class="prop-status-indicator error" style="margin-bottom:6px;">
-                                <i class="fa-solid fa-link-slash"></i>
-                                <div>
-                                    <div style="font-weight:600;">${_t('Not Linked')}</div>
-                                    <div style="font-size:0.75rem; opacity:0.85;">No nearby road link found within 300m.</div>
-                                </div>
-                            </div>`;
-                }
-                content += `<div class="prop-row" style="margin-top:4px; margin-bottom:8px;">
-                            <button id="btn-zone-reproject-conn" class="tool-btn" style="width:100%; justify-content:center; gap:6px;">
-                                <i class="fa-solid fa-arrows-rotate"></i> ${_t('Re-project Connector')}
-                            </button>
+                    connectorBodyHtml += `
+                        <div class="prop-status-indicator success" style="padding:6px 8px; font-size:0.78rem;">
+                            <i class="fa-solid fa-link"></i>
+                            <div>
+                                <div style="font-weight:700;">${_t('Linked')}: ${targetLink.name || targetLink.id}</div>
+                                <div style="font-size:0.7rem; opacity:0.85;">Offset: ${((conn.offsetRatio || 0) * 100).toFixed(1)}% (${distOnLink.toFixed(1)}m)</div>
+                            </div>
                         </div>`;
-
-                // --- SECTION: ACTIONS ---
-                content += `<div class="prop-section-header">Actions</div>`;
-                content += `<div style="display:flex; flex-direction:column; gap:8px;">
-                                <button id="btn-zone-reset-defaults" class="tool-btn" style="width:100%; justify-content:center;">
-                                    <i class="fa-solid fa-rotate-left"></i> ${_t('Reset to Defaults')}
-                                </button>
-                                <button id="btn-delete-zone" class="btn-danger-outline" style="width:100%; justify-content:center;">
-                                    <i class="fa-solid fa-trash-can"></i> ${_t('Delete Zone')}
-                                </button>
-                            </div>`;
+                } else {
+                    connectorBodyHtml += `
+                        <div class="prop-status-indicator error" style="padding:6px 8px; font-size:0.78rem;">
+                            <i class="fa-solid fa-link-slash"></i>
+                            <div><div style="font-weight:700;">${_t('Not Linked')}</div></div>
+                        </div>`;
+                }
+                connectorBodyHtml += `
+                    <div style="display:flex; gap:6px;">
+                        <button id="btn-zone-reproject-conn" class="btn-soft" style="flex:1;">
+                            <i class="fa-solid fa-arrows-rotate"></i> 重新投影聯絡道
+                        </button>
+                        <button id="btn-zone-reset-defaults" class="btn-soft" style="flex:1;">
+                            <i class="fa-solid fa-rotate-left"></i> 重設法規預設
+                        </button>
+                    </div>`;
+                content += renderAccordionHTML(_t('Centroid Connector'), 'fa-solid fa-route', connectorBodyHtml, false, targetLink ? targetLink.id : 'Unlinked');
                 break;
             }
 
-            case 'ParkingGate':
-                // --- SECTION: STATUS ---
-                content += `<div class="prop-section-header">Connection Status</div>`;
+            // =============================================================
+            // CASE: ROAD MARKING (道路標線)
+            // =============================================================
+            case 'RoadMarking': {
+                const parentId = obj.nodeId || obj.linkId || 'Free';
+                content += `
+                    <div class="prop-stat-grid">
+                        <div class="prop-stat-box">
+                            <span class="prop-stat-label">Attached To</span>
+                            <span class="prop-stat-value">${parentId}</span>
+                        </div>
+                        <div class="prop-stat-box">
+                            <span class="prop-stat-label">Placement</span>
+                            <span class="prop-stat-value">${(obj.isFree || obj.nodeId) ? '自由座標' : `${obj.position.toFixed(1)}m`}</span>
+                        </div>
+                    </div>
 
-                const linkedPl = obj.parkingLotId ? network.parkingLots[obj.parkingLotId] : null;
-                if (linkedPl) {
-                    content += `<div class="prop-status-indicator success">
-                                <i class="fa-solid fa-link"></i>
-                                <div>
-                                    <div>Linked</div>
-                                    <div style="font-size:0.75rem; opacity:0.8;">${linkedPl.name}</div>
-                                </div>
-                            </div>`;
-                } else {
-                    content += `<div class="prop-status-indicator error">
-                                <i class="fa-solid fa-link-slash"></i>
-                                <div>
-                                    <div>Not Linked</div>
-                                    <div style="font-size:0.75rem; opacity:0.8;">Drag onto a Parking Lot boundary.</div>
-                                </div>
-                            </div>`;
-                }
-
-                // --- SECTION: CONFIGURATION ---
-                content += `<div class="prop-section-header">Configuration</div>`;
-
-                content += `<div class="prop-row">
-                            <span class="prop-label">ID</span>
-                            <input type="text" class="prop-input" value="${obj.id}" disabled>
-                        </div>`;
-
-                content += `<div class="prop-row">
+                    <div class="prop-card">
+                        <div class="prop-row">
                             <span class="prop-label">Type</span>
-                            <select id="prop-gate-type" class="prop-select">
-                                <option value="entry" ${obj.gateType === 'entry' ? 'selected' : ''}>Entry Only</option>
-                                <option value="exit" ${obj.gateType === 'exit' ? 'selected' : ''}>Exit Only</option>
-                                <option value="bidirectional" ${obj.gateType === 'bidirectional' ? 'selected' : ''}>Bi-directional</option>
+                            <select id="prop-mark-type" class="prop-select" ${obj.markingType === 'channelization' ? 'disabled' : ''}>
+                                <option value="stop_line" ${obj.markingType === 'stop_line' ? 'selected' : ''}>Stop Line (停止線)</option>
+                                <option value="waiting_area" ${obj.markingType === 'waiting_area' ? 'selected' : ''}>Waiting Area (停等區)</option>
+                                <option value="two_stage_box" ${obj.markingType === 'two_stage_box' ? 'selected' : ''}>Two-Stage Box (待轉區)</option>
+                                <option value="crosswalk" ${obj.markingType === 'crosswalk' ? 'selected' : ''}>Crosswalk (行穿線)</option>
                             </select>
                         </div>`;
 
-                // --- [新增] 雙向道路設定 (若存在配對資訊) ---
-                if (obj.pairInfo && obj.pairInfo.pairId) {
-                    const pairLink = network.links[obj.pairInfo.pairId];
-                    if (pairLink) {
-                        content += `<div class="prop-section-header">Two-way Settings</div>`;
+                if (obj.markingType === 'channelization') {
+                    content += `
+                        <div class="prop-row" style="margin-bottom:0;">
+                            <span class="prop-label">Color</span>
+                            <select id="prop-mark-color" class="prop-select">
+                                <option value="white" ${obj.color === 'white' ? 'selected' : ''}>White (白槽化線)</option>
+                                <option value="yellow" ${obj.color === 'yellow' ? 'selected' : ''}>Yellow (黃槽化線)</option>
+                                <option value="green" ${obj.color === 'green' ? 'selected' : ''}>Green (庇護島/人行島)</option>
+                            </select>
+                        </div>`;
+                }
 
-                        // 顯示配對狀態
-                        content += `<div class="prop-row">
-                                <span class="prop-label">Paired Link</span>
-                                <input type="text" class="prop-input" value="${pairLink.name || pairLink.id}" disabled style="color:#666;">
-                            </div>`;
+                if (obj.linkId && !obj.isFree) {
+                    content += `
+                        <div class="prop-row">
+                            <span class="prop-label">Position (m)</span>
+                            <input type="number" step="0.5" id="prop-mark-pos" class="prop-input" value="${obj.position.toFixed(2)}" style="max-width:90px;">
+                        </div>`;
 
-                        // 分隔島寬度輸入框
-                        content += `<div class="prop-row">
-                                <span class="prop-label">Median Width (m)</span>
-                                <input type="number" id="prop-edit-median" class="prop-input" 
-                                       value="${obj.pairInfo.medianWidth}" step="0.5" min="0">
-                            </div>`;
+                    if (obj.markingType !== 'crosswalk') {
+                        const link = network.links[obj.linkId];
+                        if (link) {
+                            content += `<div class="prop-row" style="margin-bottom:0;"><span class="prop-label">Active Lanes</span><div class="veh-chip-group" style="flex-wrap:wrap;">`;
+                            link.lanes.forEach((_, idx) => {
+                                const checked = obj.laneIndices.includes(idx) ? 'checked' : '';
+                                content += `
+                                    <label class="veh-chip">
+                                        <input type="checkbox" class="prop-mark-lane" value="${idx}" ${checked}> L${idx + 1}
+                                    </label>`;
+                            });
+                            content += `</div></div>`;
+                        }
+                    }
+                } else if (obj.markingType !== 'channelization') {
+                    content += `
+                        <div class="prop-row" style="margin-bottom:0;">
+                            <span class="prop-label">Rotation (deg)</span>
+                            <input type="number" id="prop-mark-rot" class="prop-input" value="${(obj.rotation || 0).toFixed(1)}" style="max-width:90px;">
+                        </div>`;
+                }
 
-                        content += `<div class="prop-hint">
-                                Changing this will move both roads relative to their center axis.
-                            </div>`;
-                    } else {
-                        // 若配對的路被刪除了，顯示警告
-                        content += `<div class="prop-hint" style="color:orange;">
-                                <i class="fa-solid fa-link-slash"></i> Paired link not found (Broken Link).
+                if (obj.markingType !== 'stop_line' && obj.markingType !== 'channelization') {
+                    content += `
+                        <div class="prop-row" style="margin-top:6px;">
+                            <span class="prop-label">${obj.markingType === 'crosswalk' ? 'Width (m)' : 'Length (m)'}</span>
+                            <input type="number" step="0.1" id="prop-mark-len" class="prop-input" value="${obj.length}" style="max-width:90px;">
+                        </div>`;
+                    if ((obj.markingType === 'two_stage_box' || obj.markingType === 'crosswalk') && (obj.nodeId || obj.isFree)) {
+                        content += `
+                            <div class="prop-row">
+                                <span class="prop-label">Span Width (m)</span>
+                                <input type="number" step="0.1" id="prop-mark-wid" class="prop-input" value="${obj.width.toFixed(2)}" style="max-width:90px;">
                             </div>`;
                     }
                 }
-                // --- [新增結束] ---
-                // --- SECTION: GEOMETRY ---
-                content += `<div class="prop-section-header">Geometry</div>`;
 
-                content += `<div class="prop-row">
-                            <span class="prop-label">Rotation (deg)</span>
-                            <input type="number" id="prop-gate-rotation" class="prop-input" value="${(obj.rotation || 0).toFixed(1)}">
+                if ((obj.markingType === 'two_stage_box' || obj.markingType === 'crosswalk') && obj.linkId) {
+                    content += `
+                        <div style="border-top:1px dashed var(--border-light); margin-top:8px; padding-top:6px;">
+                            <label style="display:flex; align-items:center; gap:6px; font-size:0.78rem; cursor:pointer;">
+                                <input type="checkbox" id="prop-mark-isfree" ${obj.isFree ? 'checked' : ''}>
+                                <span>Manual Free Positioning (自由拖曳與旋轉)</span>
+                            </label>
                         </div>`;
-
-                content += `<div class="prop-row">
-                            <span class="prop-label">Width (m)</span>
-                            <input type="text" class="prop-input" value="${obj.width.toFixed(2)}" disabled>
-                        </div>`;
-
-                // --- SECTION: ACTIONS ---
-                content += `<div class="prop-section-header">Actions</div>`;
-                content += `<button id="btn-delete-gate" class="btn-danger-outline">
-                            <i class="fa-solid fa-trash-can"></i> Delete Gate
-                        </button>`;
-                break;
-            case 'RoadMarking':
-                // --- SECTION: GENERAL ---
-                content += `<div class="prop-section-header">General</div>`;
-
-                // ID (Read-only)
-                content += `<div class="prop-row">
-                            <span class="prop-label">ID</span>
-                            <input type="text" class="prop-input" value="${obj.id}" disabled>
-                        </div>`;
-
-                // Type Select
-                content += `<div class="prop-row">
-                            <span class="prop-label">Type</span>
-                            <select id="prop-mark-type" class="prop-select" ${obj.markingType === 'channelization' ? 'disabled' : ''}>
-                                <option value="stop_line" ${obj.markingType === 'stop_line' ? 'selected' : ''}>Stop Line</option>
-                                <option value="waiting_area" ${obj.markingType === 'waiting_area' ? 'selected' : ''}>Waiting Area</option>
-                                <option value="two_stage_box" ${obj.markingType === 'two_stage_box' ? 'selected' : ''}>Two-Stage Box</option>
-                                <option value="crosswalk" ${obj.markingType === 'crosswalk' ? 'selected' : ''}>Pedestrian Crosswalk</option>
-                                <!--<option value="channelization" ${obj.markingType === 'channelization' ? 'selected' : ''}>Channelization</option>-->
-                            </select>
-                        </div>`;
-                // 在選單下加入顏色屬性
-                if (obj.markingType === 'channelization') {
-                    content += `<div class="prop-section-header">Appearance</div>
-                                <div class="prop-row"><span class="prop-label">Color</span>
-                                <select id="prop-mark-color" class="prop-select">
-                                    <option value="white" ${obj.color === 'white' ? 'selected' : ''}>White</option>
-                                    <option value="yellow" ${obj.color === 'yellow' ? 'selected' : ''}>Yellow</option>
-                                    <option value="green" ${obj.color === 'green' ? 'selected' : ''}>Green (Island)</option>
-                                </select></div>`;
                 }
+                content += `</div>`; // End Basic Card
 
-                // --- SECTION: PLACEMENT ---
-                content += `<div class="prop-section-header">Placement</div>`;
-
-                // ==========================================
-                //[新增] 斑馬線專屬的行人號誌綁定 (自動偵測鄰近路口)
-                // ==========================================
+                // 行穿線專屬：對向跨越與行人號誌綁定
                 if (obj.markingType === 'crosswalk') {
-                    content += `<div class="prop-section-header">Pedestrian Signal Binding</div>`;
-
                     let optionsHtml = `<option value="">(無 / None)</option>`;
                     let foundNode = null;
-
-                    // 智慧偵測：尋找最近的路口節點
                     if (obj.nodeId) {
                         foundNode = network.nodes[obj.nodeId];
                     } else if (obj.linkId) {
                         const link = network.links[obj.linkId];
                         if (link && link.waypoints.length >= 2) {
                             const len = getPolylineLength(link.waypoints);
-                            // 判斷斑馬線靠近起點還是終點
                             const closestNodeId = (obj.position < len / 2) ? link.startNodeId : link.endNodeId;
                             if (closestNodeId) foundNode = network.nodes[closestNodeId];
                         }
                     }
 
-                    // 如果找到鄰近路口，且該路口有號誌設定，則拉出所有的行人群組
+                    let markGroupSetHtml = '';
+                    let effectiveMarkSignalId = obj.signalGroupId || '';
                     if (foundNode && network.trafficLights[foundNode.id]) {
                         const tfl = network.trafficLights[foundNode.id];
+                        ensureTflGroupSets(tfl);
+                        if (obj.signalGroupBySet && obj.signalGroupBySet[tfl.activeGroupSetId] !== undefined) {
+                            effectiveMarkSignalId = obj.signalGroupBySet[tfl.activeGroupSetId] || '';
+                        }
+                        const gsList = Object.values(tfl.signalGroupSets || {});
+                        if (gsList.length > 0) {
+                            markGroupSetHtml = `
+                                <div class="prop-row">
+                                    <span class="prop-label" style="color:#6d28d9; font-weight:600;">1. 硬體群組</span>
+                                    <select id="prop-mark-groupset-select" data-node-id="${foundNode.id}" class="prop-select">
+                                        ${gsList.map(gs => `<option value="${gs.id}" ${gs.id === tfl.activeGroupSetId ? 'selected' : ''}>${gs.name || gs.id}</option>`).join('')}
+                                    </select>
+                                </div>`;
+                        }
                         if (tfl.signalGroups) {
                             Object.values(tfl.signalGroups).forEach(sg => {
-                                if (sg.type === 'pedestrian') { // 只列出行人號誌
-                                    const selected = obj.signalGroupId === sg.id ? 'selected' : '';
+                                if (sg.type === 'pedestrian') {
+                                    const selected = effectiveMarkSignalId === sg.id ? 'selected' : '';
                                     optionsHtml += `<option value="${sg.id}" ${selected}>${sg.id}</option>`;
                                 }
                             });
                         }
                     }
 
-                    content += `<div class="prop-row">
-                        <span class="prop-label">Signal Group</span>
-                        <div style="display:flex; gap:4px; flex:1;">
-                            <select id="prop-mark-signal-select" class="prop-select" style="flex:1;">
-                                ${optionsHtml}
-                            </select>
-                            <input type="text" id="prop-mark-signal-text" class="prop-input" style="flex:1;" value="${obj.signalGroupId || ''}" placeholder="Custom ID">
-                        </div>
-                    </div>
-                    <div class="prop-hint" style="margin-bottom:12px;">自動抓取鄰近路口的行人群組，或手動輸入 ID。</div>`;
-                }
-                // ==========================================
+                    let cwExtraHtml = `
+                        ${markGroupSetHtml}
+                        <div class="prop-row">
+                            <span class="prop-label">2. 行人燈號</span>
+                            <div style="display:flex; gap:4px; flex:1;">
+                                <select id="prop-mark-signal-select" class="prop-select" style="flex:1;">${optionsHtml}</select>
+                                <input type="text" id="prop-mark-signal-text" class="prop-input" style="width:70px;" value="${effectiveMarkSignalId}" placeholder="ID">
+                            </div>
+                        </div>`;
 
-                if (obj.linkId && !obj.isFree) {
-                    content += `<div class="prop-row">
-                                <span class="prop-label">Parent Link</span>
-                                <input type="text" class="prop-input" value="${obj.linkId}" disabled>
-                            </div>`;
-                    content += `<div class="prop-row">
-                                <span class="prop-label">Position (m)</span>
-                                <input type="number" step="0.5" id="prop-mark-pos" class="prop-input" value="${obj.position.toFixed(2)}">
-                            </div>`;
-
-                    // [新增] 斑馬線專屬跨越 UI
-                    if (obj.markingType === 'crosswalk') {
-                        content += `<div class="prop-section-header">Crosswalk Span</div>`;
+                    if (obj.linkId && !obj.isFree) {
                         if (obj.spanToLinkId) {
-                            content += `<div class="prop-status-indicator success" style="margin-bottom:8px;">
-                                            <i class="fa-solid fa-link"></i> Spanned to: ${obj.spanToLinkId}
-                                        </div>`;
-                            content += `<button id="btn-remove-span" class="btn-danger-outline btn-sm" style="width:100%;">Remove Span</button>`;
+                            cwExtraHtml += `
+                                <div class="prop-status-indicator success" style="padding:6px 8px; font-size:0.75rem; margin-top:6px;">
+                                    <i class="fa-solid fa-link"></i> 已跨越至對向: ${obj.spanToLinkId}
+                                </div>
+                                <button id="btn-remove-span" class="btn-soft" style="color:var(--danger); border-color:#fecaca;">取消跨越對向 (Remove Span)</button>`;
                         } else {
-                            content += `<div class="prop-status-indicator" style="margin-bottom:8px; background:#f1f5f9; color:#64748b;">
-                                            Current Link Only
-                                        </div>`;
-                            content += `<button id="btn-auto-span" class="btn-action btn-sm" style="width:100%;">
-                                            <i class="fa-solid fa-wand-magic-sparkles"></i> Auto-Detect Opposite Link
-                                        </button>`;
-                        }
-                    } else {
-                        // 這是原有的 Active Lanes 勾選框，針對非斑馬線顯示
-                        const link = network.links[obj.linkId];
-                        if (link) {
-                            content += `<label class="prop-label" style="margin-top:8px; display:block;">Active Lanes</label>`;
-                            content += `<div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; padding: 4px; border: 1px solid var(--border-light); border-radius: 4px; background: #fff;">`;
-                            link.lanes.forEach((_, idx) => {
-                                const checked = obj.laneIndices.includes(idx) ? 'checked' : '';
-                                content += `<label style="font-size: 0.8rem; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; background: #f8fafc; padding: 2px 6px; border-radius: 4px; border: 1px solid var(--border-light);">
-                                            <input type="checkbox" class="prop-mark-lane" value="${idx}" ${checked}> L${idx + 1}
-                                        </label>`;
-                            });
-                            content += `</div>`;
+                            cwExtraHtml += `
+                                <button id="btn-auto-span" class="btn-soft" style="margin-top:6px;">
+                                    <i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary);"></i> 自動偵測並跨越對向車道
+                                </button>`;
                         }
                     }
+                    content += renderAccordionHTML('行穿線跨越與號誌綁定', 'fa-solid fa-person-walking', cwExtraHtml, true);
                 }
-                // 自由模式或 Node 模式
-                else {
-                    const parentLabel = obj.nodeId ? "Parent Node" : "Origin Link";
-                    const parentId = obj.nodeId || obj.linkId;
-
-                    content += `<div class="prop-row">
-                                <span class="prop-label">${parentLabel}</span>
-                                <input type="text" class="prop-input" value="${parentId}" disabled>
-                            </div>`;
-
-                    content += `<div class="prop-row">
-                                <span class="prop-label">Global X</span>
-                                <input type="text" class="prop-input" value="${obj.x.toFixed(2)}" disabled>
-                            </div>`;
-                    content += `<div class="prop-row">
-                                <span class="prop-label">Global Y</span>
-                                <input type="text" class="prop-input" value="${obj.y.toFixed(2)}" disabled>
-                            </div>`;
-                    content += `<div class="prop-row">
-                                <span class="prop-label">Rotation (deg)</span>
-                                <input type="number" id="prop-mark-rot" class="prop-input" value="${(obj.rotation || 0).toFixed(1)}">
-                            </div>`;
-                }
-
-                // Dimensions 區塊
-                if (obj.markingType !== 'stop_line') {
-                    content += `<div class="prop-section-header">Dimensions</div>`;
-                    content += `<div class="prop-row">
-                                <span class="prop-label">${obj.markingType === 'crosswalk' ? 'Crosswalk Width (m)' : 'Length (m)'}</span>
-                                <input type="number" step="0.1" id="prop-mark-len" class="prop-input" value="${obj.length}">
-                            </div>`;
-
-                    if ((obj.markingType === 'two_stage_box' || obj.markingType === 'crosswalk') && (obj.nodeId || obj.isFree)) {
-                        content += `<div class="prop-row">
-                                    <span class="prop-label">Width (m)</span>
-                                    <input type="number" step="0.1" id="prop-mark-wid" class="prop-input" value="${obj.width.toFixed(2)}">
-                                </div>`;
-                    }
-                }
-
-                // Configuration
-                if ((obj.markingType === 'two_stage_box' || obj.markingType === 'crosswalk') && obj.linkId) {
-                    content += `<div class="prop-section-header">Configuration</div>`;
-                    content += `<div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
-                                <input type="checkbox" id="prop-mark-isfree" ${obj.isFree ? 'checked' : ''} style="cursor: pointer;">
-                                <label for="prop-mark-isfree" style="font-size: 0.85rem; color: var(--text-main); cursor: pointer;">
-                                    Manual Positioning
-                                </label>
-                            </div>`;
-                }
-
-                // --- SECTION: ACTIONS ---
-                content += `<div class="prop-section-header">Actions</div>`;
-                content += `<button id="btn-delete-marking" class="btn-danger-outline">
-                            <i class="fa-solid fa-trash-can"></i> Delete Marking
-                        </button>`;
                 break;
+            }
         }
 
         propertiesContent.innerHTML = content;
         attachPropertiesEventListeners(obj);
-        I18N.translateDOM(propertiesContent);
+        if (typeof I18N !== 'undefined' && I18N.translateDOM) {
+            I18N.translateDOM(propertiesContent);
+        }
     }
 
-    // 完整替換此函數
-    // 完整替換 attachPropertiesEventListeners 函數
+    // =========================================================================
+    // [核心重構] 綁定右側屬性面板事件
+    // =========================================================================
     function attachPropertiesEventListeners(obj) {
-        // [新增] 車道寬度變更事件
+        if (!obj) return;
+
+        // 0. 綁定置頂識別卡的通用刪除按鈕
+        const universalDelBtn = document.getElementById('btn-universal-delete-obj');
+        if (universalDelBtn) {
+            universalDelBtn.addEventListener('click', () => {
+                const msg = (typeof I18N !== 'undefined' && I18N.t)
+                    ? I18N.t(`Delete ${obj.type} (${obj.id})?`)
+                    : `Delete ${obj.type} (${obj.id})?`;
+                if (confirm(msg)) {
+                    deleteSelectedObject();
+                    saveState();
+                }
+            });
+        }
+
+        // 1. 車道寬度變更事件
         document.querySelectorAll('.prop-lane-width').forEach(input => {
             input.addEventListener('change', (e) => {
                 const idx = parseInt(e.target.dataset.index, 10);
@@ -9732,26 +9641,22 @@ document.addEventListener('DOMContentLoaded', () => {
                 saveState();
             });
         });
-        if (!obj) return;
 
-        // --- 通用：分頁切換邏輯 (支援 Node 與 Link) ---
+        // 2. 分頁切換邏輯 (支援 Node 與 Link)
         const tabBtns = document.querySelectorAll('.prop-tab-btn');
         const tabContents = document.querySelectorAll('.prop-tab-content');
 
         if (tabBtns.length > 0) {
             tabBtns.forEach(btn => {
-                btn.addEventListener('click', (e) => {
-                    // 1. 移除所有 active 狀態
+                btn.addEventListener('click', () => {
                     tabBtns.forEach(b => b.classList.remove('active'));
                     tabContents.forEach(c => c.classList.remove('active'));
 
-                    // 2. 激活當前選取
                     const targetId = btn.dataset.target;
                     btn.classList.add('active');
                     const targetContent = document.getElementById(targetId);
                     if (targetContent) targetContent.classList.add('active');
 
-                    // 3. 更新全域狀態，依據物件類型分別記憶使用者選擇
                     if (obj.type === 'Node') {
                         lastActiveNodeTab = targetId;
                     } else if (obj.type === 'Link') {
@@ -9761,17 +9666,17 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
 
-        // --- 通用：返回節點按鈕 (針對連接線編輯) ---
+        // 3. 返回節點按鈕
         const backBtn = document.getElementById('back-to-node-btn');
         if (backBtn && lastSelectedNodeForProperties) {
             backBtn.addEventListener('click', () => {
                 const nodeToReturnTo = lastSelectedNodeForProperties;
-                lastSelectedNodeForProperties = null; // 清除狀態
+                lastSelectedNodeForProperties = null;
                 selectObject(nodeToReturnTo);
             });
         }
 
-        // --- 輔助函數：高亮顯示 Link (用於 Node 面板互動) ---
+        // 4. 輔助函數：高亮顯示 Link
         function clearLinkHighlights() {
             layer.find('.link-highlight').forEach(rect => rect.destroy());
         }
@@ -9780,9 +9685,6 @@ document.addEventListener('DOMContentLoaded', () => {
             const link = network.links[linkId];
             if (!link) return;
 
-            // ==========================================
-            // [新增] Lane-Based 多型高亮邏輯
-            // ==========================================
             if (link.geometryType === 'lane-based' && link.strokes && link.strokes.length >= 2) {
                 const leftStroke = link.strokes[0].points;
                 const rightStroke = link.strokes[link.strokes.length - 1].points;
@@ -9792,19 +9694,15 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (leftStroke.length < 2 || rightStroke.length < 2) return;
                         ctx.beginPath();
                         ctx.moveTo(leftStroke[0].x, leftStroke[0].y);
-                        for (let i = 1; i < leftStroke.length; i++) {
-                            ctx.lineTo(leftStroke[i].x, leftStroke[i].y);
-                        }
-                        for (let i = rightStroke.length - 1; i >= 0; i--) {
-                            ctx.lineTo(rightStroke[i].x, rightStroke[i].y);
-                        }
+                        for (let i = 1; i < leftStroke.length; i++) ctx.lineTo(leftStroke[i].x, leftStroke[i].y);
+                        for (let i = rightStroke.length - 1; i >= 0; i--) ctx.lineTo(rightStroke[i].x, rightStroke[i].y);
                         ctx.closePath();
                         ctx.fillShape(shape);
                         ctx.strokeShape(shape);
                     },
-                    fill: 'rgba(255, 0, 43, 0.67)', // 半透明紅色
-                    stroke: 'rgba(255, 0, 43, 0.3)', // 外層加個透明紅框
-                    strokeWidth: 10,                 // 利用粗邊框創造「外擴 +5px」的視覺效果
+                    fill: 'rgba(255, 0, 43, 0.67)',
+                    stroke: 'rgba(255, 0, 43, 0.3)',
+                    strokeWidth: 10,
                     lineJoin: 'round',
                     name: 'link-highlight',
                     listening: false
@@ -9813,16 +9711,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 layer.add(highlightShape);
                 highlightShape.moveToBottom();
                 layer.batchDraw();
-                return; // 畫完直接離開，不執行下方舊邏輯
+                return;
             }
 
-            // ==========================================
-            // 原本 Standard 模式的高亮邏輯
-            // ==========================================
             if (!link.waypoints || link.waypoints.length < 2) return;
 
             const totalWidth = getLinkTotalWidth(link);
-            const halfWidth = totalWidth / 2 + 5; // 原本的外擴 5px
+            const halfWidth = totalWidth / 2 + 5;
             const waypoints = link.waypoints;
             const leftBoundary = [];
             const rightBoundary = [];
@@ -9830,18 +9725,9 @@ document.addEventListener('DOMContentLoaded', () => {
             for (let i = 0; i < waypoints.length; i++) {
                 const p_curr = waypoints[i];
                 let normal;
-
-                if (i === 0) {
-                    const p_next = waypoints[i + 1];
-                    normal = getNormal(normalize(getVector(p_curr, p_next)));
-                } else if (i === waypoints.length - 1) {
-                    const p_prev = waypoints[i - 1];
-                    normal = getNormal(normalize(getVector(p_prev, p_curr)));
-                } else {
-                    const p_prev = waypoints[i - 1];
-                    const p_next = waypoints[i + 1];
-                    normal = getMiterNormal(p_prev, p_curr, p_next);
-                }
+                if (i === 0) normal = getNormal(normalize(getVector(p_curr, waypoints[i + 1])));
+                else if (i === waypoints.length - 1) normal = getNormal(normalize(getVector(waypoints[i - 1], p_curr)));
+                else normal = getMiterNormal(waypoints[i - 1], p_curr, waypoints[i + 1]);
 
                 leftBoundary.push(add(p_curr, scale(normal, halfWidth)));
                 rightBoundary.push(add(p_curr, scale(normal, -halfWidth)));
@@ -9852,12 +9738,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (leftBoundary.length < 2) return;
                     ctx.beginPath();
                     ctx.moveTo(leftBoundary[0].x, leftBoundary[0].y);
-                    for (let i = 1; i < leftBoundary.length; i++) {
-                        ctx.lineTo(leftBoundary[i].x, leftBoundary[i].y);
-                    }
-                    for (let i = rightBoundary.length - 1; i >= 0; i--) {
-                        ctx.lineTo(rightBoundary[i].x, rightBoundary[i].y);
-                    }
+                    for (let i = 1; i < leftBoundary.length; i++) ctx.lineTo(leftBoundary[i].x, leftBoundary[i].y);
+                    for (let i = rightBoundary.length - 1; i >= 0; i--) ctx.lineTo(rightBoundary[i].x, rightBoundary[i].y);
                     ctx.closePath();
                     ctx.fillShape(shape);
                 },
@@ -9872,91 +9754,70 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // ============================================================
-        // Type-Specific Listeners
+        // 各物件類型專屬監聽器
         // ============================================================
 
         // --- NODE ---
         if (obj.type === 'Node') {
-            // 1. [新增] 轉向比例輸入框監聽
             document.querySelectorAll('.prop-turn-ratio').forEach(input => {
                 input.addEventListener('change', (e) => {
                     const fromId = e.target.dataset.from;
                     const toId = e.target.dataset.to;
                     let val = parseFloat(e.target.value);
-
-                    // 驗證範圍 0-100
                     if (isNaN(val)) val = 0;
                     val = Math.max(0, Math.min(100, val));
                     e.target.value = val;
 
                     if (!obj.turningRatios) obj.turningRatios = {};
                     if (!obj.turningRatios[fromId]) obj.turningRatios[fromId] = {};
-
-                    // 儲存為 0.0 ~ 1.0 的小數
                     obj.turningRatios[fromId][toId] = val / 100.0;
                     saveState();
                 });
             });
 
-            // 2. [新增] 自動計算按鈕 (Auto-Calc)
-            const autoCalcBtn = document.getElementById('btn-auto-calc-turns');
-            if (autoCalcBtn) {
-                autoCalcBtn.addEventListener('click', () => {
-                    const outgoingLinks = [...obj.outgoingLinkIds];
-                    const outFlows = {};
-                    let totalOutFlow = 0;
+            document.getElementById('btn-auto-calc-turns')?.addEventListener('click', () => {
+                const outgoingLinks = [...obj.outgoingLinkIds];
+                const outFlows = {};
+                let totalOutFlow = 0;
 
-                    // 步驟 A: 收集所有出口路段的偵測器流量
-                    outgoingLinks.forEach(linkId => {
-                        let linkFlow = 0;
-                        Object.values(network.detectors).forEach(det => {
-                            if (det.linkId === linkId && det.observedFlow > 0) {
-                                // 取該路段上最大的流量值 (假設同路段流量一致)
-                                linkFlow = Math.max(linkFlow, det.observedFlow);
-                            }
-                        });
-                        outFlows[linkId] = linkFlow;
-                        totalOutFlow += linkFlow;
+                outgoingLinks.forEach(linkId => {
+                    let linkFlow = 0;
+                    Object.values(network.detectors).forEach(det => {
+                        if (det.linkId === linkId && det.observedFlow > 0) {
+                            linkFlow = Math.max(linkFlow, det.observedFlow);
+                        }
                     });
-
-                    if (totalOutFlow === 0) {
-                        alert("無法自動計算：出口路段上未找到偵測器流量數據 (No observed flow found)。");
-                        return;
-                    }
-
-                    // 步驟 B: 計算比例並更新 Node 資料
-                    if (!obj.turningRatios) obj.turningRatios = {};
-
-                    // 假設：所有入口的車流，都依照出口流量的比例進行分配
-                    [...obj.incomingLinkIds].forEach(fromId => {
-                        if (!obj.turningRatios[fromId]) obj.turningRatios[fromId] = {};
-
-                        outgoingLinks.forEach(toId => {
-                            const ratio = outFlows[toId] / totalOutFlow;
-                            obj.turningRatios[fromId][toId] = ratio;
-                        });
-                    });
-
-                    // 步驟 C: 更新介面
-                    updatePropertiesPanel(obj);
-                    alert("轉向比例已根據偵測器流量自動更新。");
-                    saveState();
+                    outFlows[linkId] = linkFlow;
+                    totalOutFlow += linkFlow;
                 });
-            }
 
-            // 3. Traffic Light Settings
+                if (totalOutFlow === 0) {
+                    alert("無法自動計算：出口路段上未找到偵測器流量數據 (No observed flow found)。");
+                    return;
+                }
+
+                if (!obj.turningRatios) obj.turningRatios = {};
+                [...obj.incomingLinkIds].forEach(fromId => {
+                    if (!obj.turningRatios[fromId]) obj.turningRatios[fromId] = {};
+                    outgoingLinks.forEach(toId => {
+                        obj.turningRatios[fromId][toId] = outFlows[toId] / totalOutFlow;
+                    });
+                });
+
+                updatePropertiesPanel(obj);
+                alert("轉向比例已根據偵測器流量自動更新。");
+                saveState();
+            });
+
             if (!network.trafficLights[obj.id]) {
                 network.trafficLights[obj.id] = { nodeId: obj.id, timeShift: 0, signalGroups: {}, schedule: [] };
             }
 
-            document.getElementById('prop-tfl-shift').addEventListener('change', (e) => {
+            document.getElementById('prop-tfl-shift')?.addEventListener('change', (e) => {
                 const newVal = parseInt(e.target.value, 10) || 0;
                 const tfl = network.trafficLights[obj.id];
-
-                // 1. 更新基礎屬性 (相容舊版)
                 tfl.timeShift = newVal;
 
-                // 2. [新增] 同步更新代表性時制 (Sched_A) 的時差
                 if (tfl.advanced && tfl.advanced.weekly) {
                     const monPlanId = tfl.advanced.weekly[1];
                     if (monPlanId && tfl.advanced.dailyPlans[monPlanId]) {
@@ -9968,180 +9829,79 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 saveState();
             });
-            document.getElementById('edit-tfl-btn').addEventListener('click', () => showTrafficLightEditor(obj));
 
-            // --- Pedestrian Settings Listeners ---
-            const pedVolInput = document.getElementById('prop-node-ped-vol');
-            if (pedVolInput) {
-                pedVolInput.addEventListener('change', (e) => {
-                    let val = parseInt(e.target.value, 10);
-                    if (isNaN(val) || val < 0) val = 0;
-                    obj.pedestrianVolume = val;
-                    e.target.value = val;
-                    saveState();
-                });
-            }
+            document.getElementById('edit-tfl-btn')?.addEventListener('click', () => showTrafficLightEditor(obj));
 
-            const crossOnceInput = document.getElementById('prop-node-cross-once');
-            if (crossOnceInput) {
-                crossOnceInput.addEventListener('change', (e) => {
-                    let val = parseFloat(e.target.value);
-                    if (isNaN(val) || val < 0) val = 0;
-                    if (val > 100) val = 100;
-                    obj.crossOnceProb = val;
-                    e.target.value = val;
-
-                    if (obj.crossOnceProb + (obj.crossTwiceProb || 0) > 100) {
-                        obj.crossTwiceProb = 100 - obj.crossOnceProb;
-                        const twiceInput = document.getElementById('prop-node-cross-twice');
-                        if (twiceInput) twiceInput.value = obj.crossTwiceProb;
-                    }
-                    saveState();
-                });
-            }
-
-            const crossTwiceInput = document.getElementById('prop-node-cross-twice');
-            if (crossTwiceInput) {
-                crossTwiceInput.addEventListener('change', (e) => {
-                    let val = parseFloat(e.target.value);
-                    if (isNaN(val) || val < 0) val = 0;
-                    if (val > 100) val = 100;
-                    obj.crossTwiceProb = val;
-                    e.target.value = val;
-
-                    if ((obj.crossOnceProb || 0) + obj.crossTwiceProb > 100) {
-                        obj.crossOnceProb = 100 - obj.crossTwiceProb;
-                        const onceInput = document.getElementById('prop-node-cross-once');
-                        if (onceInput) onceInput.value = obj.crossOnceProb;
-                    }
-                    saveState();
-                });
-            }
-            // ------------------------------------
-
-            // --- [新增] 刪除路口按鈕事件 ---
-            const btnDeleteNode = document.getElementById('btn-delete-node');
-            if (btnDeleteNode) {
-                btnDeleteNode.addEventListener('click', () => {
-                    const confirmMsg = (typeof I18N !== 'undefined' && I18N.t)
-                        ? I18N.t('Are you sure you want to delete this intersection?')
-                        : 'Are you sure you want to delete this intersection?';
-
-                    if (confirm(confirmMsg)) {
-                        deleteNode(obj.id, true); // true 代表強制斷開相鄰路段
-                        deselectAll();            // 取消選取，清空屬性面板
-                        layer.batchDraw();        // 重繪畫面
-                        saveState();              // 儲存狀態以供復原
-                    }
-                });
-            }
-
-            // 4. Connection Group Selectors (Highlighting & Selection)
-            document.querySelectorAll('.prop-group-selector').forEach(link => {
-                link.addEventListener('mouseenter', (e) => {
-                    const groupId = e.target.id;
-                    const matches = groupId.match(/group-selector-(.+)-(.+)/);
-                    if (matches) {
-                        clearLinkHighlights();
-                        highlightLink(matches[1]); // source
-                        highlightLink(matches[2]); // dest
-                    }
-                });
-                link.addEventListener('mouseleave', () => clearLinkHighlights());
-                link.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    clearLinkHighlights();
-                    const nodeWeAreLeaving = obj;
-                    // Find the konva object for this group
-                    const clickedGroupShape = layer.find('.group-connection-visual').find(shape => {
-                        const meta = shape.getAttr('meta');
-                        return meta && `group-selector-${meta.sourceLinkId}-${meta.destLinkId}` === link.id;
-                    });
-
-                    if (clickedGroupShape) {
-                        const meta = clickedGroupShape.getAttr('meta');
-                        const groupObjectToSelect = {
-                            id: `group_${meta.sourceLinkId}_to_${meta.destLinkId}`,
-                            ...meta,
-                            konvaLine: clickedGroupShape,
-                        };
-                        selectObject(groupObjectToSelect);
-                        lastSelectedNodeForProperties = nodeWeAreLeaving;
-                        updatePropertiesPanel(groupObjectToSelect);
-                    }
-                });
+            document.getElementById('prop-node-ped-vol')?.addEventListener('change', (e) => {
+                let val = parseInt(e.target.value, 10);
+                if (isNaN(val) || val < 0) val = 0;
+                obj.pedestrianVolume = val;
+                e.target.value = val;
+                saveState();
             });
 
-            // 5. Individual Connection Selectors
-            document.querySelectorAll('.prop-conn-selector').forEach(link => {
-                link.addEventListener('mouseenter', (e) => {
-                    const connId = e.target.id.replace('conn-selector-', '');
-                    const conn = network.connections[connId];
-                    if (conn && conn.konvaBezier) {
-                        if (!conn.konvaBezier.getAttr('originalStroke')) {
-                            conn.konvaBezier.setAttr('originalStroke', conn.konvaBezier.stroke());
-                            conn.konvaBezier.setAttr('originalStrokeWidth', conn.konvaBezier.strokeWidth());
-                        }
-                        conn.konvaBezier.stroke('#dc3545');
-                        conn.konvaBezier.strokeWidth(2);
-                        layer.batchDraw();
-                    }
-                });
-                link.addEventListener('mouseleave', (e) => {
-                    const connId = e.target.id.replace('conn-selector-', '');
-                    const conn = network.connections[connId];
-                    if (conn && conn.konvaBezier) {
-                        const originalStroke = conn.konvaBezier.getAttr('originalStroke');
-                        const originalStrokeWidth = conn.konvaBezier.getAttr('originalStrokeWidth');
-                        if (originalStroke) {
-                            conn.konvaBezier.stroke(originalStroke);
-                            conn.konvaBezier.strokeWidth(originalStrokeWidth);
-                            conn.konvaBezier.setAttr('originalStroke', null);
-                            conn.konvaBezier.setAttr('originalStrokeWidth', null);
-                            layer.batchDraw();
-                        }
-                    }
-                });
-                link.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    const nodeWeAreLeaving = obj;
-                    const connId = e.target.id.replace('conn-selector-', '');
-                    const connToSelect = network.connections[connId];
-                    if (connToSelect) {
-                        e.target.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true }));
-                        selectObject(connToSelect);
-                        lastSelectedNodeForProperties = nodeWeAreLeaving;
-                        updatePropertiesPanel(connToSelect);
-                    }
-                });
+            document.getElementById('prop-node-cross-once')?.addEventListener('change', (e) => {
+                let val = parseFloat(e.target.value);
+                if (isNaN(val) || val < 0) val = 0;
+                if (val > 100) val = 100;
+                obj.crossOnceProb = val;
+                e.target.value = val;
+                if (obj.crossOnceProb + (obj.crossTwiceProb || 0) > 100) {
+                    obj.crossTwiceProb = 100 - obj.crossOnceProb;
+                    const twiceInput = document.getElementById('prop-node-cross-twice');
+                    if (twiceInput) twiceInput.value = obj.crossTwiceProb;
+                }
+                saveState();
             });
 
-            // =======================================================
-            // ★★★ [請從這裡開始，貼上/替換 以下 Connection Groups 相關代碼] ★★★
-            // 原本這裡可能有針對 .prop-group-selector 的監聽，請用下面的新代碼取代
-            // =======================================================
+            document.getElementById('prop-node-cross-twice')?.addEventListener('change', (e) => {
+                let val = parseFloat(e.target.value);
+                if (isNaN(val) || val < 0) val = 0;
+                if (val > 100) val = 100;
+                obj.crossTwiceProb = val;
+                e.target.value = val;
+                if ((obj.crossOnceProb || 0) + obj.crossTwiceProb > 100) {
+                    obj.crossOnceProb = 100 - obj.crossTwiceProb;
+                    const onceInput = document.getElementById('prop-node-cross-once');
+                    if (onceInput) onceInput.value = obj.crossOnceProb;
+                }
+                saveState();
+            });
 
-            // [監聽 A] Connection Group 的 Signal Group 下拉選單
+            document.getElementById('btn-delete-node')?.addEventListener('click', () => {
+                const confirmMsg = (typeof I18N !== 'undefined' && I18N.t)
+                    ? I18N.t('Are you sure you want to delete this intersection?')
+                    : 'Are you sure you want to delete this intersection?';
+                if (confirm(confirmMsg)) {
+                    deleteNode(obj.id, true);
+                    deselectAll();
+                    layer.batchDraw();
+                    saveState();
+                }
+            });
+
+            document.getElementById('prop-node-groupset-select')?.addEventListener('change', (e) => {
+                e.stopPropagation();
+                const tfl = network.trafficLights[obj.id];
+                if (tfl) {
+                    setActiveTflGroupSet(tfl, e.target.value);
+                    updatePropertiesPanel(obj);
+                }
+            });
+
             document.querySelectorAll('.prop-group-signal-select').forEach(select => {
-                // [關鍵修正] 防止點擊下拉選單時觸發任何父層事件
-                select.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                });
-
-                // 處理數值變更
+                select.addEventListener('click', (e) => e.stopPropagation());
                 select.addEventListener('change', (e) => {
-                    e.stopPropagation(); // 變更時也阻擋冒泡
+                    e.stopPropagation();
                     const connIdsToUpdate = JSON.parse(e.target.dataset.groupJson);
                     const newGroupId = e.target.value;
                     const tfl = network.trafficLights[obj.id];
                     if (!tfl) return;
 
-                    // 從所有群組移除
                     Object.values(tfl.signalGroups).forEach(group => {
                         group.connIds = group.connIds.filter(id => !connIdsToUpdate.includes(id));
                     });
 
-                    // 加入新群組
                     if (newGroupId && tfl.signalGroups[newGroupId]) {
                         tfl.signalGroups[newGroupId].connIds.push(...connIdsToUpdate);
                     }
@@ -10149,23 +9909,19 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             });
 
-            // [監聽 B] Edit 按鈕 (保持不變)
             document.querySelectorAll('.group-edit-btn').forEach(btn => {
                 btn.addEventListener('click', (e) => {
                     e.stopPropagation();
                     const sourceLink = network.links[btn.dataset.source];
                     const destLink = network.links[btn.dataset.dest];
-
                     let targetGroupObj = null;
-                    const groupShapes = layer.find('.group-connection-visual');
-                    for (let shape of groupShapes) {
+                    for (let shape of layer.find('.group-connection-visual')) {
                         const meta = shape.getAttr('meta');
                         if (meta && meta.sourceLinkId === sourceLink.id && meta.destLinkId === destLink.id) {
                             targetGroupObj = { id: shape.id(), ...meta, konvaLine: shape };
                             break;
                         }
                     }
-
                     if (sourceLink && destLink && targetGroupObj) {
                         const modalPos = { x: window.innerWidth / 2 - 150, y: window.innerHeight / 2 - 150 };
                         showLaneRangeSelector(sourceLink, destLink, modalPos, targetGroupObj);
@@ -10173,24 +9929,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             });
 
-            // [監聽 C] Delete 按鈕 (保持不變)
             document.querySelectorAll('.group-delete-btn').forEach(btn => {
                 btn.addEventListener('click', (e) => {
                     e.stopPropagation();
                     const sourceId = btn.dataset.source;
                     const destId = btn.dataset.dest;
-
                     if (confirm(I18N.t(`Delete connection group from ${sourceId} to ${destId}?`))) {
                         let targetGroupObj = null;
-                        const groupShapes = layer.find('.group-connection-visual');
-                        for (let shape of groupShapes) {
+                        for (let shape of layer.find('.group-connection-visual')) {
                             const meta = shape.getAttr('meta');
                             if (meta && meta.sourceLinkId === sourceId && meta.destLinkId === destId) {
                                 targetGroupObj = { id: shape.id(), ...meta, konvaLine: shape };
                                 break;
                             }
                         }
-
                         if (targetGroupObj) {
                             deleteConnectionGroup(targetGroupObj);
                             updatePropertiesPanel(obj);
@@ -10200,14 +9952,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             });
 
-            // [新增監聽] Slip Lane 引道巨集生成按鈕
             document.querySelectorAll('.btn-macro-slip').forEach(btn => {
                 btn.addEventListener('click', (e) => {
                     e.stopPropagation();
                     const sourceId = btn.dataset.source;
                     const destId = btn.dataset.dest;
-
-                    // 抓取輸入框的自訂距離，若無法取得則回退到預設值 20
                     const upInput = document.getElementById(`slip-up-${sourceId}-${destId}`);
                     const downInput = document.getElementById(`slip-down-${sourceId}-${destId}`);
                     const upDist = upInput ? (parseFloat(upInput.value) || 20) : 20;
@@ -10227,124 +9976,81 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             });
 
-            // =======================================================
-            // [新增] Flow Tab 的高亮互動 (Hover Highlight)
-            // =======================================================
-
-            // 1. 滑鼠移到 "From Link" 標題：高亮來源路段
             document.querySelectorAll('.turn-ratio-header').forEach(header => {
                 header.addEventListener('mouseenter', (e) => {
                     clearLinkHighlights();
                     highlightLink(e.target.dataset.link);
                 });
-                header.addEventListener('mouseleave', () => {
-                    clearLinkHighlights();
-                });
+                header.addEventListener('mouseleave', () => clearLinkHighlights());
             });
 
-            // 2. 滑鼠移到 "To Link" 列：高亮 來源(From) 與 目的(To) 兩條路段，形成路徑視覺
             document.querySelectorAll('.turn-ratio-row').forEach(row => {
                 row.addEventListener('mouseenter', (e) => {
-                    // 停止冒泡，避免觸發外層 Card 的 hover (如果外層也有效果的話)
                     e.stopPropagation();
-
                     clearLinkHighlights();
-                    highlightLink(e.target.dataset.from); // 高亮來源
-                    highlightLink(e.target.dataset.to);   // 高亮目的
-
-                    // 視覺回饋：讓該列背景變深一點點
-                    e.target.style.backgroundColor = '#e2e8f0';
+                    highlightLink(e.currentTarget.dataset.from);
+                    highlightLink(e.currentTarget.dataset.to);
+                    e.currentTarget.style.backgroundColor = '#e2e8f0';
                 });
                 row.addEventListener('mouseleave', (e) => {
                     clearLinkHighlights();
-                    e.target.style.backgroundColor = 'transparent';
+                    e.currentTarget.style.backgroundColor = 'transparent';
                 });
             });
 
-            // =======================================================
-
-            // =======================================================
-            // [新增] Links Tab 的高亮互動 (Connection Groups)
-            // =======================================================
             document.querySelectorAll('.connection-group-card').forEach(card => {
                 card.addEventListener('mouseenter', (e) => {
-                    // 清除舊高亮
                     clearLinkHighlights();
-
-                    // 讀取這張卡片紀錄的來源與目的 Link ID
                     const srcId = e.currentTarget.dataset.source;
                     const dstId = e.currentTarget.dataset.dest;
-
-                    // 高亮這兩條路，形成視覺路徑
                     if (srcId) highlightLink(srcId);
                     if (dstId) highlightLink(dstId);
-
-                    // 視覺回饋：讓卡片邊框稍微明顯一點
                     e.currentTarget.style.borderColor = 'var(--primary)';
                 });
-
                 card.addEventListener('mouseleave', (e) => {
                     clearLinkHighlights();
-                    // 恢復邊框
-                    e.currentTarget.style.borderColor = ''; // 恢復 CSS 定義的顏色 (var(--border-light))
+                    e.currentTarget.style.borderColor = '';
                 });
             });
-            // =======================================================
 
-            // 6. Redraw Connections
-            const redrawBtn = document.getElementById('redraw-node-connections-btn');
-            if (redrawBtn) {
-                redrawBtn.addEventListener('click', () => {
-                    redrawNodeConnections(obj.id);
-                });
-            }
+            document.getElementById('redraw-node-connections-btn')?.addEventListener('click', () => {
+                redrawNodeConnections(obj.id);
+            });
 
-            // --- 新增：重設手動多邊形按鈕 ---
-            const resetShapeBtn = document.getElementById('reset-node-shape-btn');
-            if (resetShapeBtn) {
-                resetShapeBtn.addEventListener('click', () => {
-                    obj.customPolygonPoints = null; // 清除自訂點
-                    drawNodeHandles(obj);           // 重新讀取自動計算的點並產生控制點
-                    layer.batchDraw();              // 更新畫面
-                    updatePropertiesPanel(obj);     // 更新面板(隱藏重設按鈕)
-                    saveState();
-                });
+            document.getElementById('reset-node-shape-btn')?.addEventListener('click', () => {
+                obj.customPolygonPoints = null;
+                drawNodeHandles(obj);
+                layer.batchDraw();
+                updatePropertiesPanel(obj);
+                saveState();
+            });
+
+            if (typeof bindSynchroNodePanelEvents === 'function') {
+                bindSynchroNodePanelEvents(propertiesContent, obj);
             }
         }
 
-        // --- DETECTOR (Point & Section) ---
+        // --- DETECTOR ---
         if (obj.type.includes('Detector')) {
-            const flowInput = document.getElementById('prop-det-flow');
-            if (flowInput) {
-                flowInput.addEventListener('change', (e) => {
-                    obj.observedFlow = parseFloat(e.target.value) || 0;
-                    saveState();
-                });
-            }
+            document.getElementById('prop-det-flow')?.addEventListener('change', (e) => {
+                obj.observedFlow = parseFloat(e.target.value) || 0;
+                saveState();
+            });
 
-            const sourceCheck = document.getElementById('prop-det-is-source');
-            if (sourceCheck) {
-                sourceCheck.addEventListener('change', (e) => {
-                    obj.isSource = e.target.checked;
-                    updatePropertiesPanel(obj);
-                    saveState();
-                });
-            }
+            document.getElementById('prop-det-is-source')?.addEventListener('change', (e) => {
+                obj.isSource = e.target.checked;
+                updatePropertiesPanel(obj);
+                saveState();
+            });
 
-            // [新增] 處理權重列表的事件監聽
             if (obj.isSource) {
-                // 1. 下拉選單變更 (利用事件委派或直接綁定，這裡用 id 查找)
                 obj.spawnProfiles.forEach((_, idx) => {
-                    const sel = document.getElementById(`det-prof-sel-${idx}`);
-                    if (sel) {
-                        sel.addEventListener('change', (e) => {
-                            obj.spawnProfiles[idx].profileId = e.target.value;
-                            saveState();
-                        });
-                    }
+                    document.getElementById(`det-prof-sel-${idx}`)?.addEventListener('change', (e) => {
+                        obj.spawnProfiles[idx].profileId = e.target.value;
+                        saveState();
+                    });
                 });
 
-                // 2. 權重變更
                 document.querySelectorAll('.det-prof-weight').forEach(input => {
                     input.addEventListener('change', (e) => {
                         const idx = parseInt(e.target.dataset.index);
@@ -10353,99 +10059,65 @@ document.addEventListener('DOMContentLoaded', () => {
                     });
                 });
 
-                // 3. 刪除按鈕
                 document.querySelectorAll('.det-prof-del-btn').forEach(btn => {
                     btn.addEventListener('click', (e) => {
-                        const idx = parseInt(e.target.dataset.index);
+                        const idx = parseInt(e.currentTarget.dataset.index);
                         obj.spawnProfiles.splice(idx, 1);
                         updatePropertiesPanel(obj);
                         saveState();
                     });
                 });
 
-                // 4. 新增按鈕
-                const addBtn = document.getElementById('btn-add-det-profile');
-                if (addBtn) {
-                    addBtn.addEventListener('click', () => {
-                        // [修改] 預設加入第一個可用的 profile，或 'car'
-                        const firstKey = Object.keys(network.vehicleProfiles)[0] || 'car';
-                        obj.spawnProfiles.push({ profileId: firstKey, weight: 1.0 });
-                        updatePropertiesPanel(obj);
-                    });
+                document.getElementById('btn-add-det-profile')?.addEventListener('click', () => {
+                    const firstKey = Object.keys(network.vehicleProfiles)[0] || 'car';
+                    obj.spawnProfiles.push({ profileId: firstKey, weight: 1.0 });
+                    updatePropertiesPanel(obj);
+                });
+            }
+
+            document.getElementById('btn-manage-profiles')?.addEventListener('click', () => {
+                const dummyOrigin = { id: 'Global_Profiles', periods: [] };
+                currentModalOrigin = dummyOrigin;
+                document.getElementById('spawner-modal-title').textContent = `Global Vehicle Profiles`;
+                renderSpawnerProfilesTab();
+                document.getElementById('spawner-modal').style.display = 'block';
+
+                const profileTab = document.querySelector('.tab-link[data-tab="spawner-profiles"]');
+                const periodsTab = document.querySelector('.tab-link[data-tab="spawner-periods"]');
+
+                if (profileTab) {
+                    profileTab.classList.add('active');
+                    document.getElementById('spawner-profiles')?.classList.add('active');
+                    document.getElementById('spawner-periods')?.classList.remove('active');
+                    periodsTab?.classList.remove('active');
                 }
-            }
+                if (periodsTab) periodsTab.style.display = 'none';
 
-            // [新增] 車輛種類選擇 (如果顯示的話)
-            // [重要] 確保這段監聽器存在
-            const profileSelect = document.getElementById('prop-det-profile');
-            if (profileSelect) {
-                profileSelect.addEventListener('change', (e) => {
-                    obj.spawnProfileId = e.target.value;
-                });
-            }
+                document.getElementById('spawner-save-btn').onclick = () => {
+                    const profileElements = document.querySelectorAll('#spawner-profiles-list .spawner-profile-item');
+                    const updatedProfiles = {};
+                    profileElements.forEach(div => {
+                        const newId = div.querySelector('.profile-id').value;
+                        const newProfile = { id: newId };
+                        div.querySelectorAll('.profile-prop').forEach(input => { newProfile[input.dataset.prop] = parseFloat(input.value); });
+                        updatedProfiles[newId] = newProfile;
+                    });
+                    network.vehicleProfiles = updatedProfiles;
+                    document.getElementById('spawner-modal').style.display = 'none';
+                    if (periodsTab) periodsTab.style.display = 'inline-block';
+                    currentModalOrigin = null;
+                    updatePropertiesPanel(obj);
+                    saveState();
+                };
+            });
 
-            const manageProfilesBtn = document.getElementById('btn-manage-profiles');
-            if (manageProfilesBtn) {
-                manageProfilesBtn.addEventListener('click', () => {
-                    // 1. 建立假 Origin 以開啟 Modal
-                    const dummyOrigin = { id: 'Global_Profiles', periods: [] };
-                    currentModalOrigin = dummyOrigin;
+            document.getElementById('prop-det-name')?.addEventListener('change', e => {
+                obj.name = e.target.value;
+                updatePropertiesPanel(obj);
+                saveState();
+            });
 
-                    document.getElementById('spawner-modal-title').textContent = `Global Vehicle Profiles`;
-
-                    // 2. 顯示 Modal 並強制切換到 Profile 分頁
-                    renderSpawnerProfilesTab();
-                    document.getElementById('spawner-modal').style.display = 'block';
-
-                    const profileTab = document.querySelector('.tab-link[data-tab="spawner-profiles"]');
-                    const periodsTab = document.querySelector('.tab-link[data-tab="spawner-periods"]');
-
-                    if (profileTab) {
-                        profileTab.classList.add('active');
-                        const tabContent = document.getElementById('spawner-profiles');
-                        if (tabContent) tabContent.classList.add('active');
-
-                        // 隱藏另一個分頁的內容
-                        const periodsContent = document.getElementById('spawner-periods');
-                        if (periodsContent) periodsContent.classList.remove('active');
-                        const periodsTabLink = document.querySelector('.tab-link[data-tab="spawner-periods"]');
-                        if (periodsTabLink) periodsTabLink.classList.remove('active');
-                    }
-
-                    if (periodsTab) periodsTab.style.display = 'none'; // 隱藏時間分頁按鈕
-
-                    // 3. 修改 Save 按鈕行為
-                    const saveBtn = document.getElementById('spawner-save-btn');
-
-                    saveBtn.onclick = () => {
-                        const profileElements = document.querySelectorAll('#spawner-profiles-list .spawner-profile-item');
-                        const updatedProfiles = {};
-                        profileElements.forEach(div => {
-                            const newId = div.querySelector('.profile-id').value;
-                            const newProfile = { id: newId };
-                            div.querySelectorAll('.profile-prop').forEach(input => { newProfile[input.dataset.prop] = parseFloat(input.value); });
-                            updatedProfiles[newId] = newProfile;
-                        });
-                        network.vehicleProfiles = updatedProfiles;
-
-                        // 關閉視窗並恢復
-                        document.getElementById('spawner-modal').style.display = 'none';
-                        if (periodsTab) periodsTab.style.display = 'inline-block';
-                        currentModalOrigin = null;
-
-                        // 重新整理屬性面板以更新下拉選單
-                        updatePropertiesPanel(obj);
-                        saveState();
-                    };
-                });
-            }
-
-            // 基本屬性監聽
-            const nameInput = document.getElementById('prop-det-name');
-            if (nameInput) nameInput.addEventListener('change', e => { obj.name = e.target.value; });
-
-            const posInput = document.getElementById('prop-det-pos');
-            if (posInput) posInput.addEventListener('change', e => {
+            document.getElementById('prop-det-pos')?.addEventListener('change', e => {
                 let newPos = parseFloat(e.target.value);
                 if (obj.type === 'SectionDetector' && newPos < obj.length) {
                     newPos = obj.length;
@@ -10454,11 +10126,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 obj.position = newPos;
                 drawDetector(obj);
                 layer.batchDraw();
+                saveState();
             });
 
             if (obj.type === 'SectionDetector') {
-                const lenInput = document.getElementById('prop-det-len');
-                if (lenInput) lenInput.addEventListener('change', e => {
+                document.getElementById('prop-det-len')?.addEventListener('change', e => {
                     let newLen = parseFloat(e.target.value);
                     if (obj.position < newLen) {
                         newLen = obj.position;
@@ -10470,49 +10142,59 @@ document.addEventListener('DOMContentLoaded', () => {
                     saveState();
                 });
             }
-
-            // --- [新增] 刪除按鈕監聽 ---
-            const delDetBtn = document.getElementById('btn-delete-detector');
-            if (delDetBtn) {
-                delDetBtn.addEventListener('click', () => {
-                    if (confirm(I18N.t('Delete this detector?'))) {
-                        deleteDetector(obj.id); // 呼叫既有的刪除函數
-                        deselectAll();          // 取消選取並清空面板
-                        layer.batchDraw();      // 重繪畫面
-                        saveState();            // 儲存狀態
-                    }
-                });
-            }
         }
 
         // --- LINK ---
         if (obj.type === 'Link') {
+            document.getElementById('prop-edit-median')?.addEventListener('change', (e) => {
+                let val = parseFloat(e.target.value);
+                if (isNaN(val) || val < 0) val = 0;
+                e.target.value = val;
+                updatePairedLinksGeometry(obj, val);
+                saveState();
+            });
 
-            // [新增] 雙向道路分隔島寬度變更事件
-            const medianInput = document.getElementById('prop-edit-median');
-            if (medianInput) {
-                medianInput.addEventListener('change', (e) => {
-                    let val = parseFloat(e.target.value);
-                    if (isNaN(val) || val < 0) val = 0;
-                    e.target.value = val; // 寫回 UI 防呆結果
+            // 標準模式車道數直接修改
+            document.getElementById('prop-lanes')?.addEventListener('change', (e) => {
+                let targetCount = Math.max(1, Math.min(10, parseInt(e.target.value, 10) || 1));
+                if (typeof applySynchroLaneConfig === 'function') {
+                    applySynchroLaneConfig(obj, getDefaultSynchroLaneTurns(targetCount));
+                    updatePropertiesPanel(obj);
+                }
+            });
 
-                    updatePairedLinksGeometry(obj, val);
-                    saveState();
-                });
-            }
-            // ============================================================
-            // Parametric 面板事件綁定
-            // ============================================================
             if (obj.geometryType === 'parametric' && obj.parametricConfig) {
                 const c = obj.parametricConfig;
                 const updateParametric = () => {
                     generateParametricStrokes(obj);
-
                     const maxLaneIdx = obj.lanes.length - 1;
                     Object.values(network.connections).forEach(conn => {
                         if (conn.sourceLinkId === obj.id && conn.sourceLaneIndex > maxLaneIdx) deleteConnection(conn.id);
                         if (conn.destLinkId === obj.id && conn.destLaneIndex > maxLaneIdx) deleteConnection(conn.id);
                     });
+
+                    const ll = c.leftPocket && c.leftPocket.exists ? (c.leftPocket.lanes || 1) : 0;
+                    const tl = Math.max(1, c.throughLanes || 1);
+                    const rl = c.rightPocket && c.rightPocket.exists ? (c.rightPocket.lanes || 1) : 0;
+                    const autoTurns = [];
+                    for (let i = 0; i < ll; i++) autoTurns.push("L");
+                    for (let i = 0; i < tl; i++) {
+                        if (tl === 1) autoTurns.push((ll > 0 ? "" : "L") + "T" + (rl > 0 ? "" : "R"));
+                        else if (i === 0) autoTurns.push(ll > 0 ? "T" : "LT");
+                        else if (i === tl - 1) autoTurns.push(rl > 0 ? "T" : "TR");
+                        else autoTurns.push("T");
+                    }
+                    for (let i = 0; i < rl; i++) autoTurns.push("R");
+
+                    if (typeof applySynchroLaneConfig === "function") {
+                        applySynchroLaneConfig(obj, autoTurns, { skipSave: true });
+                        if (obj.startNodeId && network.nodes[obj.startNodeId]) {
+                            network.nodes[obj.startNodeId].incomingLinkIds.forEach(upInId => {
+                                const upInLink = network.links[upInId];
+                                if (upInLink) applySynchroLaneConfig(upInLink, inferSynchroLaneTurns(upInLink), { skipSave: true });
+                            });
+                        }
+                    }
 
                     drawLink(obj);
                     updateDependencies(obj);
@@ -10522,15 +10204,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 };
 
                 const bindInt = (id, objRef, key) => {
-                    const el = document.getElementById(id);
-                    if (el) el.addEventListener('change', e => {
+                    document.getElementById(id)?.addEventListener('change', e => {
                         objRef[key] = Math.max(1, parseInt(e.target.value, 10) || 1);
                         updateParametric();
                     });
                 };
                 const bindFloat = (id, objRef, key) => {
-                    const el = document.getElementById(id);
-                    if (el) el.addEventListener('change', e => {
+                    document.getElementById(id)?.addEventListener('change', e => {
                         objRef[key] = Math.max(0.1, parseFloat(e.target.value) || 0.1);
                         updateParametric();
                     });
@@ -10554,6 +10234,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     c.rightPocket.exists = e.target.checked;
                     updateParametric();
                 });
+
                 document.getElementById('btn-bake-to-mesh')?.addEventListener('click', () => {
                     if (confirm("轉換為手繪標線模式？轉換後將無法再使用拉桿快速調整。")) {
                         obj.geometryType = 'lane-based';
@@ -10566,16 +10247,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             }
 
-            // [新增] 名稱變更事件 (確保名稱能被儲存)
-            const nameInput = document.getElementById('prop-link-name');
-            if (nameInput) {
-                nameInput.addEventListener('change', (e) => {
-                    obj.name = e.target.value;
-                    saveState();
-                });
-            }
+            document.getElementById('prop-link-name')?.addEventListener('change', (e) => {
+                obj.name = e.target.value;
+                updatePropertiesPanel(obj);
+                saveState();
+            });
 
-            // [新增] 路面透明度變更事件
             const opacityInput = document.getElementById('prop-link-opacity');
             const opacityVal = document.getElementById('prop-link-opacity-val');
             if (opacityInput) {
@@ -10583,8 +10260,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     const val = parseFloat(e.target.value);
                     obj.roadOpacity = val;
                     if (opacityVal) opacityVal.textContent = val;
-
-                    // 只改變底層路面的透明度，讓車道標線依然清晰
                     const roadShape = obj.konvaGroup.findOne('.road-surface');
                     if (roadShape) {
                         roadShape.opacity(val);
@@ -10592,33 +10267,24 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 });
             }
-            // ============================================================
-            // [新增] Lane-Based 標線編輯器事件綁定
-            // ============================================================
-            if (obj.geometryType === 'lane-based' && obj.strokes) {
 
-                // 1. 變更既有標線的型態
+            if (obj.geometryType === 'lane-based' && obj.strokes) {
                 document.querySelectorAll('.lb-stroke-type-select').forEach(select => {
                     select.addEventListener('change', (e) => {
                         const idx = parseInt(e.target.dataset.index, 10);
                         obj.strokes[idx].type = e.target.value;
-
                         drawLink(obj);
                         layer.batchDraw();
                         saveState();
                     });
                 });
 
-                // 2. 刪除既有車道線
                 document.querySelectorAll('.lb-stroke-del-btn').forEach(btn => {
                     btn.addEventListener('click', (e) => {
                         const idx = parseInt(e.currentTarget.dataset.index, 10);
-
                         if (confirm("Remove this divider line? (Will merge adjacent lanes)")) {
                             obj.strokes.splice(idx, 1);
-                            if (obj.lanes && obj.lanes.length > 1) {
-                                obj.lanes.pop();
-                            }
+                            if (obj.lanes && obj.lanes.length > 1) obj.lanes.pop();
                             updateLaneBasedGeometry(obj);
                             drawLink(obj);
                             drawWaypointHandles(obj);
@@ -10630,7 +10296,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     });
                 });
 
-                // 3. 綁定自訂圖文下拉選單與手動繪製按鈕
                 const addStrokeBtn = document.getElementById('btn-lb-add-stroke');
                 const customDropdown = document.getElementById('custom-stroke-dropdown');
                 const customHeader = document.getElementById('custom-stroke-header');
@@ -10638,72 +10303,56 @@ document.addEventListener('DOMContentLoaded', () => {
                 const customSelected = document.getElementById('custom-stroke-selected');
 
                 if (customDropdown && customHeader && customList) {
-                    // 點擊標頭：展開/收起選單
                     customHeader.addEventListener('click', (e) => {
                         e.stopPropagation();
                         customList.style.display = customList.style.display === 'none' ? 'block' : 'none';
                     });
 
-                    // 點擊選項：更新標頭、記錄變數並收起選單
                     customList.querySelectorAll('.custom-stroke-option').forEach(opt => {
                         opt.addEventListener('click', (e) => {
                             e.stopPropagation();
                             draftCurrentStrokeType = opt.dataset.value;
-                            // 複製該選項內部的 HTML (圖示與文字) 到標頭中
                             customSelected.innerHTML = opt.innerHTML;
                             customList.style.display = 'none';
                         });
-
-                        // 滑鼠 Hover 效果
                         opt.addEventListener('mouseenter', () => { opt.style.backgroundColor = '#f1f5f9'; });
                         opt.addEventListener('mouseleave', () => { opt.style.backgroundColor = 'transparent'; });
                     });
 
-                    // 點擊空白處關閉選單
                     document.addEventListener('click', (e) => {
-                        if (!customDropdown.contains(e.target)) {
-                            customList.style.display = 'none';
-                        }
-                    }, { once: true }); // 用 once 避免重複綁定，但因為每次渲染都會重建 DOM，這層防護對象是 global 的 click
+                        if (!customDropdown.contains(e.target)) customList.style.display = 'none';
+                    }, { once: true });
                 }
 
                 if (addStrokeBtn) {
                     addStrokeBtn.addEventListener('click', () => {
                         appendingStrokeToLink = obj;
-                        // draftCurrentStrokeType 在點擊選項時已經更新，直接套用
                         setTool('append-lane-stroke');
                     });
                 }
             }
-            // ============================================================
-            // [修復] 綁定 TAB 2: Connections 列表的互動事件
-            // ============================================================
 
-            // 1. 綁定清單項目的 Hover 高亮與點擊選取
+            // TAB 2: Connections 列表互動
             document.querySelectorAll('.conn-list-item').forEach(item => {
                 const connId = item.dataset.connId;
                 const conn = network.connections[connId];
 
-                // 滑鼠移入：將該單獨連接線高亮 (變色、變粗)
                 item.addEventListener('mouseenter', () => {
-                    item.style.backgroundColor = '#e2e8f0'; // 面板清單背景變色
+                    item.style.backgroundColor = '#eff6ff';
                     if (conn && conn.konvaBezier) {
-                        // 記錄原來的顏色和粗細
                         if (!conn.konvaBezier.getAttr('originalStroke')) {
                             conn.konvaBezier.setAttr('originalStroke', conn.konvaBezier.stroke());
                             conn.konvaBezier.setAttr('originalStrokeWidth', conn.konvaBezier.strokeWidth());
                         }
-                        // 高亮：變成鮮明的亮橘黃色並加粗
-                        conn.konvaBezier.stroke('#fbbf24'); // 鮮明橘黃色 (Amber)
-                        conn.konvaBezier.strokeWidth(1);
-                        conn.konvaBezier.moveToTop(); // 移到最上層，避免被其他線遮住
+                        conn.konvaBezier.stroke('#fbbf24');
+                        conn.konvaBezier.strokeWidth(2);
+                        conn.konvaBezier.moveToTop();
                         layer.batchDraw();
                     }
                 });
 
-                // 滑鼠移出：恢復原來的顏色和粗細
                 item.addEventListener('mouseleave', () => {
-                    item.style.backgroundColor = 'transparent';
+                    item.style.backgroundColor = '#ffffff';
                     if (conn && conn.konvaBezier) {
                         const originalStroke = conn.konvaBezier.getAttr('originalStroke');
                         const originalStrokeWidth = conn.konvaBezier.getAttr('originalStrokeWidth');
@@ -10713,55 +10362,41 @@ document.addEventListener('DOMContentLoaded', () => {
                             conn.konvaBezier.setAttr('originalStroke', null);
                             conn.konvaBezier.setAttr('originalStrokeWidth', null);
                         }
-
-                        // 【注意】這裡不呼叫 visible(false)，因為 Link 還在選取狀態，線應該保持顯示
                         layer.batchDraw();
                     }
                 });
 
-                // 點擊：選取該條連線
                 item.addEventListener('click', (e) => {
-                    if (e.target.closest('.btn-del-single-conn')) return; // 避開刪除按鈕
+                    if (e.target.closest('.btn-del-single-conn')) return;
                     if (conn) {
-                        item.dispatchEvent(new MouseEvent('mouseleave')); // 切換前先清除高亮
+                        item.dispatchEvent(new MouseEvent('mouseleave'));
                         selectObject(conn);
                     }
                 });
             });
 
-
-            // 2. 綁定刪除按鈕
             document.querySelectorAll('.btn-del-single-conn').forEach(btn => {
                 btn.addEventListener('click', (e) => {
-                    e.stopPropagation(); // 阻止冒泡觸發選取
+                    e.stopPropagation();
                     const connId = btn.dataset.id;
-
                     if (confirm(typeof I18N !== 'undefined' && I18N.t ? I18N.t("Remove this connection?") : "Remove this connection?")) {
                         deleteConnection(connId);
-
-                        // 同步檢查並清理可能變空的綠色 Group 線條
                         layer.find('.group-connection-visual').forEach(g => {
                             const meta = g.getAttr('meta');
                             if (meta && meta.connectionIds) {
                                 meta.connectionIds = meta.connectionIds.filter(id => id !== connId);
-                                if (meta.connectionIds.length === 0) {
-                                    g.destroy();
-                                } else {
-                                    g.setAttr('meta', meta);
-                                }
+                                if (meta.connectionIds.length === 0) g.destroy();
+                                else g.setAttr('meta', meta);
                             }
                         });
-
-                        updatePropertiesPanel(obj); // 重新渲染目前的面板
+                        updatePropertiesPanel(obj);
                         layer.batchDraw();
                         saveState();
                     }
                 });
             });
 
-            // ============================================================
-            // [新增] 車種限制 Checkbox 變更事件
-            // ============================================================
+            // 車種限制 Checkbox 膠囊變更事件
             document.querySelectorAll('.prop-lane-vehicle-cb').forEach(cb => {
                 cb.addEventListener('change', (e) => {
                     const laneIdx = parseInt(e.target.dataset.lane, 10);
@@ -10769,7 +10404,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     const lane = obj.lanes[laneIdx];
 
                     if (!lane.allowedVehicleProfiles || lane.allowedVehicleProfiles.length === 0) {
-                        // 如果原本是空的 (代表全允許)，在第一次取消勾選時，先初始化為包含所有現有車種
                         lane.allowedVehicleProfiles = Object.keys(network.vehicleProfiles);
                     }
 
@@ -10778,16 +10412,13 @@ document.addEventListener('DOMContentLoaded', () => {
                             lane.allowedVehicleProfiles.push(profId);
                         }
                     } else {
-                        // 取消勾選時移除該車種
                         lane.allowedVehicleProfiles = lane.allowedVehicleProfiles.filter(id => id !== profId);
                     }
-                    saveState(); // 觸發 Undo 紀錄
+                    saveState();
                 });
             });
 
-            // ============================================================
-            // [精準輪廓版] 邏輯車道 Hover 實體多邊形高亮事件 (支援全模式)
-            // ============================================================
+            // 車道列 Hover 畫布多邊形高亮預覽
             const clearLaneHighlight = () => {
                 layer.find('.lane-polygon-highlight').forEach(s => s.destroy());
                 layer.batchDraw();
@@ -10802,19 +10433,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     let finalL = [];
                     let finalR = [];
 
-                    // --- 模式 A: Lane-Based 或 Parametric (基於實體標線投影切割) ---
                     if ((obj.geometryType === 'lane-based' || obj.geometryType === 'parametric') && obj.strokes && obj.strokes.length >= 2) {
-                        let leftStroke = undefined;
-                        let rightStroke = undefined;
+                        let leftStroke = lane.leftStrokeId !== undefined ? obj.strokes.find(s => String(s.id) === String(lane.leftStrokeId)) : undefined;
+                        let rightStroke = lane.rightStrokeId !== undefined ? obj.strokes.find(s => String(s.id) === String(lane.rightStrokeId)) : undefined;
 
-                        if (lane.leftStrokeId !== undefined) {
-                            leftStroke = obj.strokes.find(s => String(s.id) === String(lane.leftStrokeId));
-                        }
-                        if (lane.rightStrokeId !== undefined) {
-                            rightStroke = obj.strokes.find(s => String(s.id) === String(lane.rightStrokeId));
-                        }
-
-                        // 舊檔或防呆降級：依賴陣列順序
                         if (!leftStroke) leftStroke = obj.strokes[laneIdx];
                         if (!rightStroke) rightStroke = obj.strokes[laneIdx + 1] || obj.strokes[obj.strokes.length - 1];
                         if (!leftStroke || !rightStroke) return;
@@ -10822,17 +10444,13 @@ document.addEventListener('DOMContentLoaded', () => {
                         let leftPts = [...leftStroke.points];
                         let rightPts = [...rightStroke.points];
 
-                        // 幾何方向對齊：確保兩條線段前進方向一致
                         const dNorm = Math.hypot(leftPts[0].x - rightPts[0].x, leftPts[0].y - rightPts[0].y) +
                             Math.hypot(leftPts[leftPts.length - 1].x - rightPts[rightPts.length - 1].x, leftPts[leftPts.length - 1].y - rightPts[rightPts.length - 1].y);
                         const dRev = Math.hypot(leftPts[0].x - rightPts[rightPts.length - 1].x, leftPts[0].y - rightPts[rightPts.length - 1].y) +
                             Math.hypot(leftPts[leftPts.length - 1].x - rightPts[0].x, leftPts[leftPts.length - 1].y - rightPts[0].y);
 
-                        if (dRev < dNorm) {
-                            rightPts.reverse(); // 方向顛倒，強制轉正
-                        }
+                        if (dRev < dNorm) rightPts.reverse();
 
-                        // 多邊形重疊區域計算 (沿著路徑長度 S 軸投影)
                         const getPolyLength = (pts) => {
                             let l = 0;
                             for (let i = 0; i < pts.length - 1; i++) l += Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y);
@@ -10854,30 +10472,22 @@ document.addEventListener('DOMContentLoaded', () => {
                         };
 
                         const projectToPolylineS = (pt, poly) => {
-                            let minDist = Infinity;
-                            let bestS = 0;
-                            let curL = 0;
+                            let minDist = Infinity, bestS = 0, curL = 0;
                             for (let i = 0; i < poly.length - 1; i++) {
                                 const p1 = poly[i], p2 = poly[i + 1];
                                 const segL = Math.hypot(p2.x - p1.x, p2.y - p1.y);
                                 if (segL === 0) continue;
                                 let t = ((pt.x - p1.x) * (p2.x - p1.x) + (pt.y - p1.y) * (p2.y - p1.y)) / (segL * segL);
                                 t = Math.max(0, Math.min(1, t));
-                                const projX = p1.x + t * (p2.x - p1.x);
-                                const projY = p1.y + t * (p2.y - p1.y);
+                                const projX = p1.x + t * (p2.x - p1.x), projY = p1.y + t * (p2.y - p1.y);
                                 const d = Math.hypot(pt.x - projX, pt.y - projY);
-                                if (d < minDist) {
-                                    minDist = d;
-                                    bestS = curL + t * segL;
-                                }
+                                if (d < minDist) { minDist = d; bestS = curL + t * segL; }
                                 curL += segL;
                             }
                             return bestS;
                         };
 
-                        const lenL = getPolyLength(leftPts);
-                        const lenR = getPolyLength(rightPts);
-
+                        const lenL = getPolyLength(leftPts), lenR = getPolyLength(rightPts);
                         const projR0_on_L = projectToPolylineS(rightPts[0], leftPts);
                         const projREnd_on_L = projectToPolylineS(rightPts[rightPts.length - 1], leftPts);
                         const startL = Math.max(0, Math.min(projR0_on_L, projREnd_on_L));
@@ -10888,10 +10498,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         const startR = Math.max(0, Math.min(projL0_on_R, projLEnd_on_R));
                         const endR = Math.min(lenR, Math.max(projL0_on_R, projLEnd_on_R));
 
-                        // 如果重疊長度過短 (< 0.1m)，視為無效車道
                         if (endL - startL < 0.1 || endR - startR < 0.1) return;
 
-                        // 重建精確裁切後的邊界點列
                         finalL.push(getPointAtS(leftPts, startL));
                         let curL = 0;
                         for (let i = 0; i < leftPts.length - 1; i++) {
@@ -10907,234 +10515,157 @@ document.addEventListener('DOMContentLoaded', () => {
                             if (curR > startR + 0.05 && curR < endR - 0.05) finalR.push(rightPts[i + 1]);
                         }
                         finalR.push(getPointAtS(rightPts, endR));
-                    }
-                    // --- 模式 B: Standard (基於中心線等距平移) ---
-                    else {
+                    } else {
                         const totalWidth = getLinkTotalWidth(obj);
                         let startOffset = -totalWidth / 2;
-                        for (let i = 0; i < laneIdx; i++) {
-                            startOffset += obj.lanes[i].width;
-                        }
+                        for (let i = 0; i < laneIdx; i++) startOffset += obj.lanes[i].width;
                         let endOffset = startOffset + lane.width;
-
-                        // 利用現有函數平移出左右邊界
                         finalL = getOffsetPolyline(obj.waypoints, startOffset);
                         finalR = getOffsetPolyline(obj.waypoints, endOffset);
                     }
 
-                    // 防呆：確保算出了足夠的頂點
                     if (finalL.length < 2 || finalR.length < 2) return;
 
-                    // 繪製 Konva 閉合多邊形
                     const highlightShape = new Konva.Shape({
                         sceneFunc: (ctx, shape) => {
                             ctx.beginPath();
                             ctx.moveTo(finalL[0].x, finalL[0].y);
-                            // 順著左邊界往下畫
                             for (let i = 1; i < finalL.length; i++) ctx.lineTo(finalL[i].x, finalL[i].y);
-                            // 右側邊界必須「反向」接回，形成完美閉合迴圈
                             for (let i = finalR.length - 1; i >= 0; i--) ctx.lineTo(finalR[i].x, finalR[i].y);
                             ctx.closePath();
                             ctx.fillShape(shape);
                             ctx.strokeShape(shape);
                         },
-                        fill: 'rgba(59, 130, 246, 0.4)', // 半透明藍色
-                        stroke: '#2563eb', // 深藍色邊框
+                        fill: 'rgba(59, 130, 246, 0.4)',
+                        stroke: '#2563eb',
                         strokeWidth: 2,
                         name: 'lane-polygon-highlight',
-                        listening: false // 不攔截滑鼠點擊
+                        listening: false
                     });
 
                     clearLaneHighlight();
                     layer.add(highlightShape);
                     highlightShape.moveToTop();
                     layer.batchDraw();
-
-                    // 面板卡片的視覺回饋
-                    e.currentTarget.style.borderColor = '#3b82f6';
-                    e.currentTarget.style.boxShadow = '0 0 0 1px #3b82f6';
                 });
 
-                card.addEventListener('mouseleave', (e) => {
-                    clearLaneHighlight();
-                    e.currentTarget.style.borderColor = '#e2e8f0';
-                    e.currentTarget.style.boxShadow = 'none';
-                });
+                card.addEventListener('mouseleave', () => clearLaneHighlight());
             });
-            // ============================================================
-        }
 
-        // --- CONNECTION (單一連接線) ---
-        if (obj.type === 'Connection') {
-            const deleteBtn = document.getElementById('prop-conn-delete-btn');
-            if (deleteBtn) {
-                deleteBtn.addEventListener('click', () => {
-                    // 建議加入確認對話框，避免誤刪
-                    if (confirm(I18N.t(`Delete connection ${obj.id}?`))) {
-                        deleteConnection(obj.id); // 呼叫刪除函數
-                        deselectAll();            // 取消選取
-                        layer.batchDraw();        // 重繪畫面
-                    }
-                });
+            if (typeof bindSynchroLanePickerEvents === 'function') {
+                bindSynchroLanePickerEvents(propertiesContent, obj, 'link');
             }
         }
 
-        // --- CONNECTION GROUP (連接群組) ---
+        // --- CONNECTION GROUP ---
         if (obj.type === 'ConnectionGroup') {
-            // 編輯按鈕
-            const editBtn = document.getElementById('edit-group-btn');
-            if (editBtn) {
-                editBtn.addEventListener('click', () => {
-                    const sourceLink = network.links[obj.sourceLinkId];
-                    const destLink = network.links[obj.destLinkId];
-                    if (sourceLink && destLink) {
-                        // 取得目前滑鼠位置或螢幕中心作為彈出位置
-                        const modalPos = { x: window.innerWidth / 2 - 150, y: window.innerHeight / 2 - 150 };
-                        showLaneRangeSelector(sourceLink, destLink, modalPos, obj);
-                    }
-                });
-            }
-
-            // 刪除按鈕
-            const deleteGroupBtn = document.getElementById('delete-group-btn');
-            if (deleteGroupBtn) {
-                deleteGroupBtn.addEventListener('click', () => {
-                    if (confirm(I18N.t(`Delete connection group (contains ${obj.connectionIds.length} connections)?`))) {
-                        deleteConnectionGroup(obj); // 呼叫群組刪除函數
-                        deselectAll();
-                        layer.batchDraw();
-                    }
-                });
-            }
-        }
-
-
-        // --- TRAFFIC LIGHT SIGNAL GROUP SELECTOR (For Connection/Group) ---
-        const tflGroupSelect = document.getElementById('prop-tfl-group');
-        if (tflGroupSelect) {
-            tflGroupSelect.addEventListener('change', (e) => {
-                const newGroupId = e.target.value;
-                const nodeId = obj.nodeId;
-                const tfl = network.trafficLights[nodeId];
-                if (!tfl) return;
-
-                const connIdsToUpdate = (obj.type === 'Connection') ? [obj.id] : obj.connectionIds;
-
-                Object.values(tfl.signalGroups).forEach(group => {
-                    group.connIds = group.connIds.filter(id => !connIdsToUpdate.includes(id));
-                });
-
-                if (newGroupId && tfl.signalGroups[newGroupId]) {
-                    tfl.signalGroups[newGroupId].connIds.push(...connIdsToUpdate);
+            document.getElementById('edit-group-btn')?.addEventListener('click', () => {
+                const sourceLink = network.links[obj.sourceLinkId];
+                const destLink = network.links[obj.destLinkId];
+                if (sourceLink && destLink) {
+                    const modalPos = { x: window.innerWidth / 2 - 150, y: window.innerHeight / 2 - 150 };
+                    showLaneRangeSelector(sourceLink, destLink, modalPos, obj);
                 }
             });
         }
 
+        // --- CONNECTION / GROUP SIGNAL SELECTOR ---
+        document.getElementById('prop-conn-groupset-select')?.addEventListener('change', (e) => {
+            const tfl = network.trafficLights[obj.nodeId];
+            if (!tfl) return;
+            setActiveTflGroupSet(tfl, e.target.value);
+            updatePropertiesPanel(obj);
+        });
+
+        document.getElementById('prop-tfl-group')?.addEventListener('change', (e) => {
+            const newGroupId = e.target.value;
+            const tfl = network.trafficLights[obj.nodeId];
+            if (!tfl) return;
+            ensureTflGroupSets(tfl);
+
+            const connIdsToUpdate = (obj.type === 'Connection') ? [obj.id] : obj.connectionIds;
+            Object.values(tfl.signalGroups).forEach(group => {
+                group.connIds = group.connIds.filter(id => !connIdsToUpdate.includes(id));
+            });
+
+            if (newGroupId && tfl.signalGroups[newGroupId]) {
+                tfl.signalGroups[newGroupId].connIds.push(...connIdsToUpdate);
+            }
+            saveState();
+        });
+
         // --- ORIGIN ---
         if (obj.type === 'Origin') {
-            document.getElementById('configure-spawner-btn').addEventListener('click', () => showSpawnerEditor(obj));
+            document.getElementById('configure-spawner-btn')?.addEventListener('click', () => showSpawnerEditor(obj));
         }
 
         // --- ROAD SIGN ---
         if (obj.type === 'RoadSign') {
-            const typeSelect = document.getElementById('prop-sign-type');
-            if (typeSelect) {
-                typeSelect.addEventListener('change', e => {
-                    const oldType = obj.signType;
-                    obj.signType = e.target.value;
-                    const totalWidth = getLinkTotalWidth(network.links[obj.linkId]);
+            document.getElementById('prop-sign-type')?.addEventListener('change', e => {
+                const oldType = obj.signType;
+                obj.signType = e.target.value;
+                const totalWidth = getLinkTotalWidth(network.links[obj.linkId]);
 
-                    // 只有在使用者手動切換標誌類型時，才重新計算預設的擺放位置
-                    if (oldType !== 'traffic_cone' && obj.signType === 'traffic_cone') {
-                        obj.lateralOffset = 0; // 從路牌切換為交通錐，放回中央
-                    } else if (obj.signType !== 'traffic_cone') {
-                        obj.lateralOffset = (totalWidth / 2) + 8; // 切換回一般路牌，放到外側
-                    }
+                if (oldType !== 'traffic_cone' && obj.signType === 'traffic_cone') {
+                    obj.lateralOffset = 0;
+                } else if (obj.signType !== 'traffic_cone') {
+                    obj.lateralOffset = (totalWidth / 2) + 8;
+                }
 
-                    const limitRow = document.getElementById('prop-speed-limit-row');
-                    const offsetRow = document.getElementById('prop-cone-offset-row');
-                    if (limitRow) limitRow.style.display = (obj.signType === 'start') ? 'flex' : 'none';
-                    if (offsetRow) offsetRow.style.display = (obj.signType === 'traffic_cone') ? 'flex' : 'none';
+                const limitRow = document.getElementById('prop-speed-limit-row');
+                const offsetRow = document.getElementById('prop-cone-offset-row');
+                if (limitRow) limitRow.style.display = (obj.signType === 'start') ? 'flex' : 'none';
+                if (offsetRow) offsetRow.style.display = (obj.signType === 'traffic_cone') ? 'flex' : 'none';
 
-                    // 更新輸入框顯示的數值
-                    const offsetInput = document.getElementById('prop-cone-offset');
-                    if (offsetInput) offsetInput.value = obj.lateralOffset.toFixed(2);
+                const offsetInput = document.getElementById('prop-cone-offset');
+                if (offsetInput) offsetInput.value = obj.lateralOffset.toFixed(2);
 
-                    drawRoadSign(obj);
-                    layer.batchDraw();
-                    saveState();
-                });
-            }
+                drawRoadSign(obj);
+                layer.batchDraw();
+                saveState();
+            });
 
-            const limitInput = document.getElementById('prop-speed-limit');
-            if (limitInput) {
-                limitInput.addEventListener('change', e => {
-                    obj.speedLimit = parseFloat(e.target.value);
-                    saveState();
-                });
-            }
+            document.getElementById('prop-speed-limit')?.addEventListener('change', e => {
+                obj.speedLimit = parseFloat(e.target.value);
+                saveState();
+            });
 
-            const posInput = document.getElementById('prop-sign-pos');
-            if (posInput) {
-                posInput.addEventListener('change', e => {
-                    obj.position = parseFloat(e.target.value);
-                    drawRoadSign(obj);
-                    layer.batchDraw();
-                    saveState();
-                });
-            }
+            document.getElementById('prop-sign-pos')?.addEventListener('change', e => {
+                obj.position = parseFloat(e.target.value);
+                drawRoadSign(obj);
+                layer.batchDraw();
+                saveState();
+            });
 
-            const offsetInput = document.getElementById('prop-cone-offset');
-            if (offsetInput) {
-                offsetInput.addEventListener('change', e => {
-                    const totalWidth = getLinkTotalWidth(network.links[obj.linkId]);
-                    let val = parseFloat(e.target.value);
-                    val = Math.max(-totalWidth / 2, Math.min(totalWidth / 2, val));
-                    obj.lateralOffset = val;
-                    e.target.value = val.toFixed(2);
-                    drawRoadSign(obj);
-                    layer.batchDraw();
-                    saveState();
-                });
-            }
-
-            const delBtn = document.getElementById('btn-delete-sign');
-            if (delBtn) {
-                delBtn.addEventListener('click', () => {
-                    deleteRoadSign(obj.id);
-                    deselectAll();
-                    layer.batchDraw();
-                    saveState();
-                });
-            }
+            document.getElementById('prop-cone-offset')?.addEventListener('change', e => {
+                const totalWidth = getLinkTotalWidth(network.links[obj.linkId]);
+                let val = parseFloat(e.target.value);
+                val = Math.max(-totalWidth / 2, Math.min(totalWidth / 2, val));
+                obj.lateralOffset = val;
+                e.target.value = val.toFixed(2);
+                drawRoadSign(obj);
+                layer.batchDraw();
+                saveState();
+            });
         }
 
         // --- BACKGROUND ---
         if (obj.type === 'Background') {
-            // [新增] 返回圖層清單按鈕事件
-            const backBtn = document.getElementById('btn-bg-back-list');
-            if (backBtn) {
-                backBtn.addEventListener('click', () => {
-                    deselectAll(); // 取消選取會觸發 updatePropertiesPanel(null)，進而顯示圖層清單
-                });
-            }
+            document.getElementById('btn-bg-back-list')?.addEventListener('click', () => deselectAll());
 
-            //[新增] 名稱變更事件
-            const nameInput = document.getElementById('prop-bg-name');
-            if (nameInput) {
-                nameInput.addEventListener('change', (e) => {
-                    obj.name = e.target.value;
-                    saveState();
-                });
-            }
+            document.getElementById('prop-bg-name')?.addEventListener('change', (e) => {
+                obj.name = e.target.value;
+                updatePropertiesPanel(obj);
+                saveState();
+            });
+
             const fileBtn = document.getElementById('prop-bg-file-btn');
             const fileInput = document.getElementById('prop-bg-file-input');
             const opacityInput = document.getElementById('prop-bg-opacity');
             const scaleInput = document.getElementById('prop-bg-scale');
             const lockInput = document.getElementById('prop-bg-locked');
-            const delBtn = document.getElementById('btn-delete-bg');
 
-            if (fileBtn) fileBtn.addEventListener('click', () => fileInput.click());
+            if (fileBtn && fileInput) fileBtn.addEventListener('click', () => fileInput.click());
 
             if (fileInput) fileInput.addEventListener('change', (e) => {
                 const file = e.target.files[0];
@@ -11165,158 +10696,108 @@ document.addEventListener('DOMContentLoaded', () => {
                 reader.readAsDataURL(file);
             });
 
-            if (opacityInput) opacityInput.addEventListener('input', (e) => {
-                obj.opacity = Math.max(0, Math.min(100, parseInt(e.target.value, 10) || 0));
-                obj.konvaGroup.opacity(obj.opacity / 100);
-                layer.batchDraw();
-            });
-            if (opacityInput) opacityInput.addEventListener('change', saveState);
+            if (opacityInput) {
+                opacityInput.addEventListener('input', (e) => {
+                    obj.opacity = Math.max(0, Math.min(100, parseInt(e.target.value, 10) || 0));
+                    obj.konvaGroup.opacity(obj.opacity / 100);
+                    layer.batchDraw();
+                });
+                opacityInput.addEventListener('change', saveState);
+            }
 
-            if (scaleInput) scaleInput.addEventListener('change', (e) => {
-                const newScale = parseFloat(e.target.value);
-                if (isNaN(newScale) || newScale <= 0) return;
-                obj.scale = newScale;
-                obj.konvaGroup.scale({ x: newScale, y: newScale });
-                saveState();
-                layer.batchDraw();
-            });
+            if (scaleInput) {
+                scaleInput.addEventListener('change', (e) => {
+                    const newScale = parseFloat(e.target.value);
+                    if (isNaN(newScale) || newScale <= 0) return;
+                    obj.scale = newScale;
+                    obj.konvaGroup.scale({ x: newScale, y: newScale });
+                    saveState();
+                    layer.batchDraw();
+                });
+            }
 
-            // 獨立鎖定開關邏輯
-            if (lockInput) lockInput.addEventListener('change', (e) => {
-                obj.locked = e.target.checked;
-
-                // --- [修正] 同步設定 listening 屬性，允許事件穿透 ---
-                if (obj.konvaGroup) {
-                    obj.konvaGroup.draggable(!obj.locked);
-                    obj.konvaGroup.listening(!obj.locked);
-                }
-                if (obj.konvaHitArea) {
-                    obj.konvaHitArea.listening(!obj.locked);
-                }
-
-                // 重新選取以拔除或加入變形框 (Transformer)
-                selectObject(obj);
-                saveState();
-            });
-
-            if (delBtn) delBtn.addEventListener('click', () => {
-                deleteSelectedObject();
-            });
+            if (lockInput) {
+                lockInput.addEventListener('change', (e) => {
+                    obj.locked = e.target.checked;
+                    if (obj.konvaGroup) {
+                        obj.konvaGroup.draggable(!obj.locked);
+                        obj.konvaGroup.listening(!obj.locked);
+                    }
+                    if (obj.konvaHitArea) obj.konvaHitArea.listening(!obj.locked);
+                    selectObject(obj);
+                    saveState();
+                });
+            }
         }
 
         // --- OVERPASS ---
         if (obj.type === 'Overpass') {
-            const swapBtn = document.getElementById('swap-overpass-btn');
-            if (swapBtn) {
-                swapBtn.addEventListener('click', () => {
-                    const currentTop = obj.topLinkId;
-                    obj.topLinkId = (currentTop === obj.linkId1) ? obj.linkId2 : obj.linkId1;
-                    applyOverpassOrder(obj);
-                    updateAllOverpasses();
-                    layer.batchDraw();
-                    updatePropertiesPanel(obj);
-                });
-            }
+            document.getElementById('swap-overpass-btn')?.addEventListener('click', () => {
+                const currentTop = obj.topLinkId;
+                obj.topLinkId = (currentTop === obj.linkId1) ? obj.linkId2 : obj.linkId1;
+                applyOverpassOrder(obj);
+                updateAllOverpasses();
+                layer.batchDraw();
+                updatePropertiesPanel(obj);
+            });
 
-            // [新增] 將立體交叉轉換為路口事件
-            const createIntBtn = document.getElementById('btn-overpass-to-intersection');
-            if (createIntBtn) {
-                createIntBtn.addEventListener('click', () => {
-                    const confirmMsg = (typeof I18N !== 'undefined' && I18N.t)
-                        ? I18N.t("Convert this overpass into an intersection?")
-                        : "Convert this overpass into an intersection?";
-
-                    if (confirm(confirmMsg)) {
-                        // 1. 取得 Overpass 的紅框範圍
-                        const r = obj.konvaRect;
-
-                        // 稍微將框向外擴展一點 (5px)，確保兩條路徑都被確實包覆並判定為交會
-                        const padding = 5;
-                        const polyPoints = [
-                            { x: r.x() - padding, y: r.y() - padding },
-                            { x: r.x() + r.width() + padding, y: r.y() - padding },
-                            { x: r.x() + r.width() + padding, y: r.y() + r.height() + padding },
-                            { x: r.x() - padding, y: r.y() + r.height() + padding }
-                        ];
-
-                        // 2. 暫時強制切換為 Point Mode (中心聚合模式)
-                        const originalMode = intersectionMode;
-                        intersectionMode = 'point';
-
-                        // 3. 執行手動路口建立核心流程
-                        processManualIntersection(polyPoints);
-
-                        // 4. 恢復原設定並儲存狀態
-                        intersectionMode = originalMode;
-                        saveState();
-                    }
-                });
-            }
+            document.getElementById('btn-overpass-to-intersection')?.addEventListener('click', () => {
+                const confirmMsg = (typeof I18N !== 'undefined' && I18N.t)
+                    ? I18N.t("Convert this overpass into an intersection?")
+                    : "Convert this overpass into an intersection?";
+                if (confirm(confirmMsg)) {
+                    const r = obj.konvaRect;
+                    const padding = 5;
+                    const polyPoints = [
+                        { x: r.x() - padding, y: r.y() - padding },
+                        { x: r.x() + r.width() + padding, y: r.y() - padding },
+                        { x: r.x() + r.width() + padding, y: r.y() + r.height() + padding },
+                        { x: r.x() - padding, y: r.y() + r.height() + padding }
+                    ];
+                    const originalMode = intersectionMode;
+                    intersectionMode = 'point';
+                    processManualIntersection(polyPoints);
+                    intersectionMode = originalMode;
+                    saveState();
+                }
+            });
         }
 
         // --- PUSHPIN ---
         if (obj.type === 'Pushpin') {
-            const latInput = document.getElementById('prop-pin-lat');
-            const lonInput = document.getElementById('prop-pin-lon');
-            const delBtn = document.getElementById('btn-delete-pin');
-
-            if (latInput) latInput.addEventListener('change', (e) => {
+            document.getElementById('prop-pin-lat')?.addEventListener('change', (e) => {
                 obj.lat = parseFloat(e.target.value) || 0;
                 drawPushpin(obj);
                 layer.batchDraw();
+                saveState();
             });
-
-            if (lonInput) lonInput.addEventListener('change', (e) => {
+            document.getElementById('prop-pin-lon')?.addEventListener('change', (e) => {
                 obj.lon = parseFloat(e.target.value) || 0;
                 drawPushpin(obj);
                 layer.batchDraw();
-            });
-
-            if (delBtn) delBtn.addEventListener('click', () => {
-                deleteSelectedObject();
+                saveState();
             });
         }
 
         // --- PARKING LOT ---
-        // --- PARKING LOT ---
         if (obj.type === 'ParkingLot') {
-            const nameInput = document.getElementById('prop-pl-name');
-            const carInput = document.getElementById('prop-pl-car');
-            const motoInput = document.getElementById('prop-pl-moto');
-            // [新增] 取得 DOM 元素
-            const attrInput = document.getElementById('prop-pl-attr');
-            // [新增] 取得 DOM 元素
-            const durInput = document.getElementById('prop-pl-duration');
-            const delBtn = document.getElementById('btn-delete-pl');
-
-            if (nameInput) nameInput.addEventListener('change', (e) => { obj.name = e.target.value; });
-            if (carInput) carInput.addEventListener('change', (e) => { obj.carCapacity = parseInt(e.target.value) || 0; });
-            if (motoInput) motoInput.addEventListener('change', (e) => { obj.motoCapacity = parseInt(e.target.value) || 0; });
-
-            // [新增] 監聽事件並驗證範圍 0-100
-            if (attrInput) {
-                attrInput.addEventListener('change', (e) => {
-                    let val = parseFloat(e.target.value);
-                    if (isNaN(val)) val = 0;
-                    val = Math.max(0, Math.min(100, val)); // 限制範圍
-                    e.target.value = val;
-                    obj.attractionProb = val;
-                });
-            }
-            // [新增] 監聽 Stay Duration 變更
-            if (durInput) {
-                durInput.addEventListener('change', (e) => {
-                    let val = parseFloat(e.target.value);
-                    if (isNaN(val) || val < 0) val = 0; // 確保非負數
-                    e.target.value = val;
-                    obj.stayDuration = val;
-                });
-            }
-
-            if (delBtn) delBtn.addEventListener('click', () => {
-                deleteParkingLot(obj.id);
-                deselectAll();
-                layer.batchDraw();
+            document.getElementById('prop-pl-name')?.addEventListener('change', (e) => { obj.name = e.target.value; updatePropertiesPanel(obj); saveState(); });
+            document.getElementById('prop-pl-car')?.addEventListener('change', (e) => { obj.carCapacity = parseInt(e.target.value) || 0; saveState(); });
+            document.getElementById('prop-pl-moto')?.addEventListener('change', (e) => { obj.motoCapacity = parseInt(e.target.value) || 0; saveState(); });
+            document.getElementById('prop-pl-attr')?.addEventListener('change', (e) => {
+                let val = parseFloat(e.target.value);
+                if (isNaN(val)) val = 0;
+                val = Math.max(0, Math.min(100, val));
+                e.target.value = val;
+                obj.attractionProb = val;
+                saveState();
+            });
+            document.getElementById('prop-pl-duration')?.addEventListener('change', (e) => {
+                let val = parseFloat(e.target.value);
+                if (isNaN(val) || val < 0) val = 0;
+                e.target.value = val;
+                obj.stayDuration = val;
+                saveState();
             });
         }
 
@@ -11331,17 +10812,13 @@ document.addEventListener('DOMContentLoaded', () => {
             const autoCalcCheck = document.getElementById('prop-zone-autocalc');
             const popInput = document.getElementById('prop-zone-pop');
             const empInput = document.getElementById('prop-zone-emp');
-            const resetBtn = document.getElementById('btn-zone-reset-defaults');
-            const delBtn = document.getElementById('btn-delete-zone');
 
             if (nameInput) {
                 nameInput.addEventListener('input', (e) => {
                     obj.name = e.target.value;
                     updateZoneVisuals(obj, false);
                 });
-                nameInput.addEventListener('change', () => {
-                    saveState();
-                });
+                nameInput.addEventListener('change', () => saveState());
             }
 
             if (typeSelect) {
@@ -11359,7 +10836,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             }
 
-            // Sync BCR slider & input
             const updateBcr = (newVal) => {
                 const bcrVal = Math.max(5, Math.min(100, newVal));
                 obj.bcr = bcrVal / 100;
@@ -11380,7 +10856,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             }
 
-            // Sync FAR slider & input
             const updateFar = (newVal) => {
                 const farVal = Math.max(10, Math.min(2500, newVal));
                 obj.far = farVal / 100;
@@ -11401,7 +10876,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             }
 
-            // Auto calculate checkbox
             if (autoCalcCheck) {
                 autoCalcCheck.addEventListener('change', (e) => {
                     obj.autoCalculateTraffic = e.target.checked;
@@ -11417,7 +10891,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             }
 
-            // Custom pop / emp
             if (popInput) {
                 popInput.addEventListener('change', (e) => {
                     const val = parseInt(e.target.value, 10);
@@ -11437,152 +10910,128 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             }
 
-            // Reset defaults
-            if (resetBtn) {
-                resetBtn.addEventListener('click', () => {
-                    const cfg = ZONE_CONFIGS[obj.zoneType] || ZONE_CONFIGS['R1'];
-                    obj.bcr = cfg.bcr;
-                    obj.far = cfg.far;
-                    obj.customPop = null;
-                    obj.customEmp = null;
-                    obj.autoCalculateTraffic = true;
-                    updateZoneVisuals(obj, false);
-                    updatePropertiesPanel(obj);
-                    saveState();
-                });
-            }
+            document.getElementById('btn-zone-reset-defaults')?.addEventListener('click', () => {
+                const cfg = ZONE_CONFIGS[obj.zoneType] || ZONE_CONFIGS['R1'];
+                obj.bcr = cfg.bcr;
+                obj.far = cfg.far;
+                obj.customPop = null;
+                obj.customEmp = null;
+                obj.autoCalculateTraffic = true;
+                updateZoneVisuals(obj, false);
+                updatePropertiesPanel(obj);
+                saveState();
+            });
 
-            // Re-project connector
-            const reprojectBtn = document.getElementById('btn-zone-reproject-conn');
-            if (reprojectBtn) {
-                reprojectBtn.addEventListener('click', () => {
-                    autoGenerateCentroidConnectors(obj);
-                    updateZoneVisuals(obj, false);
-                    updatePropertiesPanel(obj);
-                    saveState();
-                });
-            }
-
-            // Delete zone
-            if (delBtn) {
-                delBtn.addEventListener('click', () => {
-                    const zoneId = obj.id;
-                    deselectAll();
-                    deleteZone(zoneId);
-                    layer.batchDraw();
-                    saveState();
-                });
-            }
+            document.getElementById('btn-zone-reproject-conn')?.addEventListener('click', () => {
+                autoGenerateCentroidConnectors(obj);
+                updateZoneVisuals(obj, false);
+                updatePropertiesPanel(obj);
+                saveState();
+            });
         }
 
         // --- PARKING GATE ---
         if (obj.type === 'ParkingGate') {
-            const typeSelect = document.getElementById('prop-gate-type');
-            const rotationInput = document.getElementById('prop-gate-rotation');
-            const delBtn = document.getElementById('btn-delete-gate');
-
-            if (typeSelect) {
-                typeSelect.addEventListener('change', (e) => {
-                    obj.gateType = e.target.value;
-                    updateGateVisual(obj);
-                });
-            }
-            if (rotationInput) {
-                rotationInput.addEventListener('change', (e) => {
-                    const newRot = parseFloat(e.target.value);
-                    if (!isNaN(newRot)) {
-                        obj.rotation = newRot;
-                        obj.konvaGroup.rotation(newRot);
-                        checkGateAssociation(obj);
-                        layer.batchDraw();
-                    }
-                });
-            }
-            if (delBtn) {
-                delBtn.addEventListener('click', () => {
-                    deleteParkingGate(obj.id);
-                });
-            }
-        }
-        if (obj.markingType === 'channelization') {
-            const colorSel = document.getElementById('prop-mark-color');
-            if (colorSel) colorSel.addEventListener('change', (e) => {
-                obj.color = e.target.value;
-
-                const polygon = obj.konvaGroup.findOne('.marking-shape');
-                if (polygon) {
-                    let sc = 'white', fc = 'rgba(255, 255, 255, 0.2)';
-                    if (obj.color === 'yellow') { sc = '#facc15'; fc = 'rgba(250, 204, 21, 0.2)'; }
-                    if (obj.color === 'green') { sc = '#22c55e'; fc = 'rgba(34, 197, 94, 0.6)'; }
-                    polygon.stroke(sc);
-                    polygon.fill(fc);
-                } else {
-                    drawRoadMarking(obj);
-                }
-
-                layer.batchDraw();
+            document.getElementById('prop-gate-type')?.addEventListener('change', (e) => {
+                obj.gateType = e.target.value;
+                updateGateVisual(obj);
                 saveState();
             });
+            document.getElementById('prop-gate-rotation')?.addEventListener('change', (e) => {
+                const newRot = parseFloat(e.target.value);
+                if (!isNaN(newRot)) {
+                    obj.rotation = newRot;
+                    obj.konvaGroup.rotation(newRot);
+                    checkGateAssociation(obj);
+                    layer.batchDraw();
+                    saveState();
+                }
+            });
         }
+
+        // --- ROAD MARKING ---
         if (obj.type === 'RoadMarking') {
-            const typeSel = document.getElementById('prop-mark-type');
-            if (typeSel) {
-                typeSel.addEventListener('change', (e) => {
-                    obj.markingType = e.target.value;
-                    if (obj.markingType === 'crosswalk') {
-                        if (!obj.length) obj.length = 3;
-                    } else if (obj.markingType === 'waiting_area' || obj.markingType === 'two_stage_box') {
-                        if (!obj.length) obj.length = 5;
-                        if (!obj.width) obj.width = 2.5;
-                    }
-                    drawRoadMarking(obj);
-                    layer.batchDraw();
-                    updatePropertiesPanel(obj);
-                });
-            }
-
-            // [新增] 斑馬線自動偵測按鈕事件
-            const btnAutoSpan = document.getElementById('btn-auto-span');
-            if (btnAutoSpan) {
-                btnAutoSpan.addEventListener('click', () => {
-                    const oppositeId = findOppositeLink(obj.linkId, obj.position);
-                    if (oppositeId) {
-                        obj.spanToLinkId = oppositeId;
-                        drawRoadMarking(obj);
-                        layer.batchDraw();
-                        updatePropertiesPanel(obj);
-                        saveState();
+            if (obj.markingType === 'channelization') {
+                document.getElementById('prop-mark-color')?.addEventListener('change', (e) => {
+                    obj.color = e.target.value;
+                    const polygon = obj.konvaGroup.findOne('.marking-shape');
+                    if (polygon) {
+                        let sc = 'white', fc = 'rgba(255, 255, 255, 0.2)';
+                        if (obj.color === 'yellow') { sc = '#facc15'; fc = 'rgba(250, 204, 21, 0.2)'; }
+                        if (obj.color === 'green') { sc = '#22c55e'; fc = 'rgba(34, 197, 94, 0.6)'; }
+                        polygon.stroke(sc);
+                        polygon.fill(fc);
                     } else {
-                        alert(I18N.t("No valid opposite link detected within 30m."));
+                        drawRoadMarking(obj);
                     }
-                });
-            }
-
-            // [新增] 移除斑馬線跨越
-            const btnRemoveSpan = document.getElementById('btn-remove-span');
-            if (btnRemoveSpan) {
-                btnRemoveSpan.addEventListener('click', () => {
-                    obj.spanToLinkId = null;
-                    drawRoadMarking(obj);
                     layer.batchDraw();
-                    updatePropertiesPanel(obj);
                     saveState();
                 });
             }
 
-            const posIn = document.getElementById('prop-mark-pos');
-            if (posIn) posIn.addEventListener('change', e => { obj.position = parseFloat(e.target.value); drawRoadMarking(obj); layer.batchDraw(); });
+            document.getElementById('prop-mark-type')?.addEventListener('change', (e) => {
+                obj.markingType = e.target.value;
+                if (obj.markingType === 'crosswalk') {
+                    if (!obj.length) obj.length = 3;
+                } else if (obj.markingType === 'waiting_area' || obj.markingType === 'two_stage_box') {
+                    if (!obj.length) obj.length = 5;
+                    if (!obj.width) obj.width = 2.5;
+                }
+                drawRoadMarking(obj);
+                layer.batchDraw();
+                updatePropertiesPanel(obj);
+                saveState();
+            });
 
-            const rotIn = document.getElementById('prop-mark-rot');
-            if (rotIn) rotIn.addEventListener('change', e => { obj.rotation = parseFloat(e.target.value); obj.konvaGroup.rotation(obj.rotation); layer.batchDraw(); });
+            document.getElementById('btn-auto-span')?.addEventListener('click', () => {
+                const oppositeId = findOppositeLink(obj.linkId, obj.position);
+                if (oppositeId) {
+                    obj.spanToLinkId = oppositeId;
+                    drawRoadMarking(obj);
+                    layer.batchDraw();
+                    updatePropertiesPanel(obj);
+                    saveState();
+                } else {
+                    alert(I18N.t("No valid opposite link detected within 30m."));
+                }
+            });
 
-            const lenIn = document.getElementById('prop-mark-len');
-            if (lenIn) lenIn.addEventListener('change', e => { obj.length = parseFloat(e.target.value); drawRoadMarking(obj); layer.batchDraw(); });
+            document.getElementById('btn-remove-span')?.addEventListener('click', () => {
+                obj.spanToLinkId = null;
+                drawRoadMarking(obj);
+                layer.batchDraw();
+                updatePropertiesPanel(obj);
+                saveState();
+            });
 
-            const widIn = document.getElementById('prop-mark-wid');
-            if (widIn) widIn.addEventListener('change', e => { obj.width = parseFloat(e.target.value); drawRoadMarking(obj); layer.batchDraw(); });
+            document.getElementById('prop-mark-pos')?.addEventListener('change', e => {
+                obj.position = parseFloat(e.target.value);
+                drawRoadMarking(obj);
+                layer.batchDraw();
+                saveState();
+            });
 
-            // Lane checkboxes
+            document.getElementById('prop-mark-rot')?.addEventListener('change', e => {
+                obj.rotation = parseFloat(e.target.value);
+                obj.konvaGroup.rotation(obj.rotation);
+                layer.batchDraw();
+                saveState();
+            });
+
+            document.getElementById('prop-mark-len')?.addEventListener('change', e => {
+                obj.length = parseFloat(e.target.value);
+                drawRoadMarking(obj);
+                layer.batchDraw();
+                saveState();
+            });
+
+            document.getElementById('prop-mark-wid')?.addEventListener('change', e => {
+                obj.width = parseFloat(e.target.value);
+                drawRoadMarking(obj);
+                layer.batchDraw();
+                saveState();
+            });
+
             document.querySelectorAll('.prop-mark-lane').forEach(cb => {
                 cb.addEventListener('change', () => {
                     const idx = parseInt(cb.value);
@@ -11593,125 +11042,116 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                     drawRoadMarking(obj);
                     layer.batchDraw();
+                    saveState();
                 });
             });
 
-            const delBtn = document.getElementById('btn-delete-marking');
-            if (delBtn) delBtn.addEventListener('click', () => {
-                if (obj.konvaGroup) obj.konvaGroup.destroy();
-                delete network.roadMarkings[obj.id];
-                deselectAll();
-                layer.batchDraw();
-            });
+            document.getElementById('prop-mark-isfree')?.addEventListener('change', (e) => {
+                const isFree = e.target.checked;
+                obj.isFree = isFree;
 
-            // [修改] isFree 切換時的視覺凍結邏輯 (支援斑馬線)
-            const isFreeCb = document.getElementById('prop-mark-isfree');
-            if (isFreeCb) {
-                isFreeCb.addEventListener('change', (e) => {
-                    const isFree = e.target.checked;
-                    obj.isFree = isFree;
-
-                    if (isFree) {
-                        const link = network.links[obj.linkId];
-                        if (link) {
-                            if (obj.markingType === 'crosswalk') {
-                                // 將目前動態計算出的跨度固定到 width 中
-                                let currentSpanWidth = getLinkTotalWidth(link);
-                                if (obj.spanToLinkId && network.links[obj.spanToLinkId]) {
-                                    const targetLink = network.links[obj.spanToLinkId];
-                                    const { point: pt1 } = getPointAlongPolyline(link.waypoints, obj.position);
-                                    const projResult = projectPointOnPolyline(pt1, targetLink.waypoints);
-                                    const { point: pt2 } = projectPointOnPolyline(pt1, targetLink.waypoints);
-                                    // 近似計算橫向總長
-                                    currentSpanWidth = vecLen(getVector(pt1, pt2)) + getLinkTotalWidth(link) / 2 + getLinkTotalWidth(targetLink) / 2;
-                                }
-                                obj.width = currentSpanWidth;
-                            } else {
-                                // ==========================================
-                                // [修正] Lane-Based 多型標線寬度精準計算
-                                // ==========================================
-                                const selectedLanes = obj.laneIndices.sort((a, b) => a - b);
-
-                                if (link.geometryType === 'lane-based' && link.strokes && link.strokes.length >= 2 && selectedLanes.length > 0) {
-                                    // 取得標線在當前 position 的實際中心點
-                                    const { point } = getPointAlongPolyline(link.waypoints, obj.position);
-
-                                    // 輔助函數：取得實際實體標線上的點 (重用繪圖邏輯)
-                                    const getStrokePointForWidth = (targetLink, strokeIdx, refPt) => {
-                                        let stroke = targetLink.strokes[strokeIdx];
-                                        if (!stroke) stroke = (strokeIdx <= 0) ? targetLink.strokes[0] : targetLink.strokes[targetLink.strokes.length - 1];
-
-                                        let minDist = Infinity;
-                                        let bestPt = refPt;
-                                        for (let i = 0; i < stroke.points.length - 1; i++) {
-                                            const proj = projectPointOnSegment(refPt, stroke.points[i], stroke.points[i + 1]);
-                                            const d = vecLen(getVector(refPt, proj));
-                                            if (d < minDist) { minDist = d; bestPt = proj; }
-                                        }
-                                        return bestPt;
-                                    };
-
-                                    // 計算最左側與最右側標線在該點的投影點
-                                    const minIdx = selectedLanes[0];
-                                    const maxIdx = selectedLanes[selectedLanes.length - 1];
-                                    const pLeft = getStrokePointForWidth(link, minIdx, point);
-                                    const pRight = getStrokePointForWidth(link, maxIdx + 1, point);
-
-                                    // 根據兩點座標計算實際幾何寬度
-                                    obj.width = vecLen(getVector(pLeft, pRight));
-
-                                } else {
-                                    // 原本 Standard 模式計算 selectedLanes 的邏輯
-                                    let totalW = 0;
-                                    selectedLanes.forEach(idx => { if (link.lanes[idx]) totalW += link.lanes[idx].width; });
-                                    obj.width = totalW || 2.5;
-                                }
+                if (isFree) {
+                    const link = network.links[obj.linkId];
+                    if (link) {
+                        if (obj.markingType === 'crosswalk') {
+                            let currentSpanWidth = getLinkTotalWidth(link);
+                            if (obj.spanToLinkId && network.links[obj.spanToLinkId]) {
+                                const targetLink = network.links[obj.spanToLinkId];
+                                const { point: pt1 } = getPointAlongPolyline(link.waypoints, obj.position);
+                                const { point: pt2 } = projectPointOnPolyline(pt1, targetLink.waypoints);
+                                currentSpanWidth = vecLen(getVector(pt1, pt2)) + getLinkTotalWidth(link) / 2 + getLinkTotalWidth(targetLink) / 2;
                             }
-
-                            const { point, vec } = getPointAlongPolyline(link.waypoints, obj.position);
-                            // 自由模式下退後以中心定位
-                            const backVec = scale(normalize(vec), -1);
-                            const centerPos = add(point, scale(backVec, (obj.length || 3) / 2));
-
-                            obj.x = centerPos.x;
-                            obj.y = centerPos.y;
-                            obj.rotation = Konva.Util.radToDeg(Math.atan2(vec.y, vec.x));
-
-                            obj.konvaGroup.position({ x: obj.x, y: obj.y });
-                            obj.konvaGroup.rotation(obj.rotation);
+                            obj.width = currentSpanWidth;
+                        } else {
+                            const selectedLanes = obj.laneIndices.sort((a, b) => a - b);
+                            if (link.geometryType === 'lane-based' && link.strokes && link.strokes.length >= 2 && selectedLanes.length > 0) {
+                                const { point } = getPointAlongPolyline(link.waypoints, obj.position);
+                                const getStrokePointForWidth = (targetLink, strokeIdx, refPt) => {
+                                    let stroke = targetLink.strokes[strokeIdx];
+                                    if (!stroke) stroke = (strokeIdx <= 0) ? targetLink.strokes[0] : targetLink.strokes[targetLink.strokes.length - 1];
+                                    let minDist = Infinity, bestPt = refPt;
+                                    for (let i = 0; i < stroke.points.length - 1; i++) {
+                                        const proj = projectPointOnSegment(refPt, stroke.points[i], stroke.points[i + 1]);
+                                        const d = vecLen(getVector(refPt, proj));
+                                        if (d < minDist) { minDist = d; bestPt = proj; }
+                                    }
+                                    return bestPt;
+                                };
+                                const minIdx = selectedLanes[0];
+                                const maxIdx = selectedLanes[selectedLanes.length - 1];
+                                const pLeft = getStrokePointForWidth(link, minIdx, point);
+                                const pRight = getStrokePointForWidth(link, maxIdx + 1, point);
+                                obj.width = vecLen(getVector(pLeft, pRight));
+                            } else {
+                                let totalW = 0;
+                                selectedLanes.forEach(idx => { if (link.lanes[idx]) totalW += link.lanes[idx].width; });
+                                obj.width = totalW || 2.5;
+                            }
                         }
-                    }
-                    selectObject(obj);
-                    drawRoadMarking(obj);
-                    layer.batchDraw();
-                    updatePropertiesPanel(obj);
-                });
-            }
 
-            // [新增] 斑馬線行人號誌綁定事件
+                        const { point, vec } = getPointAlongPolyline(link.waypoints, obj.position);
+                        const backVec = scale(normalize(vec), -1);
+                        const centerPos = add(point, scale(backVec, (obj.length || 3) / 2));
+
+                        obj.x = centerPos.x;
+                        obj.y = centerPos.y;
+                        obj.rotation = Konva.Util.radToDeg(Math.atan2(vec.y, vec.x));
+                        obj.konvaGroup.position({ x: obj.x, y: obj.y });
+                        obj.konvaGroup.rotation(obj.rotation);
+                    }
+                }
+                selectObject(obj);
+                drawRoadMarking(obj);
+                layer.batchDraw();
+                updatePropertiesPanel(obj);
+                saveState();
+            });
+
             if (obj.markingType === 'crosswalk') {
+                const markGsSel = document.getElementById('prop-mark-groupset-select');
                 const sigSel = document.getElementById('prop-mark-signal-select');
                 const sigTxt = document.getElementById('prop-mark-signal-text');
 
-                // 下拉選單連動文字框
+                if (markGsSel) {
+                    markGsSel.addEventListener('change', (e) => {
+                        const targetNodeId = e.target.dataset.nodeId;
+                        const tfl = targetNodeId ? network.trafficLights[targetNodeId] : null;
+                        if (tfl) {
+                            setActiveTflGroupSet(tfl, e.target.value);
+                            if (obj.signalGroupBySet && obj.signalGroupBySet[tfl.activeGroupSetId] !== undefined) {
+                                obj.signalGroupId = obj.signalGroupBySet[tfl.activeGroupSetId] || null;
+                            }
+                            updatePropertiesPanel(obj);
+                        }
+                    });
+                }
+
+                const updateCrosswalkBinding = (val) => {
+                    const cleanVal = val !== '' ? val : null;
+                    obj.signalGroupId = cleanVal;
+                    if (markGsSel && markGsSel.value) {
+                        if (!obj.signalGroupBySet) obj.signalGroupBySet = {};
+                        if (cleanVal) obj.signalGroupBySet[markGsSel.value] = cleanVal;
+                        else delete obj.signalGroupBySet[markGsSel.value];
+                    }
+                    saveState();
+                };
+
                 if (sigSel) {
                     sigSel.addEventListener('change', (e) => {
                         const val = e.target.value;
-                        obj.signalGroupId = val !== '' ? val : null;
                         if (sigTxt) sigTxt.value = val;
-                        saveState();
+                        updateCrosswalkBinding(val);
                     });
                 }
-                // 文字框連動下拉選單
                 if (sigTxt) {
                     sigTxt.addEventListener('change', (e) => {
                         const val = e.target.value;
-                        obj.signalGroupId = val !== '' ? val : null;
                         if (sigSel) {
                             const opt = Array.from(sigSel.options).find(o => o.value === val);
                             sigSel.value = opt ? opt.value : '';
                         }
-                        saveState();
+                        updateCrosswalkBinding(val);
                     });
                 }
             }
@@ -12505,7 +11945,222 @@ document.addEventListener('DOMContentLoaded', () => {
     let currentModalNode = null;
 
     let currentTflPlanId = null;
-    let currentTflScheduleId = null; // <--- 新增這行：記錄目前編輯的時制 ID
+    let currentTflScheduleId = null; // 記錄目前編輯的時制 ID
+    let currentTflGroupSetId = null; // ★ 新增：記錄目前編輯的號誌群組(硬體群組) ID
+
+    // ★ 確保路口具備多套號誌群組 (硬體群組庫 signalGroupSets) 結構並維持向下相容
+    function ensureTflGroupSets(tflData) {
+        if (!tflData) return;
+        if (!tflData.signalGroups) tflData.signalGroups = {};
+        if (!tflData.signalGroupSets || Object.keys(tflData.signalGroupSets).length === 0) {
+            tflData.signalGroupSets = {
+                'GroupSet_1': {
+                    id: 'GroupSet_1',
+                    name: '預設硬體群組 (A)',
+                    groups: tflData.signalGroups
+                }
+            };
+        }
+        if (!tflData.activeGroupSetId || !tflData.signalGroupSets[tflData.activeGroupSetId]) {
+            tflData.activeGroupSetId = Object.keys(tflData.signalGroupSets)[0];
+        }
+        tflData.signalGroups = tflData.signalGroupSets[tflData.activeGroupSetId].groups;
+
+        if (tflData.advanced && tflData.advanced.schedules) {
+            const defaultGsId = Object.keys(tflData.signalGroupSets)[0];
+            Object.values(tflData.advanced.schedules).forEach(sched => {
+                if (!sched.groupSetId || !tflData.signalGroupSets[sched.groupSetId]) {
+                    sched.groupSetId = defaultGsId;
+                }
+            });
+        }
+    }
+
+    function setActiveTflGroupSet(tflData, groupSetId) {
+        ensureTflGroupSets(tflData);
+        if (tflData.signalGroupSets[groupSetId]) {
+            tflData.activeGroupSetId = groupSetId;
+            tflData.signalGroups = tflData.signalGroupSets[groupSetId].groups;
+        }
+    }
+
+    function alignPhasesToGroupSet(phases, groupsObj) {
+        if (!Array.isArray(phases) || !groupsObj) return;
+        phases.forEach(p => {
+            if (!p.signals) p.signals = {};
+            const dur = p.duration || 30;
+            Object.values(groupsObj).forEach(g => {
+                if (g.type === 'pedestrian') {
+                    if (!p.signals[g.id] || typeof p.signals[g.id] !== 'object') {
+                        if (p.signals[g.id] === 'Green') {
+                            p.signals[g.id] = { walk: dur, flash: 0, stop: 0 };
+                        } else {
+                            const f = dur >= 10 ? 7 : 0;
+                            const s = dur >= 10 ? 3 : dur;
+                            p.signals[g.id] = { walk: Math.max(0, dur - f - s), flash: f, stop: s };
+                        }
+                    }
+                } else {
+                    if (!p.signals[g.id] || typeof p.signals[g.id] !== 'string') {
+                        p.signals[g.id] = 'Red';
+                    }
+                }
+            });
+            Object.keys(p.signals).forEach(k => {
+                if (!groupsObj[k]) delete p.signals[k];
+            });
+        });
+    }
+
+    // ★ 確保指定的硬體群組底下至少有一個時制 (提供 Tab 2 依硬體群組階層管理時制)
+    function ensureScheduleForGroupSet(tflData, groupSetId) {
+        if (!tflData || !tflData.advanced || !tflData.advanced.schedules || !groupSetId) return null;
+        const existing = Object.values(tflData.advanced.schedules).filter(s => s.groupSetId === groupSetId);
+        if (existing.length > 0) return existing[0].id;
+
+        let newNum = 1;
+        while (tflData.advanced.schedules[`Sched_${newNum}`]) newNum++;
+        const newId = `Sched_${newNum}`;
+        const gsObj = tflData.signalGroupSets ? tflData.signalGroupSets[groupSetId] : null;
+        const dur = 30;
+        const signals = {};
+        if (gsObj && gsObj.groups) {
+            Object.values(gsObj.groups).forEach(g => {
+                signals[g.id] = (g.type === 'pedestrian')
+                    ? { walk: dur - 10, flash: 7, stop: 3 }
+                    : 'Red';
+            });
+        }
+        tflData.advanced.schedules[newId] = {
+            id: newId,
+            name: `預設時制 (${newNum})`,
+            groupSetId: groupSetId,
+            timeShift: 0,
+            phases: [{ duration: dur, signals }]
+        };
+        return newId;
+    }
+
+    // ★ 通用膠囊分頁列渲染函式 (支援點擊切換、✏️原地改名、🗑️刪除、+新增)
+    function renderTflPillBar(containerEl, config) {
+        if (!containerEl) return;
+        containerEl.innerHTML = '';
+
+        if (config.labelHtml) {
+            const labelSpan = document.createElement('span');
+            labelSpan.className = 'tfl-pill-bar-label';
+            labelSpan.innerHTML = config.labelHtml;
+            containerEl.appendChild(labelSpan);
+        }
+
+        (config.items || []).forEach(item => {
+            const isActive = item.id === config.activeId;
+            const pill = document.createElement('div');
+            pill.className = 'tfl-pill' + (config.pillClass ? ' ' + config.pillClass : '') + (isActive ? ' active' : '');
+            pill.title = config.onRename && isActive ? '雙擊或點選 ✏️ 修改名稱' : item.name;
+
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'tfl-pill-name';
+            nameSpan.textContent = item.name;
+            pill.appendChild(nameSpan);
+
+            if (item.subText) {
+                const subSpan = document.createElement('span');
+                subSpan.className = 'tfl-pill-sub';
+                subSpan.textContent = `(${item.subText})`;
+                pill.appendChild(subSpan);
+            }
+
+            const startInlineRename = (e) => {
+                if (e) e.stopPropagation();
+                if (!config.onRename) return;
+                const input = document.createElement('input');
+                input.type = 'text';
+                input.className = 'tfl-pill-inline-input';
+                input.value = item.name;
+                let finished = false;
+
+                const commit = () => {
+                    if (finished) return;
+                    finished = true;
+                    const trimmed = input.value.trim();
+                    if (trimmed && trimmed !== item.name) {
+                        config.onRename(item.id, trimmed);
+                    } else {
+                        renderTflPillBar(containerEl, config);
+                    }
+                };
+
+                const cancel = () => {
+                    if (finished) return;
+                    finished = true;
+                    renderTflPillBar(containerEl, config);
+                };
+
+                input.onclick = (ev) => ev.stopPropagation();
+                input.onkeydown = (ev) => {
+                    if (ev.key === 'Enter') {
+                        ev.preventDefault();
+                        commit();
+                    } else if (ev.key === 'Escape') {
+                        ev.preventDefault();
+                        cancel();
+                    }
+                };
+                input.onblur = () => commit();
+
+                pill.innerHTML = '';
+                pill.appendChild(input);
+                input.focus();
+                input.select();
+            };
+
+            if (isActive && config.onRename) {
+                pill.ondblclick = startInlineRename;
+                const editBtn = document.createElement('button');
+                editBtn.type = 'button';
+                editBtn.className = 'tfl-pill-icon-btn';
+                editBtn.title = '修改名稱';
+                editBtn.innerHTML = '<i class="fa-solid fa-pen"></i>';
+                editBtn.onclick = startInlineRename;
+                pill.appendChild(editBtn);
+            }
+
+            if (isActive && config.onDelete) {
+                const delBtn = document.createElement('button');
+                delBtn.type = 'button';
+                delBtn.className = 'tfl-pill-icon-btn danger';
+                delBtn.title = '刪除';
+                delBtn.innerHTML = '<i class="fa-solid fa-trash-can"></i>';
+                delBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    config.onDelete(item.id);
+                };
+                pill.appendChild(delBtn);
+            }
+
+            pill.onclick = () => {
+                if (!isActive && config.onSelect) {
+                    config.onSelect(item.id);
+                }
+            };
+
+            containerEl.appendChild(pill);
+        });
+
+        if (config.onAdd) {
+            const addBtn = document.createElement('button');
+            addBtn.type = 'button';
+            addBtn.className = 'tfl-pill-add-btn';
+            addBtn.innerHTML = config.addLabel || '+ 新增';
+            addBtn.onclick = (e) => {
+                e.stopPropagation();
+                config.onAdd();
+            };
+            containerEl.appendChild(addBtn);
+        }
+    }
+
     function showTrafficLightEditor(node) {
         currentModalNode = node;
         document.getElementById('tfl-modal-title').textContent = `Traffic Light Editor for Node ${node.id}`;
@@ -12521,39 +12176,38 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // 2. 【核心修正】向後相容/資料升級邏輯
-        // 如果有號誌資料，但沒有 advanced 屬性 (代表這是從舊版 XML 匯入的)
         if (!network.trafficLights[node.id].advanced) {
-
-            // 嘗試把舊版的 schedule 備份一份當作預設的 A 時制
-            // 這樣使用者打開舊檔時，原本設定的秒數不會不見
             const legacySchedule = network.trafficLights[node.id].schedule || [];
             const legacyTimeShift = network.trafficLights[node.id].timeShift || 0;
 
             network.trafficLights[node.id].advanced = {
                 schedules: {
-                    // 將舊的時制封裝成 Sched_A
                     'Sched_A': {
                         id: 'Sched_A',
                         name: '舊版預設時制 (A)',
+                        groupSetId: 'GroupSet_1',
                         timeShift: legacyTimeShift,
-                        phases: JSON.parse(JSON.stringify(legacySchedule)) // 深拷貝舊排程
+                        phases: JSON.parse(JSON.stringify(legacySchedule))
                     }
                 },
                 dailyPlans: {
                     'Plan_1': {
                         id: 'Plan_1',
                         name: '預設日型態',
-                        switches: [{ time: '00:00', schedId: 'Sched_A' }] // 預設 00:00 啟動 A 時制
+                        switches: [{ time: '00:00', schedId: 'Sched_A' }]
                     }
                 },
                 weekly: { 1: 'Plan_1', 2: 'Plan_1', 3: 'Plan_1', 4: 'Plan_1', 5: 'Plan_1', 6: 'Plan_1', 7: 'Plan_1' }
             };
         }
 
-        // 3. 取得進階資料 (現在保證絕對不會是 undefined 了)
-        // 取得進階資料
+        // 確保具備多套硬體群組結構
+        ensureTflGroupSets(network.trafficLights[node.id]);
+
+        // 3. 取得進階資料
         const advancedData = network.trafficLights[node.id].advanced;
 
+        currentTflGroupSetId = network.trafficLights[node.id].activeGroupSetId;
         currentTflPlanId = Object.keys(advancedData.dailyPlans)[0];
         currentTflScheduleId = Object.keys(advancedData.schedules)[0];
 
@@ -12561,7 +12215,7 @@ document.addEventListener('DOMContentLoaded', () => {
         renderTflGroupingTab();
         renderTflLibraryTab();
         renderTflDailyPlansTab();
-        renderTflWeeklyTab();     // <--- 【關鍵】：解除這行的註解！
+        renderTflWeeklyTab();
 
         document.getElementById('traffic-light-modal').style.display = 'block';
         I18N.translateDOM(document.getElementById('traffic-light-modal'));
@@ -12648,7 +12302,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const widthPct = ((endMins - startMins) / 1440) * 100;
             const color = getScheduleColor(sw.schedId);
-            const schedName = sw.schedId === 'NONE' ? '無時制 (關閉)' : (advancedData.schedules[sw.schedId]?.name || sw.schedId);
+            const tflRef = network.trafficLights[currentModalNode.id];
+            const schedObj = advancedData.schedules[sw.schedId];
+            const gsLabel = schedObj && tflRef.signalGroupSets && tflRef.signalGroupSets[schedObj.groupSetId] ? ` [${tflRef.signalGroupSets[schedObj.groupSetId].name}]` : '';
+            const schedName = sw.schedId === 'NONE' ? '無時制 (關閉)' : `${schedObj?.name || sw.schedId}${gsLabel}`;
 
             timelineHTML += `<div class="tfl-timeline-segment" 
                               style="width: ${widthPct}%; background-color: ${color};" 
@@ -12673,11 +12330,25 @@ document.addEventListener('DOMContentLoaded', () => {
         const checkpointsContainer = document.getElementById('tfl-daily-checkpoints');
         checkpointsContainer.innerHTML = '';
 
-        // 準備時制下拉選項
+        // 準備時制下拉選項 (依硬體群組分組顯示)
         let schedOptionsHTML = `<option value="NONE" style="font-weight:bold; color:#ef4444;">[無時制 / 關閉]</option>`;
-        Object.values(advancedData.schedules).forEach(sched => {
-            schedOptionsHTML += `<option value="${sched.id}">${sched.name}</option>`;
-        });
+        const tflForDaily = network.trafficLights[currentModalNode.id];
+        if (tflForDaily && tflForDaily.signalGroupSets) {
+            Object.values(tflForDaily.signalGroupSets).forEach(gs => {
+                const gsScheds = Object.values(advancedData.schedules).filter(s => s.groupSetId === gs.id);
+                if (gsScheds.length > 0) {
+                    schedOptionsHTML += `<optgroup label="硬體群組：${gs.name || gs.id}">`;
+                    gsScheds.forEach(sched => {
+                        schedOptionsHTML += `<option value="${sched.id}">${sched.name}</option>`;
+                    });
+                    schedOptionsHTML += `</optgroup>`;
+                }
+            });
+        } else {
+            Object.values(advancedData.schedules).forEach(sched => {
+                schedOptionsHTML += `<option value="${sched.id}">${sched.name}</option>`;
+            });
+        }
 
         currentPlan.switches.forEach((sw, index) => {
             const isFirst = (index === 0);
@@ -12865,19 +12536,107 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function renderTflGroupingTab() {
         const tflData = network.trafficLights[currentModalNode.id];
+        ensureTflGroupSets(tflData);
+        if (!currentTflGroupSetId || !tflData.signalGroupSets[currentTflGroupSetId]) {
+            currentTflGroupSetId = tflData.activeGroupSetId;
+        }
+        setActiveTflGroupSet(tflData, currentTflGroupSetId);
+        const currentGroupSet = tflData.signalGroupSets[currentTflGroupSetId];
+
+        // --- 頂部：多套號誌群組(硬體群組)膠囊分頁列 (含 ✏️ 原地改名 / 🗑️ 刪除 / + 新增) ---
+        const gsPillsContainer = document.getElementById('tfl-groupset-pills');
+        renderTflPillBar(gsPillsContainer, {
+            labelHtml: '<i class="fa-solid fa-microchip" style="color:#8b5cf6;"></i> 硬體群組:',
+            items: Object.values(tflData.signalGroupSets).map(gs => ({
+                id: gs.id,
+                name: gs.name || gs.id,
+                subText: `${Object.keys(gs.groups || {}).length}群組`
+            })),
+            activeId: currentTflGroupSetId,
+            addLabel: '+ 新增硬體群組',
+            onSelect: (selectedGsId) => {
+                currentTflGroupSetId = selectedGsId;
+                setActiveTflGroupSet(tflData, currentTflGroupSetId);
+                renderTflGroupingTab();
+                renderTflLibraryTab();
+                if (selectedObject) updatePropertiesPanel(selectedObject);
+            },
+            onRename: (gsId, newName) => {
+                if (tflData.signalGroupSets[gsId]) {
+                    tflData.signalGroupSets[gsId].name = newName;
+                    renderTflGroupingTab();
+                    renderTflLibraryTab();
+                    renderTflDailyPlansTab();
+                    if (selectedObject) updatePropertiesPanel(selectedObject);
+                    saveState();
+                }
+            },
+            onDelete: (gsId) => {
+                const gsKeys = Object.keys(tflData.signalGroupSets);
+                if (gsKeys.length <= 1) {
+                    alert('必須保留至少一套號誌群組(硬體群組)。');
+                    return;
+                }
+                const targetGs = tflData.signalGroupSets[gsId];
+                if (confirm(`確定要刪除硬體群組「${targetGs ? (targetGs.name || targetGs.id) : gsId}」嗎？`)) {
+                    delete tflData.signalGroupSets[gsId];
+                    const fallbackGsId = Object.keys(tflData.signalGroupSets)[0];
+                    currentTflGroupSetId = fallbackGsId;
+                    setActiveTflGroupSet(tflData, fallbackGsId);
+
+                    if (tflData.advanced && tflData.advanced.schedules) {
+                        Object.values(tflData.advanced.schedules).forEach(sched => {
+                            if (sched.groupSetId === gsId) {
+                                sched.groupSetId = fallbackGsId;
+                                alignPhasesToGroupSet(sched.phases, tflData.signalGroupSets[fallbackGsId].groups);
+                            }
+                        });
+                    }
+                    renderTflGroupingTab();
+                    renderTflLibraryTab();
+                    renderTflDailyPlansTab();
+                    if (selectedObject) updatePropertiesPanel(selectedObject);
+                    saveState();
+                }
+            },
+            onAdd: () => {
+                let newNum = 1;
+                while (tflData.signalGroupSets[`GroupSet_${newNum}`]) newNum++;
+                const newGsId = `GroupSet_${newNum}`;
+                const clonedGroups = {};
+                Object.values(currentGroupSet.groups || {}).forEach(g => {
+                    clonedGroups[g.id] = { id: g.id, connIds: [], type: g.type || 'vehicle' };
+                });
+                tflData.signalGroupSets[newGsId] = {
+                    id: newGsId,
+                    name: `硬體群組 (${String.fromCharCode(64 + Math.min(26, newNum))})`,
+                    groups: clonedGroups
+                };
+                ensureScheduleForGroupSet(tflData, newGsId);
+                currentTflGroupSetId = newGsId;
+                setActiveTflGroupSet(tflData, newGsId);
+                renderTflGroupingTab();
+                renderTflLibraryTab();
+                renderTflDailyPlansTab();
+                if (selectedObject) updatePropertiesPanel(selectedObject);
+                saveState();
+            }
+        });
+
         const groupManagementDiv = document.getElementById('tfl-group-management');
         groupManagementDiv.innerHTML = '';
 
         Object.values(tflData.signalGroups).forEach(group => {
             const groupItem = document.createElement('div');
             groupItem.className = 'tfl-group-item';
-            // [修改] 加入群組類型選擇器
+            const boundCount = (group.connIds || []).length;
             groupItem.innerHTML = `
                 <input type="text" class="tfl-group-name-input" value="${group.id}" data-old-id="${group.id}" style="width: 100px;">
                 <select class="tfl-group-type-select prop-select" data-group-id="${group.id}" style="width: 90px; margin-left: 8px;">
                     <option value="vehicle" ${group.type !== 'pedestrian' ? 'selected' : ''}>🚗 車輛</option>
                     <option value="pedestrian" ${group.type === 'pedestrian' ? 'selected' : ''}>🚶 行人</option>
                 </select>
+                <span style="font-size:0.75rem; color:#64748b; margin-left:8px;">${group.type === 'pedestrian' ? '行穿線綁定' : `已點燈: ${boundCount} 動線`}</span>
                 <span class="delete-group-btn" data-group-id="${group.id}" title="Delete Group">×</span>
             `;
             groupManagementDiv.appendChild(groupItem);
@@ -12887,24 +12646,29 @@ document.addEventListener('DOMContentLoaded', () => {
             const newGroupNameInput = document.getElementById('tfl-new-group-name');
             const name = newGroupNameInput.value.trim();
             if (name && !tflData.signalGroups[name]) {
-                // [修改] 智慧預設：如果是 P 開頭，預設為行人群組
                 const isPed = name.toUpperCase().startsWith('P');
                 tflData.signalGroups[name] = { id: name, connIds: [], type: isPed ? 'pedestrian' : 'vehicle' };
 
-                // 更新現有時相的資料結構
-                tflData.schedule.forEach(phase => {
-                    phase.signals[name] = isPed ? { walk: phase.duration, flash: 0, stop: 0 } : 'Red';
-                });
+                // 更新使用此套硬體群組的時制
+                if (currentTflGroupSetId === Object.keys(tflData.signalGroupSets)[0]) {
+                    tflData.schedule.forEach(phase => {
+                        phase.signals[name] = isPed ? { walk: phase.duration, flash: 0, stop: 0 } : 'Red';
+                    });
+                }
                 if (tflData.advanced) {
                     Object.values(tflData.advanced.schedules).forEach(sched => {
-                        sched.phases.forEach(p => {
-                            p.signals[name] = isPed ? { walk: p.duration, flash: 0, stop: 0 } : 'Red';
-                        });
+                        if ((sched.groupSetId || 'GroupSet_1') === currentTflGroupSetId) {
+                            sched.phases.forEach(p => {
+                                p.signals[name] = isPed ? { walk: p.duration, flash: 0, stop: 0 } : 'Red';
+                            });
+                        }
                     });
                 }
                 newGroupNameInput.value = '';
                 renderTflGroupingTab();
                 renderTflLibraryTab();
+                if (selectedObject) updatePropertiesPanel(selectedObject);
+                saveState();
             } else {
                 alert(I18N.t('Group name is empty or already exists.'));
             }
@@ -12921,24 +12685,30 @@ document.addEventListener('DOMContentLoaded', () => {
                     delete tflData.signalGroups[oldId];
                     tflData.signalGroups[newId] = groupData;
 
-                    tflData.schedule.forEach(phase => {
-                        if (phase.signals[oldId] !== undefined) {
-                            phase.signals[newId] = phase.signals[oldId];
-                            delete phase.signals[oldId];
-                        }
-                    });
+                    if (currentTflGroupSetId === Object.keys(tflData.signalGroupSets)[0]) {
+                        tflData.schedule.forEach(phase => {
+                            if (phase.signals[oldId] !== undefined) {
+                                phase.signals[newId] = phase.signals[oldId];
+                                delete phase.signals[oldId];
+                            }
+                        });
+                    }
                     if (tflData.advanced) {
                         Object.values(tflData.advanced.schedules).forEach(sched => {
-                            sched.phases.forEach(p => {
-                                if (p.signals[oldId] !== undefined) {
-                                    p.signals[newId] = p.signals[oldId];
-                                    delete p.signals[oldId];
-                                }
-                            });
+                            if ((sched.groupSetId || 'GroupSet_1') === currentTflGroupSetId) {
+                                sched.phases.forEach(p => {
+                                    if (p.signals[oldId] !== undefined) {
+                                        p.signals[newId] = p.signals[oldId];
+                                        delete p.signals[oldId];
+                                    }
+                                });
+                            }
                         });
                     }
                     renderTflGroupingTab();
                     renderTflLibraryTab();
+                    if (selectedObject) updatePropertiesPanel(selectedObject);
+                    saveState();
                 } else if (newId !== oldId) {
                     e.target.value = oldId;
                     alert('Group name is empty or already exists.');
@@ -12952,19 +12722,21 @@ document.addEventListener('DOMContentLoaded', () => {
                 const newType = e.target.value;
                 tflData.signalGroups[gId].type = newType;
 
-                // 轉換現有時相資料格式
                 if (tflData.advanced) {
                     Object.values(tflData.advanced.schedules).forEach(sched => {
-                        sched.phases.forEach(p => {
-                            if (newType === 'pedestrian' && typeof p.signals[gId] === 'string') {
-                                p.signals[gId] = { walk: p.duration, flash: 0, stop: 0 };
-                            } else if (newType === 'vehicle' && typeof p.signals[gId] === 'object') {
-                                p.signals[gId] = 'Red';
-                            }
-                        });
+                        if ((sched.groupSetId || 'GroupSet_1') === currentTflGroupSetId) {
+                            sched.phases.forEach(p => {
+                                if (newType === 'pedestrian' && typeof p.signals[gId] === 'string') {
+                                    p.signals[gId] = { walk: p.duration, flash: 0, stop: 0 };
+                                } else if (newType === 'vehicle' && typeof p.signals[gId] === 'object') {
+                                    p.signals[gId] = 'Red';
+                                }
+                            });
+                        }
                     });
                 }
                 saveState();
+                renderTflGroupingTab();
                 renderTflLibraryTab();
             };
         });
@@ -12974,85 +12746,172 @@ document.addEventListener('DOMContentLoaded', () => {
                 const groupId = e.target.dataset.groupId;
                 delete tflData.signalGroups[groupId];
 
-                tflData.schedule.forEach(phase => delete phase.signals[groupId]);
+                if (currentTflGroupSetId === Object.keys(tflData.signalGroupSets)[0]) {
+                    tflData.schedule.forEach(phase => delete phase.signals[groupId]);
+                }
                 if (tflData.advanced) {
                     Object.values(tflData.advanced.schedules).forEach(sched => {
-                        sched.phases.forEach(p => delete p.signals[groupId]);
+                        if ((sched.groupSetId || 'GroupSet_1') === currentTflGroupSetId) {
+                            sched.phases.forEach(p => delete p.signals[groupId]);
+                        }
                     });
                 }
                 renderTflGroupingTab();
                 renderTflLibraryTab();
-                if (selectedObject && (selectedObject.type === 'Connection' || selectedObject.type === 'ConnectionGroup')) {
+                if (selectedObject) {
                     updatePropertiesPanel(selectedObject);
                 }
+                saveState();
             };
         });
     }
 
     function renderTflLibraryTab() {
         const tflData = network.trafficLights[currentModalNode.id];
+        ensureTflGroupSets(tflData);
         const advancedData = tflData.advanced;
-        if (!currentTflScheduleId || !advancedData.schedules[currentTflScheduleId]) return;
+        if (!advancedData || !advancedData.schedules) return;
 
-        // --- 頂部控制區 (略過不變的部分) ---
-        const selector = document.getElementById('tfl-schedule-selector');
-        selector.innerHTML = '';
-        Object.values(advancedData.schedules).forEach(sched => {
-            const opt = document.createElement('option');
-            opt.value = sched.id;
-            opt.textContent = sched.name;
-            if (sched.id === currentTflScheduleId) opt.selected = true;
-            selector.appendChild(opt);
-        });
-        selector.onchange = (e) => { currentTflScheduleId = e.target.value; renderTflLibraryTab(); };
+        // 1. 決定當前檢視的硬體群組 (與 Tab 1 連動)
+        if (!currentTflGroupSetId || !tflData.signalGroupSets[currentTflGroupSetId]) {
+            currentTflGroupSetId = tflData.activeGroupSetId || Object.keys(tflData.signalGroupSets)[0];
+        }
+
+        // 確保該硬體群組底下至少有一個時制
+        ensureScheduleForGroupSet(tflData, currentTflGroupSetId);
+
+        // 篩選出隸屬於當前硬體群組的時制列表
+        let schedulesInGroupSet = Object.values(advancedData.schedules).filter(s => s.groupSetId === currentTflGroupSetId);
+        if (!currentTflScheduleId || !advancedData.schedules[currentTflScheduleId] || advancedData.schedules[currentTflScheduleId].groupSetId !== currentTflGroupSetId) {
+            currentTflScheduleId = schedulesInGroupSet[0].id;
+        }
 
         const currentSchedule = advancedData.schedules[currentTflScheduleId];
+        const scheduleGroupSet = tflData.signalGroupSets[currentTflGroupSetId];
+        const activeScheduleGroups = scheduleGroupSet ? scheduleGroupSet.groups : tflData.signalGroups;
+        alignPhasesToGroupSet(currentSchedule.phases, activeScheduleGroups);
+
+        // --- 第 1 列：先選擇硬體群組 (與 Tab 1 完全對應) ---
+        const libGsPillsContainer = document.getElementById('tfl-library-groupset-pills');
+        renderTflPillBar(libGsPillsContainer, {
+            labelHtml: '<i class="fa-solid fa-microchip" style="color:#8b5cf6;"></i> 硬體群組:',
+            items: Object.values(tflData.signalGroupSets).map(gs => {
+                const sCount = Object.values(advancedData.schedules).filter(s => s.groupSetId === gs.id).length;
+                return {
+                    id: gs.id,
+                    name: gs.name || gs.id,
+                    subText: `${Object.keys(gs.groups || {}).length}燈號 · ${sCount || 1}時制`
+                };
+            }),
+            activeId: currentTflGroupSetId,
+            onSelect: (selectedGsId) => {
+                currentTflGroupSetId = selectedGsId;
+                setActiveTflGroupSet(tflData, currentTflGroupSetId);
+                ensureScheduleForGroupSet(tflData, currentTflGroupSetId);
+                const gsScheds = Object.values(advancedData.schedules).filter(s => s.groupSetId === currentTflGroupSetId);
+                if (gsScheds.length > 0) currentTflScheduleId = gsScheds[0].id;
+                renderTflGroupingTab();
+                renderTflLibraryTab();
+                if (selectedObject) updatePropertiesPanel(selectedObject);
+            }
+        });
+
+        // --- 第 2 列：該硬體群組底下的時制分頁 (含 ✏️ 原地改名 / 🗑️ 刪除 / + 新增時制) ---
+        const schedPillsContainer = document.getElementById('tfl-schedule-pills');
+        renderTflPillBar(schedPillsContainer, {
+            labelHtml: '<i class="fa-regular fa-clock" style="color:#3b82f6;"></i> 時制:',
+            pillClass: 'tfl-pill-schedule',
+            items: schedulesInGroupSet.map(sched => ({
+                id: sched.id,
+                name: sched.name || sched.id
+            })),
+            activeId: currentTflScheduleId,
+            addLabel: '+ 新增時制',
+            onSelect: (selectedSchedId) => {
+                currentTflScheduleId = selectedSchedId;
+                renderTflLibraryTab();
+            },
+            onRename: (schedId, newName) => {
+                if (advancedData.schedules[schedId]) {
+                    advancedData.schedules[schedId].name = newName;
+                    renderTflLibraryTab();
+                    renderTflDailyPlansTab();
+                    saveState();
+                }
+            },
+            onDelete: (schedId) => {
+                if (schedulesInGroupSet.length <= 1) {
+                    alert(I18N.t('此硬體群組下必須保留至少一個時制。'));
+                    return;
+                }
+                const targetSched = advancedData.schedules[schedId];
+                if (confirm(I18N.t(`確定要刪除時制「${targetSched ? targetSched.name : schedId}」嗎？`))) {
+                    Object.values(advancedData.dailyPlans).forEach(plan => {
+                        plan.switches.forEach(sw => {
+                            if (sw.schedId === schedId) sw.schedId = 'NONE';
+                        });
+                    });
+                    delete advancedData.schedules[schedId];
+                    const remaining = Object.values(advancedData.schedules).filter(s => s.groupSetId === currentTflGroupSetId);
+                    currentTflScheduleId = remaining.length > 0 ? remaining[0].id : Object.keys(advancedData.schedules)[0];
+                    renderTflLibraryTab();
+                    renderTflDailyPlansTab();
+                    saveState();
+                }
+            },
+            onAdd: () => {
+                let newNum = 1;
+                while (advancedData.schedules[`Sched_${newNum}`]) newNum++;
+                const newId = `Sched_${newNum}`;
+                const dur = 30;
+                const initialSignals = {};
+                Object.values(activeScheduleGroups || {}).forEach(g => {
+                    initialSignals[g.id] = (g.type === 'pedestrian')
+                        ? { walk: dur - 10, flash: 7, stop: 3 }
+                        : 'Red';
+                });
+                advancedData.schedules[newId] = {
+                    id: newId,
+                    name: `自訂時制[${newNum}]`,
+                    groupSetId: currentTflGroupSetId,
+                    timeShift: 0,
+                    phases: [{ duration: dur, signals: initialSignals }]
+                };
+                currentTflScheduleId = newId;
+                renderTflLibraryTab();
+                renderTflDailyPlansTab();
+                saveState();
+            }
+        });
+
         const shiftInput = document.getElementById('tfl-schedule-timeshift');
-        shiftInput.value = currentSchedule.timeShift || 0;
-        shiftInput.onchange = (e) => {
-            const newVal = parseInt(e.target.value, 10) || 0;
-            currentSchedule.timeShift = newVal;
-            if (advancedData.weekly) {
-                const monPlanId = advancedData.weekly[1];
-                if (monPlanId && advancedData.dailyPlans[monPlanId]) {
-                    const sw = advancedData.dailyPlans[monPlanId].switches.find(s => s.schedId !== 'NONE');
-                    if (sw && sw.schedId === currentTflScheduleId) {
-                        tflData.timeShift = newVal;
-                        const propShiftInput = document.getElementById('prop-tfl-shift');
-                        if (propShiftInput && selectedObject && selectedObject.id === currentModalNode.id) propShiftInput.value = newVal;
+        if (shiftInput) {
+            shiftInput.value = currentSchedule.timeShift || 0;
+            shiftInput.onchange = (e) => {
+                const newVal = parseInt(e.target.value, 10) || 0;
+                currentSchedule.timeShift = newVal;
+                if (advancedData.weekly) {
+                    const monPlanId = advancedData.weekly[1];
+                    if (monPlanId && advancedData.dailyPlans[monPlanId]) {
+                        const sw = advancedData.dailyPlans[monPlanId].switches.find(s => s.schedId !== 'NONE');
+                        if (sw && sw.schedId === currentTflScheduleId) {
+                            tflData.timeShift = newVal;
+                            const propShiftInput = document.getElementById('prop-tfl-shift');
+                            if (propShiftInput && selectedObject && selectedObject.id === currentModalNode.id) propShiftInput.value = newVal;
+                        }
                     }
                 }
-            }
-            saveState();
-        };
+                saveState();
+            };
+        }
 
-        document.getElementById('tfl-add-schedule-btn').onclick = () => {
-            let newNum = 1; while (advancedData.schedules[`Sched_${newNum}`]) newNum++;
-            const newId = `Sched_${newNum}`;
-            advancedData.schedules[newId] = { id: newId, name: `自訂時制[${newNum}]`, timeShift: 0, phases: [] };
-            currentTflScheduleId = newId;
-            renderTflLibraryTab(); renderTflDailyPlansTab(); saveState();
-        };
-
-        document.getElementById('tfl-delete-schedule-btn').onclick = () => {
-            const schedKeys = Object.keys(advancedData.schedules);
-            if (schedKeys.length <= 1) { alert(I18N.t("必須保留至少一個時制。")); return; }
-            if (confirm(I18N.t(`確定要刪除時制[${currentSchedule.name}] 嗎？`))) {
-                Object.values(advancedData.dailyPlans).forEach(plan => { plan.switches.forEach(sw => { if (sw.schedId === currentTflScheduleId) sw.schedId = 'NONE'; }); });
-                delete advancedData.schedules[currentTflScheduleId];
-                currentTflScheduleId = Object.keys(advancedData.schedules)[0];
-                renderTflLibraryTab(); renderTflDailyPlansTab(); saveState();
-            }
-        };
-
-        // --- 表格區塊 ---
+        // --- 表格區塊：依據當前時制所選擇的號誌群組(硬體群組)渲染 ---
         const tableHead = document.querySelector('#tfl-schedule-table thead');
         const tableBody = document.querySelector('#tfl-schedule-table tbody');
 
-        // [修改] 分離車輛與行人群組
         const vehicleGroups = [];
         const pedestrianGroups = [];
-        Object.values(tflData.signalGroups).forEach(g => {
+        Object.values(activeScheduleGroups).forEach(g => {
             if (g.type === 'pedestrian') pedestrianGroups.push(g.id);
             else vehicleGroups.push(g.id);
         });
@@ -13208,7 +13067,7 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('tfl-add-phase-btn').onclick = () => {
             const dur = 30;
             const newPhase = { duration: dur, signals: {} };
-            Object.values(tflData.signalGroups).forEach(g => {
+            Object.values(activeScheduleGroups).forEach(g => {
                 if (g.type === 'pedestrian') newPhase.signals[g.id] = { walk: dur - 10, flash: 7, stop: 3 };
                 else newPhase.signals[g.id] = 'Red';
             });
@@ -13944,6 +13803,12 @@ document.addEventListener('DOMContentLoaded', () => {
             // [修改] 將匯入的名稱套用前綴以利識別
             newLink.name = (window.importPrefix || "") + (xmlName || newLink.id);
 
+            const synchroLaneTurnsStr = getChildValue(linkEl, "SynchroLaneTurns");
+            if (synchroLaneTurnsStr) {
+                newLink.synchroLaneTurns = synchroLaneTurnsStr.split(',').map(s => s.trim()).filter(Boolean);
+                drawLink(newLink);
+            }
+
             const pairXmlId = getChildValue(linkEl, "pairLinkId");
             const medianWidthStr = getChildValue(linkEl, "medianWidth");
 
@@ -14049,6 +13914,27 @@ document.addEventListener('DOMContentLoaded', () => {
                 } else if (tagName === 'RegularNode') {
                     xmlNodeIdMap.set(xmlId, null);
 
+                    // Synchro Turn Volumes
+                    const stvContainer = getChildrenByLocalName(nodeEl, "SynchroTurnVolumes")[0];
+                    const synchroTurnVolumes = {};
+                    if (stvContainer) {
+                        getChildrenByLocalName(stvContainer, "IncomingLink").forEach(inEl => {
+                            const xmlFromId = inEl.getAttribute("id");
+                            const internalFromId = xmlLinkIdMap.get(xmlFromId);
+                            if (internalFromId) {
+                                synchroTurnVolumes[internalFromId] = {};
+                                getChildrenByLocalName(inEl, "TurnVolume").forEach(tvEl => {
+                                    const xmlToId = tvEl.getAttribute("linkId");
+                                    const vol = parseFloat(tvEl.getAttribute("volume")) || 0;
+                                    const internalToId = xmlLinkIdMap.get(xmlToId);
+                                    if (internalToId) {
+                                        synchroTurnVolumes[internalFromId][internalToId] = vol;
+                                    }
+                                });
+                            }
+                        });
+                    }
+
                     // Turning Ratios
                     const trContainer = getChildrenByLocalName(nodeEl, "TurningRatios")[0];
                     const turningRatios = {};
@@ -14115,6 +14001,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     xmlNodeDataMap.set(xmlId, {
                         groups: groupMap,
                         turningRatios: turningRatios,
+                        synchroTurnVolumes: synchroTurnVolumes,
                         pedestrianVolume: pedVolStr ? parseFloat(pedVolStr) : 0,
                         crossOnceProb: crossOnceStr ? parseFloat(crossOnceStr) : 100,
                         crossTwiceProb: crossTwiceStr ? parseFloat(crossTwiceStr) : 0,
@@ -14159,6 +14046,9 @@ document.addEventListener('DOMContentLoaded', () => {
                                         const createdNode = network.nodes[newConn.nodeId];
                                         if (createdNode) {
                                             if (nodeData.turningRatios) createdNode.turningRatios = nodeData.turningRatios;
+                                            if (nodeData.synchroTurnVolumes && Object.keys(nodeData.synchroTurnVolumes).length > 0) {
+                                                createdNode.synchroTurnVolumes = nodeData.synchroTurnVolumes;
+                                            }
                                             if (nodeData.pedestrianVolume !== undefined) createdNode.pedestrianVolume = nodeData.pedestrianVolume;
                                             if (nodeData.crossOnceProb !== undefined) createdNode.crossOnceProb = nodeData.crossOnceProb;
                                             if (nodeData.crossTwiceProb !== undefined) createdNode.crossTwiceProb = nodeData.crossTwiceProb;
@@ -14278,12 +14168,42 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (advEl && advEl.getAttribute("enabled") === "true") {
                     tflData.advanced = { schedules: {}, dailyPlans: {}, weekly: {} };
 
+                    // 0. 解析多套號誌群組 (硬體群組庫 SignalGroupSets)
+                    const gsContainerEl = getChildrenByLocalName(advEl, "SignalGroupSets")[0];
+                    if (gsContainerEl) {
+                        tflData.signalGroupSets = {};
+                        const activeGsIdAttr = gsContainerEl.getAttribute("activeGroupSetId");
+                        getChildrenByLocalName(gsContainerEl, "SignalGroupSet").forEach(gsEl => {
+                            const gsId = gsEl.getAttribute("id");
+                            const gsName = gsEl.getAttribute("name") || gsId;
+                            const groups = {};
+                            getChildrenByLocalName(gsEl, "Group").forEach(gEl => {
+                                const gId = gEl.getAttribute("id");
+                                const gType = gEl.getAttribute("type") || (gId.toUpperCase().startsWith('P') ? 'pedestrian' : 'vehicle');
+                                const connXmlIdsStr = gEl.getAttribute("connXmlIds") || "";
+                                const internalConnIds = connXmlIdsStr
+                                    .split(',')
+                                    .map(s => s.trim())
+                                    .filter(Boolean)
+                                    .map(xId => xmlConnIdMap.get(xId))
+                                    .filter(Boolean);
+                                groups[gId] = { id: gId, connIds: internalConnIds, type: gType };
+                            });
+                            tflData.signalGroupSets[gsId] = { id: gsId, name: gsName, groups };
+                        });
+                        if (activeGsIdAttr && tflData.signalGroupSets[activeGsIdAttr]) {
+                            tflData.activeGroupSetId = activeGsIdAttr;
+                        }
+                    }
+                    ensureTflGroupSets(tflData);
+
                     // 1. 解析時制庫
                     const schedsEl = getChildrenByLocalName(advEl, "Schedules")[0];
                     if (schedsEl) {
                         getChildrenByLocalName(schedsEl, "ScheduleDef").forEach(sDef => {
                             const sId = sDef.getAttribute("id");
                             const sName = sDef.getAttribute("name");
+                            const sGroupSetId = sDef.getAttribute("groupSetId") || tflData.activeGroupSetId || 'GroupSet_1';
                             const sShift = parseInt(sDef.getAttribute("timeShift"), 10) || 0;
                             let phases = [];
 
@@ -14307,7 +14227,6 @@ document.addEventListener('DOMContentLoaded', () => {
                                             const groupInfo = groupDefinitions.get(numericId);
                                             if (groupInfo) {
                                                 const state = sigEl.getAttribute("state");
-                                                // [修改] 相容轉換
                                                 if (groupInfo.type === 'pedestrian') {
                                                     if (state === 'Green') signals[groupInfo.name] = { walk: duration, flash: 0, stop: 0 };
                                                     else if (state === 'Yellow') signals[groupInfo.name] = { walk: 0, flash: duration, stop: 0 };
@@ -14321,7 +14240,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                     });
                                 }
                             }
-                            tflData.advanced.schedules[sId] = { id: sId, name: sName, timeShift: sShift, phases };
+                            tflData.advanced.schedules[sId] = { id: sId, name: sName, groupSetId: sGroupSetId, timeShift: sShift, phases };
                         });
                     }
 
@@ -14366,6 +14285,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         },
                         weekly: { 1: 'Plan_1', 2: 'Plan_1', 3: 'Plan_1', 4: 'Plan_1', 5: 'Plan_1', 6: 'Plan_1', 7: 'Plan_1' }
                     };
+                    ensureTflGroupSets(tflData);
                 }
             });
 
@@ -14795,6 +14715,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (sigGrpVal) {
                         newMark.signalGroupId = sigGrpVal;
                     }
+                    const sigGrpBySetVal = getChildValue(mkEl, "signalGroupBySet");
+                    if (sigGrpBySetVal) {
+                        try {
+                            newMark.signalGroupBySet = JSON.parse(sigGrpBySetVal);
+                        } catch (e) { }
+                    }
 
                     const lanesStr = getChildValue(mkEl, "laneIndices");
                     if (lanesStr) {
@@ -15138,6 +15064,10 @@ document.addEventListener('DOMContentLoaded', () => {
             // [修正] 提早關閉 Waypoints 標籤，不要把其他屬性包進去
             xml += '        </tm:Waypoints>\n';
 
+            if (link.synchroLaneTurns && Array.isArray(link.synchroLaneTurns) && link.synchroLaneTurns.length > 0) {
+                xml += `        <tm:SynchroLaneTurns>${link.synchroLaneTurns.join(',')}</tm:SynchroLaneTurns>\n`;
+            }
+
             if (link.pairInfo) {
                 const pairXmlId = linkIdMap.get(link.pairInfo.pairId);
                 if (pairXmlId !== undefined) {
@@ -15204,6 +15134,25 @@ document.addEventListener('DOMContentLoaded', () => {
                 xml += `        <tm:crossOnceProb>${node.crossOnceProb !== undefined ? node.crossOnceProb : 100}</tm:crossOnceProb>\n`;
                 xml += `        <tm:crossTwiceProb>${node.crossTwiceProb || 0}</tm:crossTwiceProb>\n`;
 
+                // [新增] 寫入 Synchro 路口轉向車流量 (veh/h)
+                if (node.synchroTurnVolumes && Object.keys(node.synchroTurnVolumes).length > 0) {
+                    xml += `        <tm:SynchroTurnVolumes>\n`;
+                    Object.entries(node.synchroTurnVolumes).forEach(([fromId, toData]) => {
+                        const fromNumId = linkIdMap.get(fromId);
+                        if (fromNumId !== undefined) {
+                            xml += `          <tm:IncomingLink id="${fromNumId}">\n`;
+                            Object.entries(toData).forEach(([toId, vol]) => {
+                                const toNumId = linkIdMap.get(toId);
+                                if (toNumId !== undefined) {
+                                    xml += `            <tm:TurnVolume linkId="${toNumId}" volume="${Math.round(vol || 0)}" />\n`;
+                                }
+                            });
+                            xml += `          </tm:IncomingLink>\n`;
+                        }
+                    });
+                    xml += `        </tm:SynchroTurnVolumes>\n`;
+                }
+
                 // [新增] 寫入 Turning Ratios (Flow Mode)
                 if (node.turningRatios && Object.keys(node.turningRatios).length > 0) {
                     xml += `        <tm:TurningRatios>\n`;
@@ -15229,7 +15178,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     const sourceLink = network.links[conn.sourceLinkId];
                     const transitionWidth = (sourceLink && sourceLink.lanes[conn.sourceLaneIndex]) ? sourceLink.lanes[conn.sourceLaneIndex].width : LANE_WIDTH;
                     const p1 = conn.bezierPoints[0];
-                    const p4 = conn.bezierPoints[1];
+                    const p4 = conn.bezierPoints[conn.bezierPoints.length - 1];
                     const destLink = network.links[conn.destLinkId];
                     let pointsToExport = [p1, p1, p4, p4];
                     let curveLength = vecLen(getVector(p1, p4));
@@ -15259,33 +15208,148 @@ document.addEventListener('DOMContentLoaded', () => {
                 xml += '        </tm:TransitionRules>\n';
 
                 const tflData = network.trafficLights[node.id];
-                if (tflData && tflData.signalGroups && Object.keys(tflData.signalGroups).length > 0) {
-                    const groupNameToNumericId = {}; let turnTRGroupIdCounter = 0;
-                    // [修改] 寫入群組 type
+                if (tflData) ensureTflGroupSets(tflData);
+                const gsListForExport = tflData && tflData.signalGroupSets ? Object.values(tflData.signalGroupSets) : [];
+                const hasAnyGroupsToExport = gsListForExport.some(gs => Object.keys(gs.groups || {}).length > 0);
+                if (tflData && hasAnyGroupsToExport) {
+                    const groupNameToNumericId = {};
+                    const groupSetToNumericIds = {}; // gsId -> { groupId -> [numericTurnTRGroupId, ...] }
+                    const exportedLightsList = [];   // [{ id, name }]
+                    let turnTRGroupIdCounter = 0;
+
+                    gsListForExport.forEach(gs => { groupSetToNumericIds[gs.id] = {}; });
+
                     xml += '        <tm:TurnTRGroups>\n';
-                    Object.values(tflData.signalGroups).forEach(group => {
-                        const numericTurnTRGroupId = turnTRGroupIdCounter++;
-                        groupNameToNumericId[group.id] = numericTurnTRGroupId;
-                        // [修改] 寫入群組 type
-                        xml += `          <tm:TurnTRGroup><tm:id>${numericTurnTRGroupId}</tm:id><tm:name>${group.id}</tm:name><tm:type>${group.type || 'vehicle'}</tm:type>\n`;
-                        const firstConn = network.connections[group.connIds[0]];
-                        if (firstConn) {
-                            const sourceLink = network.links[firstConn.sourceLinkId], destLink = network.links[firstConn.destLinkId];
-                            if (sourceLink && destLink && sourceLink.waypoints.length > 1 && destLink.waypoints.length > 1) {
-                                const p1 = sourceLink.waypoints[sourceLink.waypoints.length - 1], p4 = destLink.waypoints[0];
-                                const v1 = normalize(getVector(sourceLink.waypoints[sourceLink.waypoints.length - 2], p1)), v2 = normalize(getVector(p4, destLink.waypoints[1]));
-                                const p2 = add(p1, scale(v1, vecLen(getVector(p1, p4)) * 0.3)), p3 = add(p4, scale(v2, -vecLen(getVector(p1, p4)) * 0.3));
-                                xml += '            <tm:BaseBezierCurve><tm:ReferencePoints>\n';
-                                [p1, p2, p3, p4].forEach(p => { xml += `              <tm:Point><tm:x>${p.x.toFixed(4)}</tm:x><tm:y>${(p.y * C_SYSTEM_Y_INVERT).toFixed(4)}</tm:y></tm:Point>\n`; });
-                                xml += '            </tm:ReferencePoints></tm:BaseBezierCurve>\n';
+
+                    if (gsListForExport.length === 1) {
+                        // 單一硬體群組：100% 維持原有 TurnTRGroup 結構
+                        const singleGs = gsListForExport[0];
+                        Object.values(singleGs.groups).forEach(group => {
+                            const numericTurnTRGroupId = turnTRGroupIdCounter++;
+                            groupNameToNumericId[group.id] = numericTurnTRGroupId;
+                            groupSetToNumericIds[singleGs.id][group.id] = [numericTurnTRGroupId];
+                            exportedLightsList.push({ id: numericTurnTRGroupId, name: group.id });
+
+                            xml += `          <tm:TurnTRGroup><tm:id>${numericTurnTRGroupId}</tm:id><tm:name>${group.id}</tm:name><tm:type>${group.type || 'vehicle'}</tm:type>\n`;
+                            const firstConn = network.connections[group.connIds[0]];
+                            if (firstConn) {
+                                const sourceLink = network.links[firstConn.sourceLinkId], destLink = network.links[firstConn.destLinkId];
+                                if (sourceLink && destLink && sourceLink.waypoints.length > 1 && destLink.waypoints.length > 1) {
+                                    const p1 = sourceLink.waypoints[sourceLink.waypoints.length - 1], p4 = destLink.waypoints[0];
+                                    const v1 = normalize(getVector(sourceLink.waypoints[sourceLink.waypoints.length - 2], p1)), v2 = normalize(getVector(p4, destLink.waypoints[1]));
+                                    const p2 = add(p1, scale(v1, vecLen(getVector(p1, p4)) * 0.3)), p3 = add(p4, scale(v2, -vecLen(getVector(p1, p4)) * 0.3));
+                                    xml += '            <tm:BaseBezierCurve><tm:ReferencePoints>\n';
+                                    [p1, p2, p3, p4].forEach(p => { xml += `              <tm:Point><tm:x>${p.x.toFixed(4)}</tm:x><tm:y>${(p.y * C_SYSTEM_Y_INVERT).toFixed(4)}</tm:y></tm:Point>\n`; });
+                                    xml += '            </tm:ReferencePoints></tm:BaseBezierCurve>\n';
+                                }
                             }
-                        }
-                        xml += '            <tm:TransitionRules>\n';
-                        group.connIds.forEach(cid => { const mappedId = connIdMap.get(cid); if (mappedId !== undefined) xml += `              <tm:TransitionRule><tm:transitionRuleId>${mappedId}</tm:transitionRuleId></tm:TransitionRule>\n`; });
-                        xml += '            </tm:TransitionRules>\n          </tm:TurnTRGroup>\n';
-                    });
+                            xml += '            <tm:TransitionRules>\n';
+                            group.connIds.forEach(cid => { const mappedId = connIdMap.get(cid); if (mappedId !== undefined) xml += `              <tm:TransitionRule><tm:transitionRuleId>${mappedId}</tm:transitionRuleId></tm:TransitionRule>\n`; });
+                            xml += '            </tm:TransitionRules>\n          </tm:TurnTRGroup>\n';
+                        });
+                    } else {
+                        // 多套硬體群組：建立跨配置原子化 TurnTRGroup (Atomic Partitioning)，使模擬器在切換不同硬體群組時制時 100% 相容
+                        const allAssignedConnIds = new Set();
+                        gsListForExport.forEach(gs => {
+                            Object.values(gs.groups || {}).forEach(g => {
+                                if (g.type !== 'pedestrian') {
+                                    (g.connIds || []).forEach(cid => {
+                                        if (connIdMap.has(cid)) allAssignedConnIds.add(cid);
+                                    });
+                                }
+                            });
+                        });
+
+                        // 依各套硬體群組歸屬簽章分群
+                        const sigToAtom = new Map();
+                        allAssignedConnIds.forEach(cid => {
+                            const membership = {};
+                            const sigParts = [];
+                            gsListForExport.forEach(gs => {
+                                let foundGId = '';
+                                for (const g of Object.values(gs.groups || {})) {
+                                    if (g.type !== 'pedestrian' && (g.connIds || []).includes(cid)) {
+                                        foundGId = g.id;
+                                        break;
+                                    }
+                                }
+                                membership[gs.id] = foundGId;
+                                sigParts.push(`${gs.id}:${foundGId}`);
+                            });
+                            const sig = sigParts.join('|');
+                            if (!sigToAtom.has(sig)) {
+                                sigToAtom.set(sig, { connIds: [], membership });
+                            }
+                            sigToAtom.get(sig).connIds.push(cid);
+                        });
+
+                        // 輸出每個原子車輛群組
+                        sigToAtom.forEach(atom => {
+                            const numericId = turnTRGroupIdCounter++;
+                            const activeGsId = tflData.activeGroupSetId;
+                            const primaryName = atom.membership[activeGsId] || Object.values(atom.membership).find(Boolean) || `G_${numericId}`;
+                            const atomName = groupNameToNumericId[primaryName] === undefined ? primaryName : `${primaryName}_${numericId}`;
+                            if (groupNameToNumericId[primaryName] === undefined) {
+                                groupNameToNumericId[primaryName] = numericId;
+                            }
+                            groupNameToNumericId[atomName] = numericId;
+                            exportedLightsList.push({ id: numericId, name: atomName });
+
+                            Object.entries(atom.membership).forEach(([gsId, gId]) => {
+                                if (gId) {
+                                    if (!groupSetToNumericIds[gsId][gId]) groupSetToNumericIds[gsId][gId] = [];
+                                    groupSetToNumericIds[gsId][gId].push(numericId);
+                                }
+                            });
+
+                            xml += `          <tm:TurnTRGroup><tm:id>${numericId}</tm:id><tm:name>${atomName}</tm:name><tm:type>vehicle</tm:type>\n`;
+                            const firstConn = network.connections[atom.connIds[0]];
+                            if (firstConn) {
+                                const sourceLink = network.links[firstConn.sourceLinkId], destLink = network.links[firstConn.destLinkId];
+                                if (sourceLink && destLink && sourceLink.waypoints.length > 1 && destLink.waypoints.length > 1) {
+                                    const p1 = sourceLink.waypoints[sourceLink.waypoints.length - 1], p4 = destLink.waypoints[0];
+                                    const v1 = normalize(getVector(sourceLink.waypoints[sourceLink.waypoints.length - 2], p1)), v2 = normalize(getVector(p4, destLink.waypoints[1]));
+                                    const p2 = add(p1, scale(v1, vecLen(getVector(p1, p4)) * 0.3)), p3 = add(p4, scale(v2, -vecLen(getVector(p1, p4)) * 0.3));
+                                    xml += '            <tm:BaseBezierCurve><tm:ReferencePoints>\n';
+                                    [p1, p2, p3, p4].forEach(p => { xml += `              <tm:Point><tm:x>${p.x.toFixed(4)}</tm:x><tm:y>${(p.y * C_SYSTEM_Y_INVERT).toFixed(4)}</tm:y></tm:Point>\n`; });
+                                    xml += '            </tm:ReferencePoints></tm:BaseBezierCurve>\n';
+                                }
+                            }
+                            xml += '            <tm:TransitionRules>\n';
+                            atom.connIds.forEach(cid => { const mappedId = connIdMap.get(cid); if (mappedId !== undefined) xml += `              <tm:TransitionRule><tm:transitionRuleId>${mappedId}</tm:transitionRuleId></tm:TransitionRule>\n`; });
+                            xml += '            </tm:TransitionRules>\n          </tm:TurnTRGroup>\n';
+                        });
+
+                        // 處理尚未綁定 connIds 的車輛群組與所有行人群組
+                        const pedNameToNumericId = {};
+                        gsListForExport.forEach(gs => {
+                            Object.values(gs.groups || {}).forEach(group => {
+                                if (group.type === 'pedestrian') {
+                                    if (pedNameToNumericId[group.id] === undefined) {
+                                        const numericId = turnTRGroupIdCounter++;
+                                        pedNameToNumericId[group.id] = numericId;
+                                        groupNameToNumericId[group.id] = numericId;
+                                        exportedLightsList.push({ id: numericId, name: group.id });
+                                        xml += `          <tm:TurnTRGroup><tm:id>${numericId}</tm:id><tm:name>${group.id}</tm:name><tm:type>pedestrian</tm:type>\n            <tm:TransitionRules>\n            </tm:TransitionRules>\n          </tm:TurnTRGroup>\n`;
+                                    }
+                                    groupSetToNumericIds[gs.id][group.id] = [pedNameToNumericId[group.id]];
+                                } else if (!groupSetToNumericIds[gs.id][group.id] || groupSetToNumericIds[gs.id][group.id].length === 0) {
+                                    const numericId = turnTRGroupIdCounter++;
+                                    if (groupNameToNumericId[group.id] === undefined) groupNameToNumericId[group.id] = numericId;
+                                    groupSetToNumericIds[gs.id][group.id] = [numericId];
+                                    exportedLightsList.push({ id: numericId, name: group.id });
+                                    xml += `          <tm:TurnTRGroup><tm:id>${numericId}</tm:id><tm:name>${group.id}</tm:name><tm:type>vehicle</tm:type>\n            <tm:TransitionRules>\n            </tm:TransitionRules>\n          </tm:TurnTRGroup>\n`;
+                                }
+                            });
+                        });
+                    }
+
                     xml += '        </tm:TurnTRGroups>\n';
-                    tflGroupMappings[node.id] = groupNameToNumericId;
+                    tflGroupMappings[node.id] = {
+                        byName: groupNameToNumericId,
+                        byGroupSet: groupSetToNumericIds,
+                        lightsList: exportedLightsList
+                    };
                 }
 
                 const pathPoints = getNodePolygonPoints(node);
@@ -15350,6 +15414,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (mark.signalGroupId) {
                         xml += `        <tm:signalGroupId>${mark.signalGroupId}</tm:signalGroupId>\n`;
                     }
+                    if (mark.signalGroupBySet && Object.keys(mark.signalGroupBySet).length > 0) {
+                        xml += `        <tm:signalGroupBySet><![CDATA[${JSON.stringify(mark.signalGroupBySet)}]]></tm:signalGroupBySet>\n`;
+                    }
 
                     if (numericLinkId !== undefined) {
                         xml += `        <tm:linkId>${numericLinkId}</tm:linkId>\n`;
@@ -15393,8 +15460,9 @@ document.addEventListener('DOMContentLoaded', () => {
         // --- 4. Agents (Traffic Control & Spawners) ---
         xml += '  <tm:Agents>\n';
         xml += '    <tm:TrafficLightNetworks>\n';
-        for (const tfl of Object.values(network.trafficLights)) {
-            // [修正] 檢查是否有舊版排程，或是有新版進階排程，擇一存在即匯出
+        for (const [nodeKey, tfl] of Object.entries(network.trafficLights)) {
+            if (!tfl.nodeId) tfl.nodeId = nodeKey; // ★ 自動修復缺少 nodeId 的號誌資料
+
             const hasLegacySchedule = tfl.schedule && tfl.schedule.length > 0;
             const hasAdvancedSchedule = tfl.advanced && tfl.advanced.schedules && Object.keys(tfl.advanced.schedules).length > 0;
 
@@ -15405,11 +15473,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
             xml += `      <tm:RegularTrafficLightNetwork><tm:regularNodeId>${nodeNumId}</tm:regularNodeId>\n`;
 
-            const groupMap = tflGroupMappings[tfl.nodeId];
-            if (groupMap) {
+            ensureTflGroupSets(tfl);
+            const mappingInfo = tflGroupMappings[tfl.nodeId];
+            if (mappingInfo && mappingInfo.lightsList) {
                 xml += '        <tm:TrafficLights>\n';
-                Object.entries(groupMap).forEach(([groupName, numericTurnTRGroupId]) => {
-                    xml += `          <tm:TrafficLight><tm:id>${numericTurnTRGroupId}</tm:id><tm:name>${groupName}</tm:name><tm:Placement><tm:turnTRGroupId>${numericTurnTRGroupId}</tm:turnTRGroupId></tm:Placement></tm:TrafficLight>\n`;
+                mappingInfo.lightsList.forEach(item => {
+                    xml += `          <tm:TrafficLight><tm:id>${item.id}</tm:id><tm:name>${item.name}</tm:name><tm:Placement><tm:turnTRGroupId>${item.id}</tm:turnTRGroupId></tm:Placement></tm:TrafficLight>\n`;
                 });
                 xml += '        </tm:TrafficLights>\n';
             }
@@ -15419,6 +15488,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // ----------------------------------------------------
             let legacyTimeShift = tfl.timeShift || 0;
             let legacyPhases = tfl.schedule || [];
+            let legacyGroupSetId = tfl.activeGroupSetId || Object.keys(tfl.signalGroupSets)[0];
 
             if (tfl.advanced && tfl.advanced.weekly && tfl.advanced.dailyPlans && tfl.advanced.schedules) {
                 const monPlanId = tfl.advanced.weekly[1];
@@ -15430,24 +15500,37 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (repSched) {
                             legacyTimeShift = repSched.timeShift || 0;
                             legacyPhases = repSched.phases || [];
+                            if (repSched.groupSetId && tfl.signalGroupSets[repSched.groupSetId]) {
+                                legacyGroupSetId = repSched.groupSetId;
+                            }
                         }
                     }
                 }
             }
 
+            const legacyGroupsObj = (tfl.signalGroupSets[legacyGroupSetId] && tfl.signalGroupSets[legacyGroupSetId].groups) || tfl.signalGroups;
+            const legacyGsMapping = (mappingInfo && mappingInfo.byGroupSet && mappingInfo.byGroupSet[legacyGroupSetId]) || {};
+
             // 輸出舊版相容標籤
             xml += `        <tm:scheduleTimeShift>${legacyTimeShift}</tm:scheduleTimeShift>\n`;
             xml += '        <tm:Schedule><tm:TimePeriods>\n';
-            // [修改] 調用編譯器
-            const microLegacyPhases = compileMacroPhasesToMicro(legacyPhases, tfl.signalGroups);
+            const microLegacyPhases = compileMacroPhasesToMicro(legacyPhases, legacyGroupsObj);
             microLegacyPhases.forEach(phase => {
                 xml += `          <tm:TimePeriod><tm:duration>${phase.duration}</tm:duration>\n`;
-                if (groupMap) {
-                    Object.values(tfl.signalGroups).forEach(group => {
-                        const numericTurnTRGroupId = groupMap[group.id];
-                        if (numericTurnTRGroupId !== undefined) {
-                            const signal = phase.signals[group.id] || 'Red';
+                if (mappingInfo) {
+                    const emittedIds = new Set();
+                    Object.values(legacyGroupsObj).forEach(group => {
+                        const targetIds = legacyGsMapping[group.id] || (mappingInfo.byName[group.id] !== undefined ? [mappingInfo.byName[group.id]] : []);
+                        const signal = phase.signals[group.id] || 'Red';
+                        targetIds.forEach(numericTurnTRGroupId => {
+                            emittedIds.add(numericTurnTRGroupId);
                             xml += `            <tm:TrafficLightSignal><tm:trafficLightId>${numericTurnTRGroupId}</tm:trafficLightId><tm:signal>${signal}</tm:signal></tm:TrafficLightSignal>\n`;
+                        });
+                    });
+                    // 非此硬體群組使用的原子群組預設紅燈
+                    mappingInfo.lightsList.forEach(item => {
+                        if (!emittedIds.has(item.id)) {
+                            xml += `            <tm:TrafficLightSignal><tm:trafficLightId>${item.id}</tm:trafficLightId><tm:signal>Red</tm:signal></tm:TrafficLightSignal>\n`;
                         }
                     });
                 }
@@ -15456,30 +15539,58 @@ document.addEventListener('DOMContentLoaded', () => {
             xml += '        </tm:TimePeriods></tm:Schedule>\n';
 
             // ----------------------------------------------------
-            // 【進階排程】輸出供新版模擬器讀取的標籤
+            // 【進階排程】輸出供新版模擬器與編輯器讀取的標籤
             // ----------------------------------------------------
             if (tfl.advanced) {
                 xml += '        <tm:AdvancedScheduling enabled="true">\n';
+
+                // 0. SignalGroupSets (多套硬體號誌群組庫)
+                if (tfl.signalGroupSets && Object.keys(tfl.signalGroupSets).length > 0) {
+                    xml += `          <tm:SignalGroupSets activeGroupSetId="${tfl.activeGroupSetId || Object.keys(tfl.signalGroupSets)[0]}">\n`;
+                    Object.values(tfl.signalGroupSets).forEach(gs => {
+                        xml += `            <tm:SignalGroupSet id="${gs.id}" name="${gs.name || gs.id}">\n`;
+                        Object.values(gs.groups || {}).forEach(g => {
+                            const xmlConnIds = (g.connIds || []).map(cid => connIdMap.get(cid)).filter(id => id !== undefined).join(',');
+                            xml += `              <tm:Group id="${g.id}" type="${g.type || 'vehicle'}" connXmlIds="${xmlConnIds}"/>\n`;
+                        });
+                        xml += `            </tm:SignalGroupSet>\n`;
+                    });
+                    xml += '          </tm:SignalGroupSets>\n';
+                }
+
+                // 1. Schedules (時制庫，包含所選用的 groupSetId)
                 xml += '          <tm:Schedules>\n';
                 Object.values(tfl.advanced.schedules).forEach(sched => {
-                    xml += `            <tm:ScheduleDef id="${sched.id}" name="${sched.name || sched.id}" timeShift="${sched.timeShift || 0}">\n`;
+                    const schedGsId = (sched.groupSetId && tfl.signalGroupSets[sched.groupSetId]) ? sched.groupSetId : (tfl.activeGroupSetId || Object.keys(tfl.signalGroupSets)[0]);
+                    const schedGroupsObj = (tfl.signalGroupSets[schedGsId] && tfl.signalGroupSets[schedGsId].groups) || tfl.signalGroups;
+                    const schedGsMap = (mappingInfo && mappingInfo.byGroupSet && mappingInfo.byGroupSet[schedGsId]) || {};
 
-                    // [修改] 調用編譯器產生標準 Phases
-                    const microPhases = compileMacroPhasesToMicro(sched.phases, tfl.signalGroups);
+                    xml += `            <tm:ScheduleDef id="${sched.id}" name="${sched.name || sched.id}" groupSetId="${schedGsId}" timeShift="${sched.timeShift || 0}">\n`;
+
+                    const microPhases = compileMacroPhasesToMicro(sched.phases, schedGroupsObj);
                     xml += '              <tm:Phases>\n';
                     microPhases.forEach(mPhase => {
                         xml += `                <tm:Phase duration="${mPhase.duration}">\n`;
+                        const emittedIds = new Set();
                         Object.entries(mPhase.signals).forEach(([gId, state]) => {
-                            const numericGroupId = groupMap ? groupMap[gId] : undefined;
-                            if (numericGroupId !== undefined) {
+                            const targetIds = schedGsMap[gId] || (mappingInfo && mappingInfo.byName[gId] !== undefined ? [mappingInfo.byName[gId]] : []);
+                            targetIds.forEach(numericGroupId => {
+                                emittedIds.add(numericGroupId);
                                 xml += `                  <tm:Signal groupId="${numericGroupId}" state="${state}"/>\n`;
-                            }
+                            });
                         });
+                        if (mappingInfo && mappingInfo.lightsList) {
+                            mappingInfo.lightsList.forEach(item => {
+                                if (!emittedIds.has(item.id)) {
+                                    xml += `                  <tm:Signal groupId="${item.id}" state="Red"/>\n`;
+                                }
+                            });
+                        }
                         xml += `                </tm:Phase>\n`;
                     });
                     xml += '              </tm:Phases>\n';
 
-                    // [新增] 寫入編輯器專屬的巨觀步階紀錄，以利下次完美讀取
+                    // 寫入編輯器專屬的巨觀步階紀錄，以利下次完美讀取
                     xml += `              <tm:EditorMacroPhases><![CDATA[${JSON.stringify(sched.phases)}]]></tm:EditorMacroPhases>\n`;
                     xml += `            </tm:ScheduleDef>\n`;
                 });
@@ -16889,7 +17000,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
 
-            // 3. 轉移轉向比例 (Turning Ratios)
+            // 3. 轉移轉向比例 (Turning Ratios) 與 Synchro 轉向車流量 (synchroTurnVolumes)
             if (subLinkIn && oldLink.startNodeId && network.nodes[oldLink.startNodeId]) {
                 const sNode = network.nodes[oldLink.startNodeId];
                 if (sNode.turningRatios) {
@@ -16900,12 +17011,24 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
                     });
                 }
+                if (sNode.synchroTurnVolumes) {
+                    Object.keys(sNode.synchroTurnVolumes).forEach(fromId => {
+                        if (sNode.synchroTurnVolumes[fromId][oldLinkId] !== undefined) {
+                            sNode.synchroTurnVolumes[fromId][subLinkIn.id] = sNode.synchroTurnVolumes[fromId][oldLinkId];
+                            delete sNode.synchroTurnVolumes[fromId][oldLinkId];
+                        }
+                    });
+                }
             }
             if (subLinkOut && oldLink.endNodeId && network.nodes[oldLink.endNodeId]) {
                 const eNode = network.nodes[oldLink.endNodeId];
                 if (eNode.turningRatios && eNode.turningRatios[oldLinkId] !== undefined) {
                     eNode.turningRatios[subLinkOut.id] = eNode.turningRatios[oldLinkId];
                     delete eNode.turningRatios[oldLinkId];
+                }
+                if (eNode.synchroTurnVolumes && eNode.synchroTurnVolumes[oldLinkId] !== undefined) {
+                    eNode.synchroTurnVolumes[subLinkOut.id] = eNode.synchroTurnVolumes[oldLinkId];
+                    delete eNode.synchroTurnVolumes[oldLinkId];
                 }
             }
 
@@ -17043,6 +17166,9 @@ document.addEventListener('DOMContentLoaded', () => {
         // <--- [修正] 如果母路段是參數化模式，將參數配置深拷貝給子路段 --->
         if (parentLink.parametricConfig) {
             link.parametricConfig = JSON.parse(JSON.stringify(parentLink.parametricConfig));
+        }
+        if (suffix === '_In' && parentLink.synchroLaneTurns) {
+            link.synchroLaneTurns = [...parentLink.synchroLaneTurns];
         }
 
         network.links[newId] = link;
@@ -17608,6 +17734,2180 @@ document.addEventListener('DOMContentLoaded', () => {
     Object.defineProperty(window, 'selectedObject', {
         get: () => selectedObject,
         set: (val) => selectObject(val),
+        configurable: true
+    });
+
+    // =========================================================================
+    // ⚡ SYNCHRO MODE ENGINE (快速節點/路段建模 + 視覺化車道數與轉向圖案選單)
+    // =========================================================================
+
+    var SYNCHRO_TURN_ARROW_MAP = {
+        'L': '↰',
+        'T': '↑',
+        'R': '↱',
+        'LT': '↰↑',
+        'TR': '↑↱',
+        'LR': '↰↱',
+        'LTR': '↰↑↱'
+    };
+
+    var SYNCHRO_TURN_CYCLE = ['L', 'LT', 'T', 'TR', 'R', 'LTR'];
+
+    var SYNCHRO_PRESET_LIBRARY = {
+        1: [
+            { turns: ['LTR'], label: '1L 全向共用' },
+            { turns: ['LT'], label: '1L 左直共用' },
+            { turns: ['TR'], label: '1L 直右共用' }
+        ],
+        2: [
+            { turns: ['L', 'TR'], label: '2L 左專+直右' },
+            { turns: ['LT', 'TR'], label: '2L 左直+直右' },
+            { turns: ['T', 'TR'], label: '2L 雙直(外右)' }
+        ],
+        3: [
+            { turns: ['L', 'T', 'R'], label: '3L 左+直+右專' },
+            { turns: ['L', 'T', 'TR'], label: '3L 左專+雙直右' },
+            { turns: ['LT', 'T', 'TR'], label: '3L 左直+直+直右' }
+        ],
+        4: [
+            { turns: ['L', 'T', 'T', 'R'], label: '4L 左+雙直+右專' },
+            { turns: ['L', 'T', 'T', 'TR'], label: '4L 左專+參直右' },
+            { turns: ['L', 'L', 'T', 'TR'], label: '4L 雙左+雙直右' }
+        ]
+    };
+
+    function getDefaultSynchroLaneTurns(laneCount) {
+        const n = Math.max(1, parseInt(laneCount, 10) || 1);
+        if (n === 1) return ['LTR'];
+        if (n === 2) return ['LT', 'TR'];
+        if (n === 3) return ['L', 'T', 'TR'];
+        if (n === 4) return ['L', 'T', 'T', 'R'];
+        const middle = Array(Math.max(1, n - 2)).fill('T');
+        return ['L', ...middle, 'R'];
+    }
+
+    function inferSynchroLaneTurns(link) {
+        if (!link || !link.lanes) return ['LTR'];
+        const n = link.lanes.length;
+        if (Array.isArray(link.synchroLaneTurns) && link.synchroLaneTurns.length === n) {
+            return [...link.synchroLaneTurns];
+        }
+        // Try to infer from existing connections at link.endNodeId
+        const laneSets = Array.from({ length: n }, () => new Set());
+        let foundAny = false;
+        Object.values(network.connections).forEach(conn => {
+            if (conn.sourceLinkId === link.id && conn.sourceLaneIndex >= 0 && conn.sourceLaneIndex < n) {
+                const dstLink = network.links[conn.destLinkId];
+                if (!dstLink) return;
+                const dir = getTurnDirection(link, dstLink);
+                if (dir === 'left') { laneSets[conn.sourceLaneIndex].add('L'); foundAny = true; }
+                else if (dir === 'straight') { laneSets[conn.sourceLaneIndex].add('T'); foundAny = true; }
+                else if (dir === 'right') { laneSets[conn.sourceLaneIndex].add('R'); foundAny = true; }
+            }
+        });
+        if (foundAny) {
+            const defaults = getDefaultSynchroLaneTurns(n);
+            const inferred = laneSets.map((s, idx) => {
+                let code = '';
+                if (s.has('L')) code += 'L';
+                if (s.has('T')) code += 'T';
+                if (s.has('R')) code += 'R';
+                return code || defaults[idx] || 'T';
+            });
+            link.synchroLaneTurns = inferred;
+            return [...inferred];
+        }
+        const fallback = getDefaultSynchroLaneTurns(n);
+        return fallback;
+    }
+
+    // Draw crisp white directional arrows & stop line on the road surface near downstream end
+    function drawSynchroGroundArrowsOnLink(link) {
+        if (!link || !link.konvaGroup || !link.waypoints || link.waypoints.length < 2) return;
+        const hasTurns = Array.isArray(link.synchroLaneTurns) && link.synchroLaneTurns.length > 0;
+        const isApproach = Boolean(link.endNodeId && network.nodes[link.endNodeId]);
+        if (!hasTurns && !(isSynchroMode && isApproach)) return;
+
+        const totalLen = getPolylineLength(link.waypoints);
+        if (totalLen < 6) return;
+
+        const turns = inferSynchroLaneTurns(link);
+        const nLanes = link.lanes.length;
+        const totalWidth = getLinkTotalWidth(link);
+        const halfWidth = totalWidth / 2;
+
+        // 1. Draw stop line near the end of approach links (1.2m from intersection edge)
+        if (isApproach) {
+            const stopDist = Math.max(0.5, totalLen - 1.2);
+            const { point: sp, vec: sVec } = getPointAlongPolyline(link.waypoints, stopDist);
+            const sNorm = getNormal(sVec);
+            const sp1 = add(sp, scale(sNorm, -halfWidth));
+            const sp2 = add(sp, scale(sNorm, halfWidth));
+            const stopLine = new Konva.Line({
+                points: [sp1.x, sp1.y, sp2.x, sp2.y],
+                stroke: 'rgba(255, 255, 255, 0.92)',
+                strokeWidth: 0.45,
+                listening: false,
+                name: 'synchro-ground-stopline'
+            });
+            link.konvaGroup.add(stopLine);
+        }
+
+        // 2. Draw directional arrows on each lane (~6.5m upstream of downstream end)
+        const arrowDist = Math.max(3.0, totalLen - Math.min(7.0, totalLen * 0.35));
+        const { point: basePt, vec: tangent } = getPointAlongPolyline(link.waypoints, arrowDist);
+        const normal = getNormal(tangent);
+        const angleDeg = Math.atan2(tangent.y, tangent.x) * (180 / Math.PI) + 90;
+
+        let cumW = 0;
+        for (let i = 0; i < nLanes; i++) {
+            const lw = link.lanes[i].width || LANE_WIDTH;
+            const centerOffset = cumW + lw / 2 - halfWidth;
+            cumW += lw;
+
+            const laneCenter = add(basePt, scale(normal, centerOffset));
+            const code = turns[i] || 'T';
+            const arrowText = SYNCHRO_TURN_ARROW_MAP[code] || '↑';
+
+            const label = new Konva.Text({
+                x: laneCenter.x,
+                y: laneCenter.y,
+                text: arrowText,
+                fontSize: code.length >= 3 ? 1.55 : (code.length === 2 ? 1.85 : 2.2),
+                fontStyle: 'bold',
+                fontFamily: 'Arial, sans-serif',
+                fill: 'rgba(255, 255, 255, 0.92)',
+                align: 'center',
+                verticalAlign: 'middle',
+                listening: false,
+                name: 'synchro-ground-arrow'
+            });
+            label.offsetX(label.width() / 2);
+            label.offsetY(label.height() / 2);
+            label.rotation(angleDeg);
+            link.konvaGroup.add(label);
+        }
+    }
+
+    // Core engine: Apply lane count & per-lane turn movements to a Link and rebuild intersection connections
+    function applySynchroLaneConfig(link, laneTurnsArray, options = {}) {
+        if (!link || !Array.isArray(laneTurnsArray) || laneTurnsArray.length === 0) return;
+
+        const targetCount = laneTurnsArray.length;
+        const currentCount = link.lanes.length;
+
+        // 1. Update lane count on link
+        if (targetCount !== currentCount) {
+            if (link.geometryType === 'parametric' && link.parametricConfig) {
+                const c = link.parametricConfig;
+                const ll = c.leftPocket && c.leftPocket.exists ? c.leftPocket.lanes : 0;
+                const rl = c.rightPocket && c.rightPocket.exists ? c.rightPocket.lanes : 0;
+                c.throughLanes = Math.max(1, targetCount - ll - rl);
+                generateParametricStrokes(link);
+            } else {
+                if (targetCount > currentCount) {
+                    for (let i = currentCount; i < targetCount; i++) {
+                        link.lanes.push({ width: LANE_WIDTH, allowedVehicleProfiles: [] });
+                    }
+                } else {
+                    link.lanes.length = targetCount;
+                }
+            }
+        }
+
+        link.synchroLaneTurns = [...laneTurnsArray];
+
+        // Redraw link & dependent roadside assets
+        drawLink(link);
+        updateAllDetectorsOnLink(link.id);
+        updateFlowPointsOnLink(link.id);
+        updateRoadSignsOnLink(link.id);
+        Object.values(network.roadMarkings).forEach(m => {
+            if (m.linkId === link.id) {
+                if (m.laneIndices) {
+                    m.laneIndices = m.laneIndices.filter(idx => idx < link.lanes.length);
+                    if (m.laneIndices.length === 0) m.laneIndices = [0];
+                }
+                drawRoadMarking(m);
+            }
+        });
+
+        // 2. If link enters an intersection Node, rebuild its outgoing Connections & ConnectionGroups cleanly
+        const nodeId = link.endNodeId;
+        const node = nodeId ? network.nodes[nodeId] : null;
+        if (node) {
+            const outLinks = [...node.outgoingLinkIds].map(id => network.links[id]).filter(Boolean);
+            const tfl = network.trafficLights[node.id];
+
+            // Record existing signal group assignments by (destLinkId) so we preserve Traffic Light bindings
+            const savedGroupByDest = {};
+            const savedSetGroupsByDest = {};
+            Object.values(network.connections).forEach(conn => {
+                if (conn.nodeId === node.id && conn.sourceLinkId === link.id) {
+                    if (tfl && tfl.signalGroups) {
+                        Object.values(tfl.signalGroups).forEach(g => {
+                            if (g.connIds && g.connIds.includes(conn.id)) {
+                                savedGroupByDest[conn.destLinkId] = g.id;
+                            }
+                        });
+                    }
+                    if (tfl && tfl.signalGroupSets) {
+                        Object.values(tfl.signalGroupSets).forEach(gs => {
+                            Object.values(gs.groups || {}).forEach(g => {
+                                if (g.connIds && g.connIds.includes(conn.id)) {
+                                    if (!savedSetGroupsByDest[gs.id]) savedSetGroupsByDest[gs.id] = {};
+                                    savedSetGroupsByDest[gs.id][conn.destLinkId] = g.id;
+                                }
+                            });
+                        });
+                    }
+                }
+            });
+
+            // Remove old ConnectionGroup visuals from link.id at this node
+            const groupsToRemove = [];
+            layer.find('.group-connection-visual').forEach(shape => {
+                const meta = shape.getAttr('meta');
+                if (meta && meta.nodeId === node.id && meta.sourceLinkId === link.id) {
+                    groupsToRemove.push({ id: shape.id(), ...meta, konvaLine: shape });
+                }
+            });
+            groupsToRemove.forEach(g => deleteConnectionGroup(g));
+
+            // Remove any remaining individual connections from link.id at this node
+            Object.values(network.connections).forEach(conn => {
+                if (conn.nodeId === node.id && conn.sourceLinkId === link.id) {
+                    deleteConnection(conn.id);
+                }
+            });
+
+            // Map outgoing links by turn direction ('left' -> 'L', 'straight' -> 'T', 'right' -> 'R')
+            outLinks.forEach(dstLink => {
+                if (dstLink.id === link.id) return;
+                const turnDir = getTurnDirection(link, dstLink);
+                if (turnDir === 'u-turn') return;
+
+                const dirChar = turnDir === 'left' ? 'L' : (turnDir === 'right' ? 'R' : 'T');
+                const matchingSrcLanes = [];
+                link.synchroLaneTurns.forEach((turnCode, laneIdx) => {
+                    if (laneIdx < link.lanes.length && (turnCode || '').includes(dirChar)) {
+                        matchingSrcLanes.push(laneIdx);
+                    }
+                });
+
+                if (matchingSrcLanes.length === 0) return;
+
+                const newIds = [];
+                const dstLaneCount = dstLink.lanes.length;
+                // 排除目標路段下游才展開的左/右轉專用袋狀車道，確保路口匯入處對齊起點實際存在的主線車道
+                const dstLL = getLeftPocketCount(dstLink);
+                const dstRL = getRightPocketCount(dstLink);
+                const dstValidStart = Math.min(dstLL, Math.max(0, dstLaneCount - 1));
+                const dstValidEnd = Math.max(dstValidStart, dstLaneCount - 1 - dstRL);
+
+                matchingSrcLanes.forEach((srcIdx, k) => {
+                    let dstIdx = dstValidStart;
+                    if (turnDir === 'right') {
+                        // Outer-to-outer alignment for right turns (within valid upstream entrance lanes)
+                        const offsetFromRight = matchingSrcLanes.length - 1 - k;
+                        dstIdx = Math.max(dstValidStart, dstValidEnd - offsetFromRight);
+                    } else if (turnDir === 'left') {
+                        // Inner-to-inner alignment for left turns (within valid upstream entrance lanes)
+                        dstIdx = Math.min(dstValidStart + k, dstValidEnd);
+                    } else {
+                        // Through lanes alignment (within valid upstream entrance lanes)
+                        dstIdx = Math.min(dstValidStart + k, dstValidEnd);
+                    }
+
+                    const srcMeta = { linkId: link.id, laneIndex: srcIdx, portType: 'end' };
+                    const dstMeta = { linkId: dstLink.id, laneIndex: dstIdx, portType: 'start' };
+                    const newConn = handleConnection(srcMeta, dstMeta);
+                    if (newConn) {
+                        newConn.konvaBezier.visible(false);
+                        newIds.push(newConn.id);
+                    }
+                });
+
+                if (newIds.length > 0) {
+                    drawConnectionGroupVisual(link, dstLink, newIds, node.id);
+
+                    // Restore or auto-assign Traffic Light SignalGroup bindings
+                    if (tfl) {
+                        ensureTflGroupSets(tfl);
+
+                        // 輔助函式：若該轉向為新開啟（無舊綁定紀錄），自動依據方位與轉向推論對應群組
+                        const inferFallbackGroupId = (groupsMap) => {
+                            if (!groupsMap) return null;
+                            // 1. 優先尋找同一進入路段 (link.id) 其他連線已使用的群組
+                            const compass = getSynchroApproachCompass(link).code;
+                            const isEW = (compass === 'EB' || compass === 'WB');
+                            if (turnDir === 'left') {
+                                if (isEW && groupsMap['G2']) return 'G2';
+                                if (!isEW && groupsMap['G4']) return 'G4';
+                            }
+                            if (isEW && groupsMap['G1']) return 'G1';
+                            if (!isEW && groupsMap['G3']) return 'G3';
+                            if (!isEW && groupsMap['G2']) return 'G2';
+                            // 2. Fallback 至該路段任一已綁定之群組或第一個車輛群組
+                            const existingOnApproach = Object.values(savedGroupByDest)[0];
+                            if (existingOnApproach && groupsMap[existingOnApproach]) return existingOnApproach;
+                            const firstVehGroup = Object.values(groupsMap).find(g => g.type !== 'pedestrian');
+                            return firstVehGroup ? firstVehGroup.id : null;
+                        };
+
+                        const targetGId = savedGroupByDest[dstLink.id] || inferFallbackGroupId(tfl.signalGroups);
+                        if (targetGId && tfl.signalGroups && tfl.signalGroups[targetGId]) {
+                            newIds.forEach(cid => {
+                                if (!tfl.signalGroups[targetGId].connIds.includes(cid)) {
+                                    tfl.signalGroups[targetGId].connIds.push(cid);
+                                }
+                            });
+                        }
+
+                        if (tfl.signalGroupSets) {
+                            Object.entries(tfl.signalGroupSets).forEach(([gsId, gs]) => {
+                                if (!gs || !gs.groups) return;
+                                const mapByDest = savedSetGroupsByDest[gsId] || {};
+                                const gId = mapByDest[dstLink.id] || inferFallbackGroupId(gs.groups);
+                                if (gId && gs.groups[gId]) {
+                                    newIds.forEach(cid => {
+                                        if (!gs.groups[gId].connIds.includes(cid)) {
+                                            gs.groups[gId].connIds.push(cid);
+                                        }
+                                    });
+                                }
+                            });
+                        }
+                    }
+                }
+            });
+
+            // Ensure turningRatios has default weights for active movements
+            if (!node.turningRatios) node.turningRatios = {};
+            if (!node.turningRatios[link.id]) node.turningRatios[link.id] = {};
+            const hasExistingRatios = Object.values(node.turningRatios[link.id]).some(v => v > 0);
+            if (!hasExistingRatios) {
+                const connectedDests = outLinks.filter(d =>
+                    Object.values(network.connections).some(c => c.nodeId === node.id && c.sourceLinkId === link.id && c.destLinkId === d.id)
+                );
+                if (connectedDests.length > 0) {
+                    let rawWeights = {};
+                    let sumW = 0;
+                    connectedDests.forEach(d => {
+                        const dir = getTurnDirection(link, d);
+                        const w = dir === 'straight' ? 0.70 : 0.15;
+                        rawWeights[d.id] = w;
+                        sumW += w;
+                    });
+                    connectedDests.forEach(d => {
+                        node.turningRatios[link.id][d.id] = Number((rawWeights[d.id] / sumW).toFixed(2));
+                    });
+                }
+            }
+
+            redrawNodeConnections(node.id);
+        }
+
+        // Also update upstream node connections if link starts at a node
+        if (link.startNodeId && network.nodes[link.startNodeId]) {
+            redrawNodeConnections(link.startNodeId);
+        }
+
+        layer.batchDraw();
+        if (!options.skipSave) {
+            saveState();
+        }
+    }
+
+    // Render Synchro Visual Lane & Turn Diagram Picker HTML for a Link (大師級重構：點選車道 + 下方共用大尺寸轉向列)
+    function renderSynchroLanePickerHTML(link, prefix = 'link') {
+        if (!link || !link.lanes) return '';
+        const turns = inferSynchroLaneTurns(link);
+        const nLanes = link.lanes.length;
+        const uid = `${prefix}_${link.id}`;
+
+        // 記憶目前選中的車道索引，確保切換轉向後焦點不會跳回第 1 車道
+        if (typeof link._activeSynchroLaneIdx !== 'number' || link._activeSynchroLaneIdx >= nLanes || link._activeSynchroLaneIdx < 0) {
+            link._activeSynchroLaneIdx = 0;
+        }
+        const activeIdx = link._activeSynchroLaneIdx;
+        const activeCode = turns[activeIdx] || 'T';
+
+        const getPosLabel = (i, total) => {
+            if (total === 1) return 'L1 全車道';
+            if (i === 0) return `L1 內側`;
+            if (i === total - 1) return `L${i + 1} 外側`;
+            return `L${i + 1} 中線`;
+        };
+
+        // 1. 上方車道視覺圖卡：僅顯示大箭頭與車道編號，乾淨無雜訊
+        let laneColsHtml = '';
+        for (let i = 0; i < nLanes; i++) {
+            const code = turns[i] || 'T';
+            const arrow = SYNCHRO_TURN_ARROW_MAP[code] || '↑';
+            const isSelected = (i === activeIdx);
+
+            laneColsHtml += `
+                <div class="synchro-lane-col ${isSelected ? 'selected' : ''}"
+                     data-synchro-uid="${uid}" data-lane-select="${i}"
+                     title="點擊選取 ${getPosLabel(i, nLanes)}（雙擊可循環切換轉向）">
+                    <div class="synchro-lane-arrow-big">${arrow}</div>
+                    <div class="synchro-lane-label">${getPosLabel(i, nLanes)}</div>
+                    <span class="synchro-lane-code-badge">${code}</span>
+                </div>
+            `;
+        }
+
+        // 2. 下方唯一一排共用大尺寸轉向選擇器
+        const sharedPillsHtml = SYNCHRO_TURN_CYCLE.map(opt => `
+            <button type="button" class="synchro-turn-pill ${activeCode === opt ? 'active' : ''}"
+                    data-synchro-uid="${uid}" data-lane-idx="${activeIdx}" data-turn-code="${opt}"
+                    title="設定為 ${SYNCHRO_TURN_ARROW_MAP[opt]} (${opt})">
+                <span class="pill-arrow">${SYNCHRO_TURN_ARROW_MAP[opt]}</span>
+                <span class="pill-code">${opt}</span>
+            </button>
+        `).join('');
+
+        // 3. 常用車道範本
+        const allQuickPresets = [
+            ...(SYNCHRO_PRESET_LIBRARY[nLanes] || []),
+            ...[1, 2, 3, 4].filter(k => k !== nLanes).map(k => SYNCHRO_PRESET_LIBRARY[k][1] || SYNCHRO_PRESET_LIBRARY[k][0])
+        ].slice(0, 6);
+
+        const currentKey = turns.join(',');
+        const presetsHtml = allQuickPresets.map(p => {
+            const pKey = p.turns.join(',');
+            const isActive = pKey === currentKey;
+            const cells = p.turns.map(t => `<span class="synchro-preset-lane-cell">${SYNCHRO_TURN_ARROW_MAP[t] || t}</span>`).join('');
+            return `
+                <button type="button" class="synchro-preset-card ${isActive ? 'active' : ''}"
+                        data-synchro-uid="${uid}" data-preset-turns="${pKey}"
+                        title="一鍵套用：${p.label}">
+                    <div class="synchro-preset-lanes">${cells}</div>
+                    <div class="synchro-preset-caption">${p.label}</div>
+                </button>
+            `;
+        }).join('');
+
+        const countBtnsHtml = [1, 2, 3, 4].map(cnt => `
+            <button type="button" class="synchro-count-btn ${nLanes === cnt ? 'active' : ''}"
+                    data-synchro-uid="${uid}" data-lane-count="${cnt}">${cnt}L</button>
+        `).join('');
+
+        return `
+            <div class="synchro-panel-box" data-synchro-box="${uid}" style="margin-bottom:0;">
+                <div class="synchro-panel-header">
+                    <span>車道數快速切換</span>
+                    <div class="synchro-lane-count-bar">
+                        ${countBtnsHtml}
+                        <button type="button" class="synchro-count-btn" data-synchro-uid="${uid}" data-lane-delta="-1" title="減少 1 車道">−</button>
+                        <button type="button" class="synchro-count-btn" data-synchro-uid="${uid}" data-lane-delta="1" title="增加 1 車道">+</button>
+                    </div>
+                </div>
+
+                <!-- 乾淨的車道圖卡（點擊選擇車道） -->
+                <div class="synchro-road-strip">
+                    ${laneColsHtml}
+                </div>
+
+                <!-- 共用單排大尺寸轉向選擇器 -->
+                <div class="synchro-shared-turn-bar">
+                    <div class="synchro-shared-turn-header">
+                        <span>目前編輯：<strong data-synchro-active-label="${uid}" style="color:#1d4ed8;">${getPosLabel(activeIdx, nLanes)}</strong></span>
+                        <span style="font-size:0.68rem; color:#64748b;">點選上方車道切換</span>
+                    </div>
+                    <div class="synchro-turn-pills">
+                        ${sharedPillsHtml}
+                    </div>
+                </div>
+
+                <details style="margin-top:8px;">
+                    <summary style="font-size:0.72rem; color:#92400e; font-weight:700; cursor:pointer; user-select:none; display:flex; align-items:center; justify-content:space-between;">
+                        <span><i class="fa-solid fa-swatchbook"></i> 常用車道配置範本 (一鍵套用)</span>
+                        <i class="fa-solid fa-chevron-down" style="font-size:0.65rem;"></i>
+                    </summary>
+                    <div class="synchro-preset-grid" style="margin-top:6px;">
+                        ${presetsHtml}
+                    </div>
+                </details>
+            </div>
+        `;
+    }
+
+    function bindSynchroLanePickerEvents(container, link, prefix = 'link', onAfterUpdate = null) {
+        if (!container || !link) return;
+        const uid = `${prefix}_${link.id}`;
+
+        const triggerUpdate = (newTurns) => {
+            applySynchroLaneConfig(link, newTurns);
+            if (typeof onAfterUpdate === 'function') {
+                onAfterUpdate(link, newTurns);
+            } else if (selectedObject) {
+                updatePropertiesPanel(selectedObject);
+            }
+        };
+
+        // 1. 車道數切換按鈕 (1L, 2L, 3L, 4L)
+        container.querySelectorAll(`.synchro-count-btn[data-synchro-uid="${uid}"][data-lane-count]`).forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const cnt = parseInt(btn.dataset.laneCount, 10);
+                if (!cnt || cnt < 1) return;
+                link._activeSynchroLaneIdx = Math.min(link._activeSynchroLaneIdx || 0, cnt - 1);
+                triggerUpdate(getDefaultSynchroLaneTurns(cnt));
+            });
+        });
+
+        // 2. 車道數增減按鈕 (- / +)
+        container.querySelectorAll(`.synchro-count-btn[data-synchro-uid="${uid}"][data-lane-delta]`).forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const delta = parseInt(btn.dataset.laneDelta, 10) || 0;
+                const nextCount = Math.max(1, Math.min(8, link.lanes.length + delta));
+                if (nextCount === link.lanes.length) return;
+                link._activeSynchroLaneIdx = Math.min(link._activeSynchroLaneIdx || 0, nextCount - 1);
+                triggerUpdate(getDefaultSynchroLaneTurns(nextCount));
+            });
+        });
+
+        // 3. 點擊上方車道欄位：切換選中車道（雙擊則快速循環切換該車道轉向）
+        container.querySelectorAll(`.synchro-lane-col[data-synchro-uid="${uid}"]`).forEach(col => {
+            col.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const idx = parseInt(col.dataset.laneSelect, 10);
+                link._activeSynchroLaneIdx = idx;
+
+                // 即時更新選中樣式與下方共用轉向列，不需重建整張路網連線
+                const turns = inferSynchroLaneTurns(link);
+                const nLanes = link.lanes.length;
+                const activeCode = turns[idx] || 'T';
+
+                container.querySelectorAll(`.synchro-lane-col[data-synchro-uid="${uid}"]`).forEach((c, i) => {
+                    c.classList.toggle('selected', i === idx);
+                });
+
+                const labelEl = container.querySelector(`[data-synchro-active-label="${uid}"]`);
+                if (labelEl) {
+                    labelEl.textContent = nLanes === 1 ? 'L1 全車道' : (idx === 0 ? 'L1 內側' : (idx === nLanes - 1 ? `L${idx + 1} 外側` : `L${idx + 1} 中線`));
+                }
+
+                container.querySelectorAll(`.synchro-turn-pill[data-synchro-uid="${uid}"]`).forEach(pill => {
+                    pill.dataset.laneIdx = idx;
+                    pill.classList.toggle('active', pill.dataset.turnCode === activeCode);
+                });
+            });
+
+            // 雙擊車道直接循環切換轉向
+            col.addEventListener('dblclick', (e) => {
+                e.stopPropagation();
+                const idx = parseInt(col.dataset.laneSelect, 10);
+                link._activeSynchroLaneIdx = idx;
+                const turns = inferSynchroLaneTurns(link);
+                const cur = turns[idx] || 'T';
+                const nextIdx = (SYNCHRO_TURN_CYCLE.indexOf(cur) + 1) % SYNCHRO_TURN_CYCLE.length;
+                turns[idx] = SYNCHRO_TURN_CYCLE[nextIdx];
+                triggerUpdate(turns);
+            });
+        });
+
+        // 4. 點擊下方共用轉向按鈕 (L, LT, T, TR, R, LTR)
+        container.querySelectorAll(`.synchro-turn-pill[data-synchro-uid="${uid}"]`).forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const idx = parseInt(btn.dataset.laneIdx, 10);
+                const code = btn.dataset.turnCode;
+                link._activeSynchroLaneIdx = idx;
+                const turns = inferSynchroLaneTurns(link);
+                turns[idx] = code;
+                triggerUpdate(turns);
+            });
+        });
+
+        // 5. 點擊常用車道範本卡片
+        container.querySelectorAll(`.synchro-preset-card[data-synchro-uid="${uid}"]`).forEach(card => {
+            card.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const presetStr = card.dataset.presetTurns || '';
+                const newTurns = presetStr.split(',').map(s => s.trim()).filter(Boolean);
+                if (newTurns.length > 0) {
+                    link._activeSynchroLaneIdx = Math.min(link._activeSynchroLaneIdx || 0, newTurns.length - 1);
+                    triggerUpdate(newTurns);
+                }
+            });
+        });
+    }
+
+    // Compass direction helper for Node approaches (修正末端重合點造成 atan2(0,0)=0 全部誤判為 EB 的問題)
+    function getSynchroApproachCompass(link) {
+        if (!link || !link.waypoints || link.waypoints.length < 2) {
+            return { code: 'APP', label: '進入路段', order: 99, deg: 0 };
+        }
+        const wps = link.waypoints;
+        const p2 = wps[wps.length - 1];
+        let p1 = wps[wps.length - 2];
+
+        // 往前尋找距離終點至少 0.5m 的頂點，避免切割路口產生的重合點導致 dx=0, dy=0
+        for (let i = wps.length - 2; i >= 0; i--) {
+            if (Math.hypot(p2.x - wps[i].x, p2.y - wps[i].y) > 0.5) {
+                p1 = wps[i];
+                break;
+            }
+        }
+
+        const dx = p2.x - p1.x;
+        const dy = p2.y - p1.y; // Konva Y 軸朝下: dy < 0 為北行(NB), dy > 0 為南行(SB)
+        const deg = Math.atan2(dy, dx) * (180 / Math.PI); // -180 .. 180
+
+        if (deg >= -45 && deg < 45) return { code: 'EB', label: '東行 (EB →)', order: 1, deg };
+        if (deg >= 135 || deg < -135) return { code: 'WB', label: '西行 (← WB)', order: 2, deg };
+        if (deg >= -135 && deg < -45) return { code: 'NB', label: '北行 (↑ NB)', order: 3, deg };
+        return { code: 'SB', label: '南行 (↓ SB)', order: 4, deg };
+    }
+
+
+    // 判斷進入路段是否為「路網外圍起點路段」(無上游多叉路口匯入)
+    function isSynchroBoundaryEntryLink(link) {
+        if (!link) return true;
+        if (!link.startNodeId || !network.nodes[link.startNodeId]) return true;
+        const upNode = network.nodes[link.startNodeId];
+        return isSynchroTerminalNode(upNode);
+    }
+
+    // 確保某個路口進入路段擁有預設的 synchroTurnVolumes (veh/h)
+    function ensureSynchroTurnVolumesForApproach(node, inLink) {
+        if (!node || !inLink) return {};
+        if (!node.synchroTurnVolumes) node.synchroTurnVolumes = {};
+        if (!node.turningRatios) node.turningRatios = {};
+        if (!node.turningRatios[inLink.id]) node.turningRatios[inLink.id] = {};
+
+        const outLinks = [...node.outgoingLinkIds].map(id => network.links[id]).filter(Boolean);
+        let leftDest = null, straightDest = null, rightDest = null;
+        outLinks.forEach(dst => {
+            if (dst.id === inLink.id) return;
+            const d = getTurnDirection(inLink, dst);
+            if (d === 'left') leftDest = dst;
+            else if (d === 'straight') straightDest = dst;
+            else if (d === 'right') rightDest = dst;
+        });
+
+        if (!node.synchroTurnVolumes[inLink.id]) {
+            node.synchroTurnVolumes[inLink.id] = {};
+            // 若該路段已有偵測器流量，以其為基準；否則預設為 0
+            let baseTotal = 0;
+            Object.values(network.detectors).forEach(det => {
+                if (det.linkId === inLink.id && det.observedFlow > 0) {
+                    baseTotal = Math.max(baseTotal, det.observedFlow);
+                }
+            });
+            if (baseTotal <= 0) {
+                const upFlow = computeSynchroUpstreamInflow(inLink, 1);
+                baseTotal = upFlow !== null && upFlow > 0 ? upFlow : 0; // 改為預設 0
+            }
+
+            const rMap = node.turningRatios[inLink.id] || {};
+            const activeDests = [leftDest, straightDest, rightDest].filter(Boolean);
+            let sumR = 0;
+            activeDests.forEach(d => { sumR += (rMap[d.id] !== undefined ? rMap[d.id] : (getTurnDirection(inLink, d) === 'straight' ? 0.7 : 0.15)); });
+            if (sumR <= 0) sumR = 1;
+
+            activeDests.forEach(d => {
+                const weight = (rMap[d.id] !== undefined ? rMap[d.id] : (getTurnDirection(inLink, d) === 'straight' ? 0.7 : 0.15)) / sumR;
+                node.synchroTurnVolumes[inLink.id][d.id] = Math.round(baseTotal * weight);
+            });
+        }
+        return node.synchroTurnVolumes[inLink.id];
+    }
+
+    // 計算某條內部路段由「上游路口」各方向匯入的守恆車流量 (veh/h)
+    function computeSynchroUpstreamInflow(inLink, depth = 0) {
+        if (!inLink || depth > 4) return null;
+        if (isSynchroBoundaryEntryLink(inLink)) return null; // 外圍起點無上游路口
+
+        const upNode = network.nodes[inLink.startNodeId];
+        if (!upNode) return null;
+
+        let totalFromUpstream = 0;
+        let hasAnyUpstreamData = false;
+
+        upNode.incomingLinkIds.forEach(uLinkId => {
+            const uLink = network.links[uLinkId];
+            if (!uLink || uLink.id === inLink.id) return;
+            // 排除與 inLink 互為同路段順逆向的 U-turn
+            if (inLink.pairInfo && inLink.pairInfo.pairId === uLink.id) return;
+
+            const uVolMap = ensureSynchroTurnVolumesForApproach(upNode, uLink);
+            if (uVolMap && uVolMap[inLink.id] !== undefined) {
+                totalFromUpstream += (parseFloat(uVolMap[inLink.id]) || 0);
+                hasAnyUpstreamData = true;
+            } else if (upNode.turningRatios && upNode.turningRatios[uLink.id] && upNode.turningRatios[uLink.id][inLink.id] !== undefined) {
+                const uTotal = Object.values(uVolMap || {}).reduce((acc, v) => acc + (parseFloat(v) || 0), 0);
+                totalFromUpstream += uTotal * upNode.turningRatios[uLink.id][inLink.id];
+                hasAnyUpstreamData = true;
+            }
+        });
+
+        return hasAnyUpstreamData ? Math.round(totalFromUpstream) : null;
+    }
+
+    // 同步將某進入路段的 Synchro 轉向車流量 (veh/h) 換算為 turningRatios 並自動建立/更新外圍發車源 (Source Detector)
+    function syncSynchroApproachVolumesAndSource(node, inLink) {
+        if (!node || !inLink) return;
+        const volMap = ensureSynchroTurnVolumesForApproach(node, inLink);
+        const entries = Object.entries(volMap);
+        const totalVol = entries.reduce((sum, [, v]) => sum + Math.max(0, parseFloat(v) || 0), 0);
+
+        if (!node.turningRatios) node.turningRatios = {};
+        if (!node.turningRatios[inLink.id]) node.turningRatios[inLink.id] = {};
+
+        if (totalVol > 0) {
+            entries.forEach(([dstId, v]) => {
+                node.turningRatios[inLink.id][dstId] = Number((Math.max(0, parseFloat(v) || 0) / totalVol).toFixed(4));
+            });
+        } else if (entries.length > 0) {
+            const eq = Number((1 / entries.length).toFixed(4));
+            entries.forEach(([dstId]) => {
+                node.turningRatios[inLink.id][dstId] = eq;
+            });
+        }
+
+        // 若為外圍起點路段，自動在路段起點建立或更新發車偵測器 (PointDetector isSource = true)
+        if (isSynchroBoundaryEntryLink(inLink)) {
+            let srcDet = Object.values(network.detectors).find(d => d.linkId === inLink.id && d.type === 'PointDetector');
+            if (!srcDet && totalVol > 0) {
+                const linkLen = getPolylineLength(inLink.waypoints);
+                const pos = Math.min(6, Math.max(2, linkLen * 0.12));
+                srcDet = createDetector('PointDetector', inLink, pos);
+                srcDet.name = `Synchro_In_${inLink.id}`;
+            }
+            if (srcDet) {
+                srcDet.isSource = totalVol > 0;
+                srcDet.observedFlow = Math.round(totalVol);
+                if (!srcDet.spawnProfiles || srcDet.spawnProfiles.length === 0) {
+                    const defaultProfId = Object.keys(network.vehicleProfiles)[0] || 'car';
+                    srcDet.spawnProfiles = [{ profileId: defaultProfId, weight: 1.0 }];
+                }
+                drawDetector(srcDet);
+            }
+        } else {
+            // 若該路段後來變成內部連接路段，關閉其自動外圍發車源以免重複發車，但更新其觀測流量供參考
+            Object.values(network.detectors).forEach(d => {
+                if (d.linkId === inLink.id && d.name && d.name.startsWith('Synchro_In_')) {
+                    d.isSource = false;
+                    d.observedFlow = Math.round(totalVol);
+                    drawDetector(d);
+                }
+            });
+        }
+    }
+
+    // 將單一進入路段的 (L, T, R) 車流量依比例縮放至完全等於上游匯入流量 (維持本路口轉向比例)
+    function balanceSingleSynchroApproachToUpstream(node, inLink) {
+        if (!node || !inLink) return false;
+        const upstreamVol = computeSynchroUpstreamInflow(inLink);
+        if (upstreamVol === null || upstreamVol < 0) return false;
+
+        const volMap = ensureSynchroTurnVolumesForApproach(node, inLink);
+        const dstIds = Object.keys(volMap);
+        if (dstIds.length === 0) return false;
+
+        const localTotal = dstIds.reduce((s, id) => s + (parseFloat(volMap[id]) || 0), 0);
+        if (localTotal <= 0) {
+            // 若原本為 0，依 node.turningRatios 或預設直行70%/左右轉15% 分配
+            let sumW = 0;
+            const weights = {};
+            dstIds.forEach(dstId => {
+                const dst = network.links[dstId];
+                const dir = dst ? getTurnDirection(inLink, dst) : 'straight';
+                const w = (node.turningRatios && node.turningRatios[inLink.id] && node.turningRatios[inLink.id][dstId]) || (dir === 'straight' ? 0.7 : 0.15);
+                weights[dstId] = w;
+                sumW += w;
+            });
+            dstIds.forEach(dstId => {
+                volMap[dstId] = Math.round(upstreamVol * (weights[dstId] / (sumW || 1)));
+            });
+        } else {
+            let assigned = 0;
+            let maxDstId = dstIds[0];
+            dstIds.forEach(dstId => {
+                if ((volMap[dstId] || 0) > (volMap[maxDstId] || 0)) maxDstId = dstId;
+                const scaled = Math.round(upstreamVol * ((parseFloat(volMap[dstId]) || 0) / localTotal));
+                volMap[dstId] = scaled;
+                assigned += scaled;
+            });
+            // 修正四捨五入差額，確保總和 100% 等於 upstreamVol
+            volMap[maxDstId] = Math.max(0, (volMap[maxDstId] || 0) + (upstreamVol - assigned));
+        }
+
+        syncSynchroApproachVolumesAndSource(node, inLink);
+        return true;
+    }
+
+    // 全路網自動流量守恆平衡：由外圍起點往下游傳遞並平衡所有內部路段流量
+    function balanceAllSynchroNetworkFlows() {
+        const allNodes = Object.values(network.nodes).filter(n => !isSynchroTerminalNode(n));
+        // 先同步所有外圍起點的發車源與轉向比例
+        allNodes.forEach(n => {
+            n.incomingLinkIds.forEach(inId => {
+                const inLink = network.links[inId];
+                if (inLink) syncSynchroApproachVolumesAndSource(n, inLink);
+            });
+        });
+
+        // 迭代傳遞最多 8 次以收斂串聯路網
+        for (let iter = 0; iter < 8; iter++) {
+            let anyChanged = false;
+            allNodes.forEach(n => {
+                n.incomingLinkIds.forEach(inId => {
+                    const inLink = network.links[inId];
+                    if (!inLink || isSynchroBoundaryEntryLink(inLink)) return;
+                    const upVol = computeSynchroUpstreamInflow(inLink);
+                    if (upVol === null) return;
+                    const volMap = ensureSynchroTurnVolumesForApproach(n, inLink);
+                    const curTotal = Object.values(volMap).reduce((s, v) => s + (parseFloat(v) || 0), 0);
+                    if (Math.abs(curTotal - upVol) >= 1) {
+                        balanceSingleSynchroApproachToUpstream(n, inLink);
+                        anyChanged = true;
+                    }
+                });
+            });
+            if (!anyChanged) break;
+        }
+        layer.batchDraw();
+        saveState();
+    }
+
+    function renderSynchroNodePanelHTML(node) {
+        if (!node) return '';
+        const inLinks = [...node.incomingLinkIds]
+            .map(id => network.links[id])
+            .filter(Boolean)
+            .map(link => ({ link, compass: getSynchroApproachCompass(link) }))
+            .sort((a, b) => a.compass.order - b.compass.order);
+
+        if (inLinks.length === 0) {
+            return `<div class="prop-hint">此路口尚無進入路段 (Incoming Links)。請在 Synchro 模式下繪製穿越或相交的道路。</div>`;
+        }
+
+        // 記憶目前檢視的進入方向索引 (預設為 0，若設為 'all' 則全部展開)
+        if (node._activeSynchroAppIdx === undefined) node._activeSynchroAppIdx = 0;
+        if (node._activeSynchroAppIdx !== 'all' && node._activeSynchroAppIdx >= inLinks.length) {
+            node._activeSynchroAppIdx = 0;
+        }
+
+        const outLinks = [...node.outgoingLinkIds].map(id => network.links[id]).filter(Boolean);
+
+        // 1. 方向切換分頁列 (Approach Switcher: [EB] [WB] [NB] [SB] [全部])
+        let switcherHtml = `<div class="approach-switcher">`;
+        inLinks.forEach(({ link, compass }, idx) => {
+            const isActive = node._activeSynchroAppIdx === idx;
+            switcherHtml += `
+                <button type="button" class="approach-tab-btn ${isActive ? 'active' : ''}"
+                        data-app-idx="${idx}" data-highlight-link="${link.id}"
+                        title="切換至 ${compass.label} (${link.name || link.id})">
+                    ${compass.code} <span style="font-weight:500; opacity:0.8;">(${link.lanes.length}L)</span>
+                </button>`;
+        });
+        if (inLinks.length > 1) {
+            const isAll = node._activeSynchroAppIdx === 'all';
+            switcherHtml += `
+                <button type="button" class="approach-tab-btn ${isAll ? 'active' : ''}" data-app-idx="all" title="展開全部方向">
+                    全部
+                </button>`;
+        }
+        switcherHtml += `</div>`;
+
+        // 2. 渲染選定的進入方向卡片
+        let cardsHtml = '';
+        inLinks.forEach(({ link, compass }, idx) => {
+            if (node._activeSynchroAppIdx !== 'all' && node._activeSynchroAppIdx !== idx) return;
+
+            let leftDest = null, straightDest = null, rightDest = null;
+            outLinks.forEach(dst => {
+                if (dst.id === link.id) return;
+                const d = getTurnDirection(link, dst);
+                if (d === 'left') leftDest = dst;
+                else if (d === 'straight') straightDest = dst;
+                else if (d === 'right') rightDest = dst;
+            });
+
+            const volMap = ensureSynchroTurnVolumesForApproach(node, link);
+            syncSynchroApproachVolumesAndSource(node, link);
+
+            const getVol = (dst) => (dst && volMap[dst.id] !== undefined) ? Math.round(volMap[dst.id]) : 0;
+            const getPct = (dst) => {
+                if (!dst || !node.turningRatios || !node.turningRatios[link.id]) return 0;
+                return Math.round((node.turningRatios[link.id][dst.id] || 0) * 100);
+            };
+
+            const localTotal = (leftDest ? getVol(leftDest) : 0) + (straightDest ? getVol(straightDest) : 0) + (rightDest ? getVol(rightDest) : 0);
+            const isBoundary = isSynchroBoundaryEntryLink(link);
+            const upstreamVol = computeSynchroUpstreamInflow(link);
+
+            let flowStatusHtml = '';
+            if (isBoundary) {
+                flowStatusHtml = `
+                    <div style="margin-top:6px; padding:4px 8px; border-radius:5px; background:#f0fdf4; border:1px solid #bbf7d0; font-size:0.7rem; color:#166534; display:flex; align-items:center; justify-content:space-between;">
+                        <span><i class="fa-solid fa-circle-play"></i> 外圍起點 (自動發車源)</span>
+                        <b>${localTotal} veh/h</b>
+                    </div>`;
+            } else if (upstreamVol !== null) {
+                const diff = localTotal - upstreamVol;
+                if (Math.abs(diff) <= 1) {
+                    flowStatusHtml = `
+                        <div style="margin-top:6px; padding:4px 8px; border-radius:5px; background:#eff6ff; border:1px solid #bfdbfe; font-size:0.7rem; color:#1e40af; display:flex; align-items:center; justify-content:space-between;">
+                            <span><i class="fa-solid fa-check-circle"></i> 與上游 (${link.startNodeId}) 流量守恆</span>
+                            <b>${localTotal} veh/h</b>
+                        </div>`;
+                } else {
+                    const diffStr = diff > 0 ? `+${diff}` : `${diff}`;
+                    flowStatusHtml = `
+                        <div style="margin-top:6px; padding:6px 8px; border-radius:5px; background:#fffbeb; border:1px solid #fde68a; font-size:0.7rem; color:#92400e;">
+                            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:4px;">
+                                <span><i class="fa-solid fa-triangle-exclamation" style="color:#d97706;"></i> 上游匯入 <b>${upstreamVol}</b> ｜ 本處 <b>${localTotal}</b> (${diffStr})</span>
+                            </div>
+                            <button type="button" class="btn-mini btn-synchro-balance-single" data-approach-link="${link.id}" style="width:100%; background:#f59e0b; color:#fff; border:none; padding:4px 6px; border-radius:4px; font-weight:700; cursor:pointer;">
+                                ⚡ 依上游匯入 (${upstreamVol} veh/h) 平衡本方向
+                            </button>
+                        </div>`;
+                }
+            }
+
+            cardsHtml += `
+                <div class="synchro-approach-card" data-approach-link="${link.id}">
+                    <div class="synchro-approach-title">
+                        <span class="synchro-compass-badge">${compass.label}</span>
+                        <span style="font-size:0.75rem; font-weight:700; color:#475569;">${link.name || link.id}</span>
+                    </div>
+                    ${renderSynchroLanePickerHTML(link, 'node_' + node.id)}
+                    <div style="margin-top:8px; padding-top:8px; border-top:1px dashed #e2e8f0;">
+                        <div style="font-size:0.72rem; font-weight:700; color:#334155; margin-bottom:6px; display:flex; justify-content:space-between;">
+                            <span>轉向車流量 (veh/h)</span>
+                            <span style="color:var(--primary);">合計 <b>${localTotal}</b> veh/h</span>
+                        </div>
+                        <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:4px; font-size:0.72rem;">
+                            ${leftDest ? `
+                                <div style="background:#f8fafc; padding:4px 6px; border-radius:5px; border:1px solid #e2e8f0;">
+                                    <div style="display:flex; justify-content:space-between; color:#64748b; font-size:0.65rem; margin-bottom:2px;"><b>↰ 左轉</b><span>${getPct(leftDest)}%</span></div>
+                                    <input type="number" class="prop-input synchro-node-vol" data-from="${link.id}" data-to="${leftDest.id}" value="${getVol(leftDest)}" min="0" step="10" style="padding:2px 4px; font-size:0.76rem;">
+                                </div>` : `<div style="background:#f1f5f9; border-radius:5px; display:flex; align-items:center; justify-content:center; color:#cbd5e1; font-size:0.68rem;">無左轉</div>`}
+                            ${straightDest ? `
+                                <div style="background:#f8fafc; padding:4px 6px; border-radius:5px; border:1px solid #e2e8f0;">
+                                    <div style="display:flex; justify-content:space-between; color:#64748b; font-size:0.65rem; margin-bottom:2px;"><b>↑ 直行</b><span>${getPct(straightDest)}%</span></div>
+                                    <input type="number" class="prop-input synchro-node-vol" data-from="${link.id}" data-to="${straightDest.id}" value="${getVol(straightDest)}" min="0" step="10" style="padding:2px 4px; font-size:0.76rem;">
+                                </div>` : `<div style="background:#f1f5f9; border-radius:5px; display:flex; align-items:center; justify-content:center; color:#cbd5e1; font-size:0.68rem;">無直行</div>`}
+                            ${rightDest ? `
+                                <div style="background:#f8fafc; padding:4px 6px; border-radius:5px; border:1px solid #e2e8f0;">
+                                    <div style="display:flex; justify-content:space-between; color:#64748b; font-size:0.65rem; margin-bottom:2px;"><b>↱ 右轉</b><span>${getPct(rightDest)}%</span></div>
+                                    <input type="number" class="prop-input synchro-node-vol" data-from="${link.id}" data-to="${rightDest.id}" value="${getVol(rightDest)}" min="0" step="10" style="padding:2px 4px; font-size:0.76rem;">
+                                </div>` : `<div style="background:#f1f5f9; border-radius:5px; display:flex; align-items:center; justify-content:center; color:#cbd5e1; font-size:0.68rem;">無右轉</div>`}
+                        </div>
+                        ${flowStatusHtml}
+                    </div>
+                </div>
+            `;
+        });
+
+        // 3. 底部快捷號誌與全網流量平衡工具列 (收斂色彩，不搶車道圖視覺焦點)
+        const quickToolsHtml = `
+            <div style="display:flex; flex-direction:column; gap:6px; margin-top:8px; padding-top:8px; border-top:1px solid var(--border-light);">
+                <div style="display:flex; gap:6px;">
+                    <button type="button" id="btn-synchro-quick-2phase" class="btn-soft" style="flex:1;">
+                        <i class="fa-solid fa-traffic-light" style="color:#0284c7;"></i> 一鍵二相號誌
+                    </button>
+                    <button type="button" id="btn-synchro-quick-4phase" class="btn-soft" style="flex:1;">
+                        <i class="fa-solid fa-traffic-light" style="color:#7c3aed;"></i> 保護左轉四相
+                    </button>
+                </div>
+                <button type="button" id="btn-synchro-balance-all" class="btn-soft" style="color:#059669; border-color:#a7f3d0; background:#f0fdf4;">
+                    <i class="fa-solid fa-scale-balanced"></i> 全路網上下游流量自動守恆平衡
+                </button>
+            </div>
+        `;
+
+        return switcherHtml + cardsHtml + quickToolsHtml;
+    }
+
+    // Apply quick 2-phase or 4-phase signal plan to a Node (含 3 秒黃燈清道時間，並支援自動開啟時制庫檢視)
+    function applySynchroQuickSignalPlan(node, numPhases = 2, openModal = true) {
+        if (!node) return;
+        let nodeConns = Object.values(network.connections).filter(c => c.nodeId === node.id);
+        if (nodeConns.length === 0) {
+            autoConnectNode(node);
+            nodeConns = Object.values(network.connections).filter(c => c.nodeId === node.id);
+        }
+
+        const ewThruRight = [];
+        const ewLeft = [];
+        const nsThruRight = [];
+        const nsLeft = [];
+
+        // 1. 先依標準羅盤方位 (EB/WB vs NB/SB) 分類
+        nodeConns.forEach(conn => {
+            const srcLink = network.links[conn.sourceLinkId];
+            const dstLink = network.links[conn.destLinkId];
+            if (!srcLink || !dstLink) return;
+            const compass = getSynchroApproachCompass(srcLink).code;
+            const turnDir = getTurnDirection(srcLink, dstLink);
+            const isEW = (compass === 'EB' || compass === 'WB');
+            if (isEW) {
+                if (turnDir === 'left') ewLeft.push(conn.id);
+                else ewThruRight.push(conn.id);
+            } else {
+                if (turnDir === 'left') nsLeft.push(conn.id);
+                else nsThruRight.push(conn.id);
+            }
+        });
+
+        // 2. 防呆：若為斜交路口導致某向完全為空，改以第一條進入路段之軸線夾角 (±45°) 自動切分兩相
+        const inLinks = [...node.incomingLinkIds].map(id => network.links[id]).filter(Boolean);
+        if (inLinks.length >= 2 && (ewThruRight.length + ewLeft.length === 0 || nsThruRight.length + nsLeft.length === 0)) {
+            ewThruRight.length = 0; ewLeft.length = 0;
+            nsThruRight.length = 0; nsLeft.length = 0;
+
+            const baseDeg = getSynchroApproachCompass(inLinks[0]).deg;
+            const isSameAxisAsBase = (deg) => {
+                let diff = Math.abs(((deg - baseDeg) % 180 + 180) % 180);
+                if (diff > 90) diff = 180 - diff;
+                return diff <= 45;
+            };
+
+            nodeConns.forEach(conn => {
+                const srcLink = network.links[conn.sourceLinkId];
+                const dstLink = network.links[conn.destLinkId];
+                if (!srcLink || !dstLink) return;
+                const deg = getSynchroApproachCompass(srcLink).deg;
+                const turnDir = getTurnDirection(srcLink, dstLink);
+                if (isSameAxisAsBase(deg)) {
+                    if (turnDir === 'left') ewLeft.push(conn.id);
+                    else ewThruRight.push(conn.id);
+                } else {
+                    if (turnDir === 'left') nsLeft.push(conn.id);
+                    else nsThruRight.push(conn.id);
+                }
+            });
+        }
+
+        // 3. 建立包含 3 秒黃燈 (Yellow) 的時相陣列
+        let groups = {};
+        let phases = [];
+        if (numPhases === 4 && (ewLeft.length > 0 || nsLeft.length > 0)) {
+            groups = {
+                'G1': { id: 'G1', connIds: [...ewThruRight], type: 'vehicle' },
+                'G2': { id: 'G2', connIds: [...ewLeft], type: 'vehicle' },
+                'G3': { id: 'G3', connIds: [...nsThruRight], type: 'vehicle' },
+                'G4': { id: 'G4', connIds: [...nsLeft], type: 'vehicle' }
+            };
+            phases = [
+                { duration: 32, signals: { G1: 'Green', G2: 'Red', G3: 'Red', G4: 'Red' } },
+                { duration: 3, signals: { G1: 'Yellow', G2: 'Red', G3: 'Red', G4: 'Red' } },
+                { duration: 2, signals: { G1: 'Red', G2: 'Red', G3: 'Red', G4: 'Red' } },
+                { duration: 12, signals: { G1: 'Red', G2: 'Green', G3: 'Red', G4: 'Red' } },
+                { duration: 3, signals: { G1: 'Red', G2: 'Yellow', G3: 'Red', G4: 'Red' } },
+                { duration: 2, signals: { G1: 'Red', G2: 'Red', G3: 'Red', G4: 'Red' } },
+                { duration: 32, signals: { G1: 'Red', G2: 'Red', G3: 'Green', G4: 'Red' } },
+                { duration: 3, signals: { G1: 'Red', G2: 'Red', G3: 'Yellow', G4: 'Red' } },
+                { duration: 2, signals: { G1: 'Red', G2: 'Red', G3: 'Red', G4: 'Red' } },
+                { duration: 12, signals: { G1: 'Red', G2: 'Red', G3: 'Red', G4: 'Green' } },
+                { duration: 3, signals: { G1: 'Red', G2: 'Red', G3: 'Red', G4: 'Yellow' } },
+                { duration: 2, signals: { G1: 'Red', G2: 'Red', G3: 'Red', G4: 'Red' } }
+            ];
+        } else {
+            groups = {
+                'G1': { id: 'G1', connIds: [...ewThruRight, ...ewLeft], type: 'vehicle' },
+                'G2': { id: 'G2', connIds: [...nsThruRight, ...nsLeft], type: 'vehicle' }
+            };
+            phases = [
+                { duration: 37, signals: { G1: 'Green', G2: 'Red' } },
+                { duration: 3, signals: { G1: 'Yellow', G2: 'Red' } },
+                { duration: 2, signals: { G1: 'Red', G2: 'Red' } },
+                { duration: 37, signals: { G1: 'Red', G2: 'Green' } },
+                { duration: 3, signals: { G1: 'Red', G2: 'Yellow' } },
+                { duration: 2, signals: { G1: 'Red', G2: 'Red' } }
+            ];
+        }
+
+        const gsId = 'GroupSet_1';
+        const groupsClone = JSON.parse(JSON.stringify(groups));
+
+        network.trafficLights[node.id] = {
+            nodeId: node.id,
+            timeShift: 0,
+            activeGroupSetId: gsId,
+            signalGroups: groupsClone,
+            signalGroupSets: {
+                [gsId]: {
+                    id: gsId,
+                    name: numPhases === 4 ? '四相保護左轉群組' : '二相標準群組',
+                    groups: groupsClone
+                }
+            },
+            schedule: JSON.parse(JSON.stringify(phases)),
+            advanced: {
+                schedules: {
+                    'Sched_A': {
+                        id: 'Sched_A',
+                        name: numPhases === 4 ? '標準四相時制' : '標準二相時制',
+                        groupSetId: gsId,
+                        timeShift: 0,
+                        phases: JSON.parse(JSON.stringify(phases))
+                    }
+                },
+                dailyPlans: {
+                    'Plan_1': { id: 'Plan_1', name: '平日全日時制', switches: [{ time: '00:00', schedId: 'Sched_A' }] }
+                },
+                weekly: { 1: 'Plan_1', 2: 'Plan_1', 3: 'Plan_1', 4: 'Plan_1', 5: 'Plan_1', 6: 'Plan_1', 7: 'Plan_1' }
+            }
+        };
+
+        ensureTflGroupSets(network.trafficLights[node.id]);
+        saveState();
+        updatePropertiesPanel(node);
+
+        // ★ 若由按鈕點擊觸發 (openModal = true)，自動打開號誌編輯器並跳轉至「時制庫 (Schedule Library)」分頁，立即顯示紅綠黃燈表格！
+        if (openModal && typeof showTrafficLightEditor === 'function') {
+            showTrafficLightEditor(node);
+            const libTabBtn = document.querySelector('#traffic-light-modal .tab-link[data-tab="tfl-library"]');
+            if (libTabBtn) libTabBtn.click();
+        }
+    }
+
+    function bindSynchroNodePanelEvents(container, node) {
+        if (!container || !node) return;
+
+        // 綁定方向切換按鈕 (Approach Switcher)
+        container.querySelectorAll('.approach-tab-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const rawIdx = btn.dataset.appIdx;
+                node._activeSynchroAppIdx = rawIdx === 'all' ? 'all' : parseInt(rawIdx, 10);
+                updatePropertiesPanel(node);
+            });
+            btn.addEventListener('mouseenter', () => {
+                const linkId = btn.dataset.highlightLink;
+                if (linkId) {
+                    layer.find('.link-highlight').forEach(r => r.destroy());
+                    const l = network.links[linkId];
+                    if (l && l.konvaGroup) {
+                        l.konvaGroup.opacity(0.75);
+                        layer.batchDraw();
+                    }
+                }
+            });
+            btn.addEventListener('mouseleave', () => {
+                const linkId = btn.dataset.highlightLink;
+                if (linkId && network.links[linkId]) {
+                    network.links[linkId].konvaGroup.opacity(1);
+                    layer.batchDraw();
+                }
+            });
+        });
+
+        // 綁定顯示中的各方向 Synchro 車道選擇器
+        node.incomingLinkIds.forEach(linkId => {
+            const link = network.links[linkId];
+            if (link) {
+                bindSynchroLanePickerEvents(container, link, 'node_' + node.id, () => {
+                    updatePropertiesPanel(node);
+                });
+            }
+        });
+
+        // 轉向車流量 (veh/h) 輸入框
+        container.querySelectorAll('.synchro-node-vol').forEach(input => {
+            input.addEventListener('change', (e) => {
+                const fromId = e.target.dataset.from;
+                const toId = e.target.dataset.to;
+                const val = Math.max(0, Math.round(parseFloat(e.target.value) || 0));
+                const inLink = network.links[fromId];
+                if (!inLink) return;
+                const volMap = ensureSynchroTurnVolumesForApproach(node, inLink);
+                volMap[toId] = val;
+                syncSynchroApproachVolumesAndSource(node, inLink);
+                layer.batchDraw();
+                saveState();
+                updatePropertiesPanel(node);
+            });
+        });
+
+        // 單一方向流量守恆平衡按鈕
+        container.querySelectorAll('.btn-synchro-balance-single').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const inLink = network.links[btn.dataset.approachLink];
+                if (inLink && balanceSingleSynchroApproachToUpstream(node, inLink)) {
+                    layer.batchDraw();
+                    saveState();
+                    updatePropertiesPanel(node);
+                }
+            });
+        });
+
+        // 全路網流量守恆平衡與快捷號誌按鈕
+        container.querySelector('#btn-synchro-balance-all')?.addEventListener('click', () => {
+            balanceAllSynchroNetworkFlows();
+            updatePropertiesPanel(node);
+        });
+        container.querySelector('#btn-synchro-quick-2phase')?.addEventListener('click', () => applySynchroQuickSignalPlan(node, 2));
+        container.querySelector('#btn-synchro-quick-4phase')?.addEventListener('click', () => applySynchroQuickSignalPlan(node, 4));
+    }
+
+    // =========================================================================
+    // ⚡ 正統 SYNCHRO 互動式繪圖與磁吸引擎 (免按右鍵、左鍵點兩點或拖曳即建兩端 Node + 雙向 Link)
+    // =========================================================================
+
+    // synchroDraftStart, synchroDraftPreviewGroup, synchroSnapIndicatorGroup initialized at top
+
+    // =========================================================================
+    // ⚡ 正統 SYNCHRO 互動式多點繪圖與磁吸引擎 (左鍵連續點轉折點、右鍵結束建立)
+    // =========================================================================
+
+    // 判斷 Node 是否為端點節點 (僅連接單一道路方向或尚無轉向連線)
+    function isSynchroTerminalNode(node) {
+        if (!node) return true;
+        const inIds = [...(node.incomingLinkIds || [])].filter(id => network.links[id]);
+        const outIds = [...(node.outgoingLinkIds || [])].filter(id => network.links[id]);
+        const totalLinks = inIds.length + outIds.length;
+        if (totalLinks === 0 || totalLinks === 1) return true;
+        if (totalLinks === 2 && inIds.length === 1 && outIds.length === 1) {
+            const lIn = network.links[inIds[0]];
+            const lOut = network.links[outIds[0]];
+            if (lIn && lOut && lIn.pairInfo && lIn.pairInfo.pairId === lOut.id) {
+                return true; // 單一雙向道路的端點 Node
+            }
+        }
+        return false;
+    }
+
+    // 計算磁吸目標：優先磁吸既有 Node (22m 內) -> 其次磁吸既有道路中心線 (18m 內) -> 否則為自由座標
+    function getSynchroSnapTarget(worldPos, excludeNodeId = null) {
+        const NODE_SNAP_DIST = 22;
+        const LINK_SNAP_DIST = 18;
+
+        // 1. 優先檢查既有 Node
+        let bestNode = null;
+        let bestNodeDist = NODE_SNAP_DIST;
+        Object.values(network.nodes).forEach(node => {
+            if (excludeNodeId && node.id === excludeNodeId) return;
+            const d = Math.hypot(worldPos.x - node.x, worldPos.y - node.y);
+            if (d < bestNodeDist) {
+                bestNodeDist = d;
+                bestNode = node;
+            }
+        });
+        if (bestNode) {
+            return { x: bestNode.x, y: bestNode.y, type: 'node', node: bestNode };
+        }
+
+        // 2. 檢查既有道路 Link (若為雙向配對道路，自動磁吸至雙向道路的正中央分隔線)
+        let bestLink = null;
+        let bestLinkDist = LINK_SNAP_DIST;
+        let bestSnapPt = null;
+
+        Object.values(network.links).forEach(link => {
+            if (!link.waypoints || link.waypoints.length < 2) return;
+            const { dist, pointDist } = projectPointOnPolyline(worldPos, link.waypoints);
+            if (pointDist < bestLinkDist) {
+                const { point: projPt } = getPointAlongPolyline(link.waypoints, dist);
+                let centerPt = projPt;
+
+                if (link.pairInfo && link.pairInfo.pairId && network.links[link.pairInfo.pairId]) {
+                    const pairLink = network.links[link.pairInfo.pairId];
+                    if (pairLink.waypoints && pairLink.waypoints.length >= 2) {
+                        const pairProj = projectPointOnPolyline(projPt, pairLink.waypoints);
+                        const { point: pairPt } = getPointAlongPolyline(pairLink.waypoints, pairProj.dist);
+                        centerPt = {
+                            x: (projPt.x + pairPt.x) / 2,
+                            y: (projPt.y + pairPt.y) / 2
+                        };
+                    }
+                }
+
+                for (const n of Object.values(network.nodes)) {
+                    if (excludeNodeId && n.id === excludeNodeId) continue;
+                    if (Math.hypot(centerPt.x - n.x, centerPt.y - n.y) < 24) {
+                        bestNode = n;
+                        break;
+                    }
+                }
+
+                bestLinkDist = pointDist;
+                bestLink = link;
+                bestSnapPt = centerPt;
+            }
+        });
+
+        if (bestNode) {
+            return { x: bestNode.x, y: bestNode.y, type: 'node', node: bestNode };
+        }
+        if (bestLink && bestSnapPt) {
+            return { x: bestSnapPt.x, y: bestSnapPt.y, type: 'link', link: bestLink };
+        }
+
+        return { x: worldPos.x, y: worldPos.y, type: 'free' };
+    }
+
+    // 繪製滑鼠游標處的磁吸圓圈與左右鍵操作提示 (同時支援 Synchro 模式與一般 Link 工具)
+    function updateSynchroSnapIndicator(worldPos) {
+        if (activeTool !== 'add-link' && activeTool !== 'append-lane-stroke') {
+            if (synchroSnapIndicatorGroup) {
+                synchroSnapIndicatorGroup.destroy();
+                synchroSnapIndicatorGroup = null;
+                layer.batchDraw();
+            }
+            return null;
+        }
+
+        const scale = 1 / stage.scaleX();
+        let snap = { x: worldPos.x, y: worldPos.y, type: 'free' };
+        let ringColor = '#0ea5e9';
+        let fillColor = 'rgba(14, 165, 233, 0.22)';
+        let badgeText = '';
+        let radius = 9 * scale;
+
+        if (isSynchroMode && activeTool === 'add-link') {
+            // --- A. Synchro 模式：具備節點/道路磁吸 ---
+            let excludeId = null;
+            if (synchroDraftStart) {
+                const pts = synchroDraftStart.points || [synchroDraftStart];
+                const lastPt = pts[pts.length - 1];
+                if (lastPt && lastPt.node) excludeId = lastPt.node.id;
+            }
+
+            snap = getSynchroSnapTarget(worldPos, excludeId);
+            const ptCount = synchroDraftStart && synchroDraftStart.points ? synchroDraftStart.points.length : 0;
+
+            badgeText = ptCount === 0
+                ? '左鍵點擊：建立起點 Node'
+                : `已點 ${ptCount} 點 ｜ 左鍵：加彎折點 ｜ 右鍵：結束建立道路`;
+
+            if (snap.type === 'node') {
+                ringColor = '#f59e0b';
+                fillColor = 'rgba(245, 158, 11, 0.32)';
+                badgeText = ptCount === 0
+                    ? `⚡ 左鍵：從既有節點 (${snap.node.id}) 出發`
+                    : `⚡ 磁吸節點 (${snap.node.id}) ｜ 左鍵加點 / 右鍵結束`;
+                radius = 13 * scale;
+            } else if (snap.type === 'link') {
+                ringColor = '#10b981';
+                fillColor = 'rgba(16, 185, 129, 0.30)';
+                badgeText = ptCount === 0
+                    ? '⚡ 左鍵：從既有道路切開建立起點 Node'
+                    : '⚡ 磁吸道路 (自動切開建立路口) ｜ 左鍵加點 / 右鍵結束';
+                radius = 13 * scale;
+            }
+        } else {
+            // --- B. 一般 Link 工具 / 手繪標線模式 ---
+            const ptCount = tempShape ? Math.max(1, Math.floor(tempShape.points().length / 2) - 1) : 0;
+            const isLaneBased = (linkCreationSettings.mode === 'lane-based' || activeTool === 'append-lane-stroke');
+
+            ringColor = '#2563eb';
+            fillColor = 'rgba(37, 99, 235, 0.18)';
+
+            if (ptCount === 0) {
+                badgeText = isLaneBased
+                    ? '左鍵點擊：設定標線起點'
+                    : '左鍵點擊：設定道路起點';
+            } else {
+                badgeText = isLaneBased
+                    ? `已點 ${ptCount} 點 ｜ 左鍵：加折點 ｜ 右鍵：完成此標線`
+                    : `已點 ${ptCount} 點 ｜ 左鍵：加彎折點 ｜ 右鍵：完成建立道路`;
+            }
+        }
+
+        if (!synchroSnapIndicatorGroup) {
+            synchroSnapIndicatorGroup = new Konva.Group({ listening: false, name: 'synchro-snap-indicator' });
+            layer.add(synchroSnapIndicatorGroup);
+        } else {
+            synchroSnapIndicatorGroup.destroyChildren();
+        }
+
+        const outerCircle = new Konva.Circle({
+            x: snap.x,
+            y: snap.y,
+            radius: radius,
+            fill: fillColor,
+            stroke: ringColor,
+            strokeWidth: 2 * scale,
+            dash: snap.type === 'free' ? [] : [4 * scale, 3 * scale],
+            listening: false
+        });
+
+        const innerDot = new Konva.Circle({
+            x: snap.x,
+            y: snap.y,
+            radius: 3.2 * scale,
+            fill: ringColor,
+            listening: false
+        });
+
+        const label = new Konva.Text({
+            x: snap.x + 14 * scale,
+            y: snap.y - 18 * scale,
+            text: badgeText,
+            fontSize: 12 * scale,
+            fontStyle: 'bold',
+            fill: '#0f172a',
+            padding: 3 * scale,
+            listening: false
+        });
+
+        const labelBg = new Konva.Rect({
+            x: label.x() - 2 * scale,
+            y: label.y() - 1 * scale,
+            width: label.width() + 4 * scale,
+            height: label.height() + 2 * scale,
+            fill: 'rgba(255, 255, 255, 0.94)',
+            stroke: ringColor,
+            strokeWidth: 1 * scale,
+            cornerRadius: 4 * scale,
+            listening: false
+        });
+
+        synchroSnapIndicatorGroup.add(outerCircle, innerDot, labelBg, label);
+        synchroSnapIndicatorGroup.moveToTop();
+        return snap;
+    }
+
+    // 繪製多點折線的即時雙向道路與轉折點預覽
+    function updateSynchroDraftPreview(cursorSnap) {
+        if (!synchroDraftStart) return;
+        if (!synchroDraftPreviewGroup) {
+            synchroDraftPreviewGroup = new Konva.Group({ listening: false, name: 'synchro-draft-preview' });
+            layer.add(synchroDraftPreviewGroup);
+        } else {
+            synchroDraftPreviewGroup.destroyChildren();
+        }
+
+        const confirmedPts = synchroDraftStart.points || [synchroDraftStart];
+        const allPts = [...confirmedPts];
+        if (cursorSnap) {
+            const last = confirmedPts[confirmedPts.length - 1];
+            if (!last || Math.hypot(cursorSnap.x - last.x, cursorSnap.y - last.y) > 1) {
+                allPts.push(cursorSnap);
+            }
+        }
+
+        const flatPoints = allPts.flatMap(p => [p.x, p.y]);
+        const lanes = linkCreationSettings.lanesPerDir || 2;
+        const isTwoWay = linkCreationSettings.isTwoWay !== false;
+        const median = linkCreationSettings.medianWidth || 0;
+        const totalCorridorW = isTwoWay ? (lanes * LANE_WIDTH * 2 + median) : (lanes * LANE_WIDTH);
+
+        if (allPts.length >= 2) {
+            const corridorLine = new Konva.Line({
+                points: flatPoints,
+                stroke: 'rgba(51, 65, 85, 0.55)',
+                strokeWidth: totalCorridorW,
+                lineCap: 'butt',
+                lineJoin: 'round',
+                listening: false
+            });
+            const centerLine = new Konva.Line({
+                points: flatPoints,
+                stroke: isTwoWay ? '#facc15' : '#38bdf8',
+                strokeWidth: 1.5,
+                dash: [4, 4],
+                lineJoin: 'round',
+                listening: false
+            });
+            synchroDraftPreviewGroup.add(corridorLine, centerLine);
+        }
+
+        // 起點畫藍色大圓圈，中間每個彎折點畫白底橘框轉折點圓圈
+        confirmedPts.forEach((pt, idx) => {
+            if (idx === 0) {
+                synchroDraftPreviewGroup.add(new Konva.Circle({
+                    x: pt.x, y: pt.y,
+                    radius: 9.5,
+                    fill: 'rgba(37, 99, 235, 0.8)',
+                    stroke: '#ffffff',
+                    strokeWidth: 2,
+                    listening: false
+                }));
+            } else {
+                synchroDraftPreviewGroup.add(new Konva.Circle({
+                    x: pt.x, y: pt.y,
+                    radius: 6,
+                    fill: '#ffffff',
+                    stroke: '#f59e0b',
+                    strokeWidth: 2.5,
+                    listening: false
+                }));
+            }
+        });
+
+        if (cursorSnap) {
+            synchroDraftPreviewGroup.add(new Konva.Circle({
+                x: cursorSnap.x, y: cursorSnap.y,
+                radius: 9.5,
+                fill: 'rgba(245, 158, 11, 0.85)',
+                stroke: '#ffffff',
+                strokeWidth: 2,
+                listening: false
+            }));
+        }
+
+        synchroDraftPreviewGroup.moveToTop();
+        if (synchroSnapIndicatorGroup) synchroSnapIndicatorGroup.moveToTop();
+    }
+
+    // 右鍵結束並建立多點彎折 Synchro 道路
+    function finishSynchroDraft(rightClickWorldPos = null) {
+        if (!synchroDraftStart) return false;
+        const pts = [...(synchroDraftStart.points || [synchroDraftStart])];
+
+        // 若使用者未在最後一點重複按左鍵、而是直接移動滑鼠到終點按右鍵，把右鍵當下的磁吸點也納為終點
+        if (rightClickWorldPos && pts.length === 1) {
+            const lastPt = pts[pts.length - 1];
+            const snap = getSynchroSnapTarget(rightClickWorldPos, lastPt.node ? lastPt.node.id : null);
+            if (Math.hypot(snap.x - lastPt.x, snap.y - lastPt.y) >= 5) {
+                pts.push(snap);
+            }
+        }
+
+        if (pts.length >= 2) {
+            cleanupSynchroDraft(false, true);
+            completeSynchroRoadSegment(pts);
+            return true;
+        } else {
+            cleanupSynchroDraft(false, true);
+            return false;
+        }
+    }
+
+    function cleanupSynchroDraft(clearSnap = false, skipAutoFinish = false) {
+        if (!clearSnap && !skipAutoFinish && synchroDraftStart && window.event && window.event.type === 'contextmenu') {
+            const pts = synchroDraftStart.points || [synchroDraftStart];
+            if (pts.length >= 2) {
+                finishSynchroDraft();
+                return;
+            }
+        }
+
+        synchroDraftStart = null;
+        if (synchroDraftPreviewGroup) {
+            synchroDraftPreviewGroup.destroy();
+            synchroDraftPreviewGroup = null;
+        }
+        if (clearSnap && synchroSnapIndicatorGroup) {
+            synchroSnapIndicatorGroup.destroy();
+            synchroSnapIndicatorGroup = null;
+        }
+        layer.batchDraw();
+    }
+
+    // 當既有 Node 接上第 2、3、4 條道路時，自動將各進入/離開路段端點退縮 (Setback) 出路口淨空區
+    function rebuildSynchroNodeIntersection(node) {
+        if (!node) return;
+        if (isSynchroTerminalNode(node)) {
+            node.konvaShape.moveToTop();
+            return;
+        }
+
+        const SETBACK = 14;
+        const connectedLinks = new Set();
+
+        node.incomingLinkIds.forEach(id => {
+            const link = network.links[id];
+            if (!link || !link.waypoints || link.waypoints.length < 2) return;
+            const pEnd = link.waypoints[link.waypoints.length - 1];
+            const pPrev = link.waypoints[link.waypoints.length - 2];
+            const segVec = getVector(pPrev, pEnd);
+            const segLen = vecLen(segVec);
+            if (segLen < SETBACK * 1.6) return;
+
+            const dir = normalize(segVec);
+            const relToNode = getVector(pEnd, { x: node.x, y: node.y });
+            const lonDist = dot(relToNode, dir);
+            if (lonDist < SETBACK - 1) {
+                const pullback = SETBACK - lonDist;
+                link.waypoints[link.waypoints.length - 1] = add(pEnd, scale(dir, -pullback));
+                connectedLinks.add(link);
+            }
+        });
+
+        node.outgoingLinkIds.forEach(id => {
+            const link = network.links[id];
+            if (!link || !link.waypoints || link.waypoints.length < 2) return;
+            const pStart = link.waypoints[0];
+            const pNext = link.waypoints[1];
+            const segVec = getVector(pStart, pNext);
+            const segLen = vecLen(segVec);
+            if (segLen < SETBACK * 1.6) return;
+
+            const dir = normalize(segVec);
+            const relFromNode = getVector({ x: node.x, y: node.y }, pStart);
+            const lonDist = dot(relFromNode, dir);
+            if (lonDist < SETBACK - 1) {
+                const pushForward = SETBACK - lonDist;
+                link.waypoints[0] = add(pStart, scale(dir, pushForward));
+                connectedLinks.add(link);
+            }
+        });
+
+        node.customPolygonPoints = null;
+        connectedLinks.forEach(l => {
+            if (l.geometryType === 'parametric') generateParametricStrokes(l);
+            drawLink(l);
+            updateAllDetectorsOnLink(l.id);
+            updateFlowPointsOnLink(l.id);
+            updateRoadSignsOnLink(l.id);
+        });
+
+        node.incomingLinkIds.forEach(inId => {
+            const inLink = network.links[inId];
+            if (inLink) {
+                const turns = inferSynchroLaneTurns(inLink);
+                applySynchroLaneConfig(inLink, turns, { skipSave: true });
+            }
+        });
+
+        redrawNodeConnections(node.id);
+        node.konvaShape.moveToTop();
+    }
+
+    // 計算道路走廊半寬 (供 T 字路口跨越切割使用)
+    function getRoadCorridorHalfWidth(link) {
+        if (!link) return 8;
+        const w = getLinkTotalWidth(link);
+        if (link.pairInfo && link.pairInfo.pairId && network.links[link.pairInfo.pairId]) {
+            const w2 = getLinkTotalWidth(network.links[link.pairInfo.pairId]);
+            const med = link.pairInfo.medianWidth || 0;
+            return (w + w2 + med) / 2;
+        }
+        return w / 2;
+    }
+
+    // 具備斜接角度補償 (Miter Scale) 的平行線偏移，確保多點彎折雙向道路在轉角處路寬恆定不變形
+    function getTrueMiterOffsetPolyline(points, offset) {
+        if (!points || points.length < 2) return [];
+        const result = [];
+        for (let i = 0; i < points.length; i++) {
+            const pCurr = points[i];
+            if (i === 0) {
+                const v = normalize(getVector(pCurr, points[i + 1]));
+                result.push(add(pCurr, scale(getNormal(v), offset)));
+            } else if (i === points.length - 1) {
+                const v = normalize(getVector(points[i - 1], pCurr));
+                result.push(add(pCurr, scale(getNormal(v), offset)));
+            } else {
+                const v1 = normalize(getVector(points[i - 1], pCurr));
+                const v2 = normalize(getVector(pCurr, points[i + 1]));
+                const n1 = getNormal(v1);
+                const n2 = getNormal(v2);
+                const miterN = normalize(add(n1, n2));
+                const cosHalf = dot(miterN, n1);
+                // 補償轉角斜接長度 (1 / cos(θ/2))，並限制最大倍率為 2.5 倍以防極端銳角暴衝
+                const miterScale = Math.abs(cosHalf) > 0.4 ? (1 / cosHalf) : 2.5;
+                result.push(add(pCurr, scale(miterN, offset * miterScale)));
+            }
+        }
+        return result;
+    }
+
+    // 完成一條 Synchro 道路 (支援任意多點彎折折線 snaps 陣列，建立首尾 Node 與連續彎折 Link)
+    function completeSynchroRoadSegment(pointsOrStartSnap, legacyEndSnap = null) {
+        const snaps = Array.isArray(pointsOrStartSnap)
+            ? pointsOrStartSnap
+            : [pointsOrStartSnap, legacyEndSnap].filter(Boolean);
+
+        if (snaps.length < 2) return;
+
+        const startSnap = snaps[0];
+        const endSnap = snaps[snaps.length - 1];
+        const finalPoints = snaps.map(s => ({ x: s.x, y: s.y }));
+
+        if (getPolylineLength(finalPoints) < 8) return;
+
+        // 若起點或終點磁吸在既有道路上 (T 字路口)，將該端微幅延伸跨越目標道路路幅
+        if (startSnap.type === 'link' && startSnap.link) {
+            const dirStart = normalize(getVector(finalPoints[0], finalPoints[1]));
+            const halfSpan = getRoadCorridorHalfWidth(startSnap.link);
+            finalPoints[0] = add(finalPoints[0], scale(dirStart, -(halfSpan + 2.5)));
+        }
+        if (endSnap.type === 'link' && endSnap.link) {
+            const n = finalPoints.length;
+            const dirEnd = normalize(getVector(finalPoints[n - 2], finalPoints[n - 1]));
+            const halfSpan = getRoadCorridorHalfWidth(endSnap.link);
+            finalPoints[n - 1] = add(finalPoints[n - 1], scale(dirEnd, halfSpan + 2.5));
+        }
+
+        // 1. 僅在「起點」與「終點」建立或重用 Node (中間所有點皆為同一條 Link 的彎折 Waypoints，絕不斷開!)
+        const nodeA = (startSnap.type === 'node' && startSnap.node)
+            ? startSnap.node
+            : (startSnap.type === 'free' ? createNode(startSnap.x, startSnap.y) : null);
+
+        const nodeB = (endSnap.type === 'node' && endSnap.node)
+            ? endSnap.node
+            : (endSnap.type === 'free' ? createNode(endSnap.x, endSnap.y) : null);
+
+        const lanes = linkCreationSettings.lanesPerDir || 2;
+        const isTwoWay = linkCreationSettings.isTwoWay !== false;
+        const median = linkCreationSettings.medianWidth || 0;
+        let createdLinks = [];
+
+        if (isTwoWay) {
+            const roadWidth = lanes * LANE_WIDTH;
+            const offsetDist = (roadWidth / 2) + (median / 2);
+            const forwardOffset = linkCreationSettings.drivingSide === 'right' ? offsetDist : -offsetDist;
+            const backwardOffset = linkCreationSettings.drivingSide === 'right' ? -offsetDist : offsetDist;
+
+            const forwardPoints = getTrueMiterOffsetPolyline(finalPoints, forwardOffset);
+            const linkF = createLink(forwardPoints, lanes);
+            linkF.name = `Link_${idCounter} (F)`;
+
+            const backwardPoints = getTrueMiterOffsetPolyline(finalPoints, backwardOffset).reverse();
+            const linkB = createLink(backwardPoints, lanes);
+            linkB.name = `Link_${idCounter} (B)`;
+
+            linkF.pairInfo = { pairId: linkB.id, type: 'forward', medianWidth: median };
+            linkB.pairInfo = { pairId: linkF.id, type: 'backward', medianWidth: median };
+
+            if (nodeA) {
+                linkF.startNodeId = nodeA.id;
+                nodeA.outgoingLinkIds.add(linkF.id);
+                linkB.endNodeId = nodeA.id;
+                nodeA.incomingLinkIds.add(linkB.id);
+            }
+            if (nodeB) {
+                linkF.endNodeId = nodeB.id;
+                nodeB.incomingLinkIds.add(linkF.id);
+                linkB.startNodeId = nodeB.id;
+                nodeB.outgoingLinkIds.add(linkB.id);
+            }
+            createdLinks = [linkF, linkB];
+        } else {
+            const newLink = createLink(finalPoints, lanes);
+            if (nodeA) {
+                newLink.startNodeId = nodeA.id;
+                nodeA.outgoingLinkIds.add(newLink.id);
+            }
+            if (nodeB) {
+                newLink.endNodeId = nodeB.id;
+                nodeB.incomingLinkIds.add(newLink.id);
+            }
+            createdLinks = [newLink];
+        }
+
+        // 2. 若起點 nodeA 或終點 nodeB 連接了 2 條以上道路，自動退縮端點並建立路口車道連線
+        if (nodeA && !isSynchroTerminalNode(nodeA)) {
+            rebuildSynchroNodeIntersection(nodeA);
+        }
+        if (nodeB && !isSynchroTerminalNode(nodeB)) {
+            rebuildSynchroNodeIntersection(nodeB);
+        }
+
+        // 3. 檢查是否有與其他既有道路交叉，自動切開建立路口 Node
+        updateAllOverpasses();
+        handleSynchroAutoIntersections(createdLinks);
+
+        // 4. 將所有 Node 移至最上層
+        Object.values(network.nodes).forEach(n => {
+            if (n.konvaShape) n.konvaShape.moveToTop();
+        });
+
+        if (nodeB && network.nodes[nodeB.id]) {
+            selectObject(nodeB);
+        } else if (createdLinks[0] && network.links[createdLinks[0].id]) {
+            selectObject(createdLinks[0]);
+        }
+
+        layer.batchDraw();
+        saveState();
+    }
+
+    // 左鍵點擊：持續新增起點與彎折點 (絕不在第 2 點斷開，直到按右鍵才結束)
+    function handleSynchroMouseDown(worldPos, e) {
+        let excludeId = null;
+        if (synchroDraftStart && synchroDraftStart.points && synchroDraftStart.points.length > 0) {
+            const lastPt = synchroDraftStart.points[synchroDraftStart.points.length - 1];
+            if (lastPt && lastPt.node) excludeId = lastPt.node.id;
+        }
+
+        const snap = getSynchroSnapTarget(worldPos, excludeId);
+
+        if (!synchroDraftStart) {
+            synchroDraftStart = {
+                ...snap,
+                points: [snap]
+            };
+            updateSynchroDraftPreview(snap);
+            updateSynchroSnapIndicator(worldPos);
+            layer.batchDraw();
+        } else {
+            if (!Array.isArray(synchroDraftStart.points)) {
+                synchroDraftStart.points = [synchroDraftStart];
+            }
+            const pts = synchroDraftStart.points;
+            const lastPt = pts[pts.length - 1];
+            const dist = Math.hypot(snap.x - lastPt.x, snap.y - lastPt.y);
+            if (dist >= 3) {
+                pts.push(snap);
+                updateSynchroDraftPreview(snap);
+                updateSynchroSnapIndicator(worldPos);
+                layer.batchDraw();
+            }
+        }
+    }
+
+    function handleSynchroMouseMove(worldPos, e) {
+        const snap = updateSynchroSnapIndicator(worldPos);
+        if (synchroDraftStart && snap) {
+            updateSynchroDraftPreview(snap);
+        }
+        layer.batchDraw();
+    }
+
+    function handleSynchroMouseUp(worldPos, e) {
+        // 左鍵放開時絕不結束繪製，僅刷新預覽，讓使用者可無限次點左鍵增加彎折點，直到按右鍵才結束
+        if (synchroDraftStart && worldPos) {
+            const snap = updateSynchroSnapIndicator(worldPos);
+            if (snap) {
+                updateSynchroDraftPreview(snap);
+            }
+            layer.batchDraw();
+        }
+    }
+
+    // Extend start/end of newly drawn points if they terminate near an existing link (T-junction)
+    function extendSynchroPointsForTJunctions(points) {
+        if (!points || points.length < 2) return;
+        const SNAP_DIST = 22;
+        const checkAndExtendEndpoint = (isStart) => {
+            const pt = isStart ? points[0] : points[points.length - 1];
+            const adj = isStart ? points[1] : points[points.length - 2];
+            const dir = normalize(getVector(adj, pt));
+
+            let bestDist = SNAP_DIST;
+            let foundLink = null;
+            Object.values(network.links).forEach(link => {
+                if (!link.waypoints || link.waypoints.length < 2) return;
+                for (let i = 0; i < points.length - 1; i++) {
+                    for (let j = 0; j < link.waypoints.length - 1; j++) {
+                        if (lineSegmentIntersection(points[i], points[i + 1], link.waypoints[j], link.waypoints[j + 1])) {
+                            return;
+                        }
+                    }
+                }
+                const { pointDist } = projectPointOnPolyline(pt, link.waypoints);
+                if (pointDist < bestDist) {
+                    bestDist = pointDist;
+                    foundLink = link;
+                }
+            });
+
+            if (foundLink) {
+                const halfSpan = getRoadCorridorHalfWidth(foundLink);
+                const extendedPt = add(pt, scale(dir, bestDist + halfSpan + 2.5));
+                if (isStart) points[0] = extendedPt;
+                else points[points.length - 1] = extendedPt;
+            }
+        };
+
+        checkAndExtendEndpoint(true);
+        checkAndExtendEndpoint(false);
+    }
+
+    // Cluster overlapping/adjacent overpass boxes and auto-generate intersections + Synchro lane configs
+    function handleSynchroAutoIntersections(createdLinks = []) {
+        updateAllOverpasses();
+        const overpasses = Object.values(network.overpasses || {});
+        if (overpasses.length === 0) return;
+
+        const createdIds = new Set((createdLinks || []).map(l => l.id));
+
+        const boxes = overpasses.map(op => {
+            // 排除同一條雙向道路順逆向配對自身的交疊誤判
+            const l1 = network.links[op.linkId1];
+            const l2 = network.links[op.linkId2];
+            if (l1 && l2 && l1.pairInfo && l1.pairInfo.pairId === l2.id) return null;
+            if (createdIds.size > 0 && !createdIds.has(op.linkId1) && !createdIds.has(op.linkId2)) return null;
+
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            if (op.konvaRect) {
+                minX = op.konvaRect.x();
+                minY = op.konvaRect.y();
+                maxX = minX + op.konvaRect.width();
+                maxY = minY + op.konvaRect.height();
+            } else if (Array.isArray(op.points)) {
+                op.points.forEach(p => {
+                    if (p.x < minX) minX = p.x;
+                    if (p.x > maxX) maxX = p.x;
+                    if (p.y < minY) minY = p.y;
+                    if (p.y > maxY) maxY = p.y;
+                });
+            }
+            return {
+                op,
+                minX, minY, maxX, maxY,
+                cx: (minX + maxX) / 2,
+                cy: (minY + maxY) / 2
+            };
+        }).filter(b => {
+            if (!b || !isFinite(b.cx) || !isFinite(b.cy)) return false;
+            for (const n of Object.values(network.nodes)) {
+                if (!isSynchroTerminalNode(n) && Math.hypot(b.cx - n.x, b.cy - n.y) < 22) {
+                    return false;
+                }
+            }
+            return true;
+        });
+
+        if (boxes.length === 0) return;
+
+        const CLUSTER_DIST = 42;
+        const visited = new Array(boxes.length).fill(false);
+        const clusters = [];
+
+        for (let i = 0; i < boxes.length; i++) {
+            if (visited[i]) continue;
+            visited[i] = true;
+            const queue = [boxes[i]];
+            const cluster = [boxes[i]];
+            while (queue.length > 0) {
+                const cur = queue.shift();
+                for (let j = 0; j < boxes.length; j++) {
+                    if (visited[j]) continue;
+                    const dist = Math.hypot(cur.cx - boxes[j].cx, cur.cy - boxes[j].cy);
+                    if (dist <= CLUSTER_DIST) {
+                        visited[j] = true;
+                        queue.push(boxes[j]);
+                        cluster.push(boxes[j]);
+                    }
+                }
+            }
+            clusters.push(cluster);
+        }
+
+        const prevMode = intersectionMode;
+        intersectionMode = 'zone';
+
+        const existingNodeIds = new Set(Object.keys(network.nodes));
+
+        clusters.forEach(cluster => {
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            cluster.forEach(b => {
+                if (b.minX < minX) minX = b.minX;
+                if (b.maxX > maxX) maxX = b.maxX;
+                if (b.minY < minY) minY = b.minY;
+                if (b.maxY > maxY) maxY = b.maxY;
+            });
+            const pad = 6;
+            const rectPoly = [
+                { x: minX - pad, y: minY - pad },
+                { x: maxX + pad, y: minY - pad },
+                { x: maxX + pad, y: maxY + pad },
+                { x: minX - pad, y: maxY + pad }
+            ];
+            processManualIntersection(rectPoly);
+        });
+
+        intersectionMode = prevMode;
+
+        Object.values(network.nodes).forEach(node => {
+            if (!existingNodeIds.has(node.id)) {
+                node.incomingLinkIds.forEach(inId => {
+                    const inLink = network.links[inId];
+                    if (inLink) {
+                        const defaultTurns = inferSynchroLaneTurns(inLink);
+                        applySynchroLaneConfig(inLink, defaultTurns, { skipSave: true });
+                    }
+                });
+                if (node.konvaShape) node.konvaShape.moveToTop();
+                selectObject(node);
+            }
+        });
+
+        updateAllOverpasses();
+        layer.batchDraw();
+    }
+
+    // Synchro Node rubber-band dragging (moves connected link endpoints together with the Node)
+    function setupSynchroNodeDrag(node) {
+        if (!node || !node.konvaShape) return;
+        node.konvaShape.draggable(activeTool === 'select');
+
+        node.konvaShape.on('dragstart', () => {
+            if (activeTool !== 'select') {
+                node.konvaShape.stopDrag();
+                return;
+            }
+        });
+
+        node.konvaShape.on('dragmove', () => {
+            if (activeTool !== 'select') return;
+            const dx = node.konvaShape.x();
+            const dy = node.konvaShape.y();
+            if (dx === 0 && dy === 0) return;
+
+            node.konvaShape.position({ x: 0, y: 0 });
+            node.x += dx;
+            node.y += dy;
+
+            if (Array.isArray(node.customPolygonPoints)) {
+                for (let i = 0; i < node.customPolygonPoints.length; i += 2) {
+                    node.customPolygonPoints[i] += dx;
+                    node.customPolygonPoints[i + 1] += dy;
+                }
+            }
+
+            const affectedLinks = new Set();
+            node.incomingLinkIds.forEach(id => {
+                const l = network.links[id];
+                if (l && l.waypoints && l.waypoints.length >= 2) {
+                    const last = l.waypoints[l.waypoints.length - 1];
+                    last.x += dx;
+                    last.y += dy;
+                    affectedLinks.add(l);
+                }
+            });
+            node.outgoingLinkIds.forEach(id => {
+                const l = network.links[id];
+                if (l && l.waypoints && l.waypoints.length >= 2) {
+                    const first = l.waypoints[0];
+                    first.x += dx;
+                    first.y += dy;
+                    affectedLinks.add(l);
+                }
+            });
+
+            affectedLinks.forEach(l => {
+                if (l.geometryType === 'parametric') generateParametricStrokes(l);
+                drawLink(l);
+                updateAllDetectorsOnLink(l.id);
+                updateFlowPointsOnLink(l.id);
+                updateRoadSignsOnLink(l.id);
+                if (l.startNodeId && l.startNodeId !== node.id) redrawNodeConnections(l.startNodeId);
+                if (l.endNodeId && l.endNodeId !== node.id) redrawNodeConnections(l.endNodeId);
+            });
+
+            redrawNodeConnections(node.id);
+            if (selectedObject && selectedObject.id === node.id) {
+                drawNodeHandles(node);
+            }
+            layer.batchDraw();
+        });
+
+        node.konvaShape.on('dragend', () => {
+            if (activeTool !== 'select') return;
+            updateAllOverpasses();
+            saveState();
+        });
+    }
+
+    // 畫布頂部操作提示橫幅
+    function updateSynchroCanvasHint() {
+        let banner = document.getElementById('synchro-canvas-hint');
+        if (!isSynchroMode) {
+            if (banner) banner.style.display = 'none';
+            return;
+        }
+        if (!banner) {
+            const container = document.getElementById('canvas-container') || document.body;
+            banner = document.createElement('div');
+            banner.id = 'synchro-canvas-hint';
+            banner.style.cssText = 'position:absolute; top:12px; left:50%; transform:translateX(-50%); z-index:40; background:#f0f7ff; color:#1e293b; border:1px solid #bfdbfe; border-radius:8px; padding:4px 10px; font-size:0.78rem; display:flex; align-items:center; gap:10px; box-shadow:0 2px 8px rgba(37,99,235,0.08);';
+            container.appendChild(banner);
+        }
+        banner.style.display = 'flex';
+
+        // 預設為畫路（只有當前明確是 select 時才為選取）
+        const isDraw = (activeTool !== 'select');
+
+        banner.innerHTML = `
+        <div style="display:flex; background:#dbeafe; padding:2px; border-radius:6px; gap:2px;">
+            <button type="button" id="synchro-tab-draw" style="
+                border:none; cursor:pointer; padding:4px 10px; border-radius:4px; font-size:0.75rem; font-weight:600; display:flex; align-items:center; gap:5px; transition:all 0.15s;
+                background:${isDraw ? '#ffffff' : 'transparent'};
+                color:${isDraw ? '#1d4ed8' : '#64748b'};
+                box-shadow:${isDraw ? '0 1px 2px rgba(0,0,0,0.06)' : 'none'};">
+                <i class="fa-solid fa-road"></i> 畫路 (L)
+            </button>
+            <button type="button" id="synchro-tab-select" style="
+                border:none; cursor:pointer; padding:4px 10px; border-radius:4px; font-size:0.75rem; font-weight:600; display:flex; align-items:center; gap:5px; transition:all 0.15s;
+                background:${!isDraw ? '#ffffff' : 'transparent'};
+                color:${!isDraw ? '#1d4ed8' : '#64748b'};
+                box-shadow:${!isDraw ? '0 1px 2px rgba(0,0,0,0.06)' : 'none'};">
+                <i class="fa-solid fa-arrow-pointer"></i> 選取 (V)
+            </button>
+        </div>
+        <span style="color:#0369a1; font-size:0.75rem;">
+            ${isDraw ? '左鍵點擊加點，右鍵完成' : '點擊路口/路段調整轉向'}
+        </span>
+    `;
+
+        banner.querySelector('#synchro-tab-draw').onclick = () => setTool('add-link');
+        banner.querySelector('#synchro-tab-select').onclick = () => setTool('select');
+    }
+
+    function toggleSynchroMode(forceState) {
+        isSynchroMode = typeof forceState === 'boolean' ? forceState : !isSynchroMode;
+        const btn = document.getElementById('btn-synchro-mode');
+        const badge = document.getElementById('synchro-mode-badge');
+        if (btn) btn.classList.toggle('synchro-active', isSynchroMode);
+        if (badge) badge.textContent = isSynchroMode ? 'ON' : 'OFF';
+
+        cleanupSynchroDraft(true, true);
+
+        if (isSynchroMode) {
+            linkCreationSettings.isTwoWay = true;
+            const twoWayToggle = document.getElementById('link-twoway-toggle');
+            if (twoWayToggle) {
+                twoWayToggle.checked = true;
+                const medianRow = document.getElementById('median-setting-row');
+                if (medianRow) medianRow.style.display = 'flex';
+            }
+            lastActiveNodeTab = 'tab-synchro';
+            setTool('add-link');
+        } else {
+            updateSynchroCanvasHint();
+        }
+
+        Object.values(network.links).forEach(l => drawLink(l));
+        Object.values(network.nodes).forEach(n => {
+            if (n.konvaShape) n.konvaShape.moveToTop();
+        });
+        if (selectedObject) {
+            updatePropertiesPanel(selectedObject);
+        }
+        layer.batchDraw();
+        return isSynchroMode;
+    }
+
+    const synchroModeBtn = document.getElementById('btn-synchro-mode');
+    if (synchroModeBtn) {
+        synchroModeBtn.addEventListener('click', (e) => {
+            e.stopPropagation(); // 防止事件冒泡到 toolbar 導致 activeTool 變成 undefined
+            toggleSynchroMode();
+            if (isSynchroMode) {
+                setTool('add-link'); // 強制切換為「畫路」工具
+            }
+        });
+    }
+
+    window.addEventListener('keydown', (e) => {
+        if (e.altKey && (e.key === 's' || e.key === 'S')) {
+            e.preventDefault();
+            toggleSynchroMode();
+        } else if (e.key === 'Escape' && isSynchroMode && synchroDraftStart) {
+            cleanupSynchroDraft(false, true);
+        }
+    });
+
+    // Expose Synchro helpers on window for automation & testing
+    window.toggleSynchroMode = toggleSynchroMode;
+    window.applySynchroLaneConfig = applySynchroLaneConfig;
+    window.inferSynchroLaneTurns = inferSynchroLaneTurns;
+    window.handleSynchroAutoIntersections = handleSynchroAutoIntersections;
+    window.completeSynchroRoadSegment = completeSynchroRoadSegment;
+    window.finishSynchroDraft = finishSynchroDraft;
+    window.getSynchroSnapTarget = getSynchroSnapTarget;
+    window.balanceAllSynchroNetworkFlows = balanceAllSynchroNetworkFlows;
+    window.balanceSingleSynchroApproachToUpstream = balanceSingleSynchroApproachToUpstream;
+    window.computeSynchroUpstreamInflow = computeSynchroUpstreamInflow;
+    Object.defineProperty(window, 'isSynchroMode', {
+        get: () => isSynchroMode,
+        set: (val) => toggleSynchroMode(Boolean(val)),
         configurable: true
     });
 });
