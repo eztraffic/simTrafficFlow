@@ -44,6 +44,23 @@ class SpatialGrid {
     }
 }
 
+function getLinkAngle(link, isEnd) {
+    if (!link) return 0;
+    const lanes = Object.values(link.lanes || {});
+    if (lanes.length === 0) return 0;
+    const path = lanes[0].path;
+    if (!path || path.length < 2) return 0;
+
+    let p1, p2;
+    if (isEnd) {
+        p1 = path[path.length - 2];
+        p2 = path[path.length - 1];
+    } else {
+        p1 = path[0];
+        p2 = path[1];
+    }
+    return Math.atan2(p2.y - p1.y, p2.x - p1.x);
+}
 
     const Geom = {
         Vec: { add: (v1, v2) => ({ x: v1.x + v2.x, y: v1.y + v2.y }), sub: (v1, v2) => ({ x: v1.x - v2.x, y: v1.y - v2.y }), scale: (v, s) => ({ x: v.x * s, y: v.y * s }), dist: (v1, v2) => Math.hypot(v1.x - v2.x, v1.y - v2.y), len: (v) => Math.hypot(v.x, v.y), normalize: (v) => { const l = Geom.Vec.len(v); return l > 0 ? Geom.Vec.scale(v, 1 / l) : { x: 0, y: 0 }; }, normal: (v) => ({ x: -v.y, y: v.x }), angle: (v) => Math.atan2(v.y, v.x), },

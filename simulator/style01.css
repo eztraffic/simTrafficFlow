@@ -2047,4 +2047,91 @@ td {
     color: white;
 }
 
+/* ==========================================================================
+   ★★★ Embed Mode (首頁或第三方無縫嵌入模式) ★★★
+   ========================================================================== */
+body.embed-mode {
+    height: 100vh !important;
+    width: 100vw !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+    background: #f8fafc !important;
+}
+
+body.embed-mode .app-navbar,
+body.embed-mode .app-toolbar,
+body.embed-mode #stats-panel,
+body.embed-mode #placeholder-text,
+body.embed-mode #opt-panel,
+body.embed-mode #police-panel,
+body.embed-mode #flow-control-panel,
+body.embed-mode #luti-hud-container {
+    display: none !important;
+}
+
+body.embed-mode #main-content {
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+}
+
+body.embed-mode #canvas-container {
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+}
+
+body.embed-mode .embed-floating-controls {
+    position: absolute;
+    bottom: 14px;
+    right: 14px;
+    z-index: 50;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(255, 255, 255, 0.92);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    padding: 5px 8px;
+    border-radius: 9999px;
+    border: 1px solid rgba(203, 213, 225, 0.8);
+    box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
+    user-select: none;
+}
+
+body.embed-mode .embed-floating-btn {
+    background: transparent;
+    border: none;
+    outline: none;
+    cursor: pointer;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: #475569;
+    padding: 4px 8px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    transition: all 0.15s ease;
+}
+
+body.embed-mode .embed-floating-btn:hover {
+    background: #f1f5f9;
+    color: #2563eb;
+}
+
+body.embed-mode .embed-floating-btn.active {
+    background: #eff6ff;
+    color: #2563eb;
+}
+
+
 

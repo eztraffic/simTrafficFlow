@@ -16859,11 +16859,83 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // 自動檢測 URL 參數或 localStorage 載入網路
+    // 自動檢測 URL 參數 (如 file, embed, autoplay, mode, autorotate) 或 localStorage 載入網路
     try {
         const urlParams = new URLSearchParams(window.location.search);
         const fileParam = urlParams.get('file');
+        const isEmbed = urlParams.get('embed') === 'true';
+        const isAutoPlay = urlParams.get('autoplay') === 'true' || isEmbed;
+        const modeParam = urlParams.get('mode') || (isEmbed ? '3d' : null);
+        const isAutoRotate = urlParams.get('autorotate') !== 'false';
         const exportedNetwork = localStorage.getItem('simTrafficFlow_exportedNetwork');
+
+        // 若為嵌入模式 (embed=true)，加上專用樣式類別並建立極簡控制條
+        if (isEmbed) {
+            document.body.classList.add('embed-mode');
+            setupEmbedFloatingControls();
+        }
+
+        function setupEmbedFloatingControls() {
+            if (document.querySelector('.embed-floating-controls')) return;
+            const bar = document.createElement('div');
+            bar.className = 'embed-floating-controls';
+
+            // 播放 / 暫停按鈕
+            const playBtn = document.createElement('button');
+            playBtn.className = 'embed-floating-btn active';
+            playBtn.id = 'embedPlayBtn';
+            playBtn.innerHTML = '<i class="fa-solid fa-pause"></i> <span>暫停</span>';
+            playBtn.title = "播放 / 暫停車流模擬";
+            playBtn.addEventListener('click', () => {
+                if (startStopButton) {
+                    startStopButton.click();
+                    playBtn.innerHTML = isRunning 
+                        ? '<i class="fa-solid fa-pause"></i> <span>暫停</span>' 
+                        : '<i class="fa-solid fa-play"></i> <span>播放</span>';
+                }
+            });
+
+            // 2D / 3D 切換按鈕
+            const modeBtn = document.createElement('button');
+            modeBtn.className = 'embed-floating-btn';
+            modeBtn.id = 'embedModeBtn';
+            modeBtn.innerHTML = '<i class="fa-solid fa-cube"></i> <span>3D</span>';
+            modeBtn.title = "切換 2D / 3D 視角";
+            modeBtn.addEventListener('click', () => {
+                if (isDisplay3D) {
+                    isDisplay3D = false;
+                    isDisplay2D = true;
+                    modeBtn.innerHTML = '<i class="fa-solid fa-map"></i> <span>2D</span>';
+                } else {
+                    isDisplay3D = true;
+                    isDisplay2D = false;
+                    modeBtn.innerHTML = '<i class="fa-solid fa-cube"></i> <span>3D</span>';
+                }
+                applyDisplayState();
+                if (typeof onWindowResize === 'function') onWindowResize();
+            });
+
+            // 鏡頭旋轉自轉開關
+            const rotateBtn = document.createElement('button');
+            rotateBtn.className = 'embed-floating-btn active';
+            rotateBtn.id = 'embedRotateBtn';
+            rotateBtn.innerHTML = '<i class="fa-solid fa-rotate"></i> <span>巡航</span>';
+            rotateBtn.title = "鏡頭自動巡航旋轉";
+            rotateBtn.addEventListener('click', () => {
+                if (controls) {
+                    controls.autoRotate = !controls.autoRotate;
+                    rotateBtn.classList.toggle('active', controls.autoRotate);
+                }
+            });
+
+            bar.appendChild(playBtn);
+            bar.appendChild(modeBtn);
+            bar.appendChild(rotateBtn);
+
+            const container = document.getElementById('canvas-container') || document.body;
+            container.appendChild(bar);
+        }
+
         if (fileParam) {
             console.log(`從 URL 參數自動載入路網模型: ${fileParam}...`);
             setTimeout(() => {
@@ -16875,9 +16947,43 @@ document.addEventListener('DOMContentLoaded', () => {
                     .then(xmlContent => {
                         loadTrafficModelFromXML(xmlContent).then(() => {
                             console.log(`成功載入路網檔案: ${fileParam}`);
-                            const display3DBtn = document.getElementById('display3DBtn');
-                            if (display3DBtn && !isDisplay3D) {
-                                display3DBtn.click();
+                            
+                            // 套用模式 (3d, 2d, split)
+                            if (modeParam === '3d') {
+                                isDisplay2D = false;
+                                isDisplay3D = true;
+                                applyDisplayState();
+                            } else if (modeParam === '2d') {
+                                isDisplay2D = true;
+                                isDisplay3D = false;
+                                applyDisplayState();
+                            } else {
+                                const display3DBtn = document.getElementById('display3DBtn');
+                                if (display3DBtn && !isDisplay3D) {
+                                    display3DBtn.click();
+                                }
+                            }
+
+                            if (typeof onWindowResize === 'function') {
+                                onWindowResize();
+                            }
+
+                            // 處理 OrbitControls 平滑自動巡航
+                            if (controls && (isAutoRotate || isEmbed)) {
+                                controls.autoRotate = true;
+                                controls.autoRotateSpeed = 0.6;
+                            }
+
+                            // 處理自動啟動播放
+                            if (isAutoPlay) {
+                                setTimeout(() => {
+                                    if (!isRunning && startStopButton && !startStopButton.disabled) {
+                                        startStopButton.click();
+                                        console.log("自動啟動微觀車流模擬 (AutoPlay)...");
+                                        const playBtn = document.getElementById('embedPlayBtn');
+                                        if (playBtn) playBtn.innerHTML = '<i class="fa-solid fa-pause"></i> <span>暫停</span>';
+                                    }
+                                }, 500);
                             }
                         }).catch(err => {
                             console.error("解析 URL 路網 XML 失敗:", err);
