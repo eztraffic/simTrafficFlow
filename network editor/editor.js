@@ -3578,6 +3578,31 @@ document.addEventListener('DOMContentLoaded', () => {
             e.target.value = '';
         });
 
+        // 自動檢測 URL 參數 (如 ?file=../example/xxx.sim) 自動載入路網模型
+        try {
+            const urlParams = new URLSearchParams(window.location.search);
+            const fileParam = urlParams.get('file');
+            if (fileParam) {
+                console.log(`從 URL 參數自動載入路網模型: ${fileParam}...`);
+                setTimeout(() => {
+                    fetch(fileParam)
+                        .then(res => {
+                            if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+                            return res.text();
+                        })
+                        .then(xmlContent => {
+                            createAndLoadNetworkFromXML(xmlContent);
+                            console.log(`成功載入路網檔案至編輯器: ${fileParam}`);
+                        })
+                        .catch(err => {
+                            console.error("解析 URL 路網 XML 失敗:", err);
+                        });
+                }, 300);
+            }
+        } catch (e) {
+            console.warn("檢查 URL 參數失敗:", e);
+        }
+
         window.addEventListener('keydown', (e) => {
             if (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA') return;
 
