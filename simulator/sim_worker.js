@@ -3,7 +3,7 @@
 
 if (typeof importScripts === 'function') {
     try {
-        importScripts('sim_engine_core.js');
+        importScripts('sim_engine_core.js?v=20261028_2');
     } catch (e) {
         console.warn('[SimWorker] importScripts failed, engine may have been pre-bundled or inlined:', e);
     }
@@ -21,6 +21,10 @@ if (typeof importScripts === 'function') {
     let nextVehicleNumId = 1;
     const vehicleNumIdMap = new Map(); // string ID -> numId
     const prevVehicleIds = new Set();
+
+    let nextPedNumId = 1;
+    const pedNumIdMap = new Map(); // pedestrian string ID -> numId
+    const prevPedIds = new Set();
 
     // Recycled ArrayBuffer pool (Double-buffering zero-copy)
     const recycledVehicleBuffers = [];
@@ -47,6 +51,15 @@ if (typeof importScripts === 'function') {
         if (!numId) {
             numId = nextVehicleNumId++;
             vehicleNumIdMap.set(strId, numId);
+        }
+        return numId;
+    }
+
+    function getPedNumId(strId) {
+        let numId = pedNumIdMap.get(strId);
+        if (!numId) {
+            numId = nextPedNumId++;
+            pedNumIdMap.set(strId, numId);
         }
         return numId;
     }
@@ -168,18 +181,53 @@ if (typeof importScripts === 'function') {
         }
 
         // 5. Pack Pedestrian Float32Array (if present)
+        // Format: [numId, x, y, angle, speed, stateCode, walkCycle] (7 floats)
         let pBuffer = null;
         let pCount = 0;
+        const newPedestrians = [];
+        const removedPedestrianIds = [];
+        const currentPedIds = new Set();
+
         if (simulation.pedManager && simulation.pedManager.pedestrians) {
             const peds = simulation.pedManager.pedestrians;
             pCount = peds.length;
-            const pFloatCount = pCount * 6;
+
+            for (let i = 0; i < pCount; i++) {
+                const p = peds[i];
+                currentPedIds.add(p.id);
+                if (!prevPedIds.has(p.id)) {
+                    const numId = getPedNumId(p.id);
+                    newPedestrians.push({
+                        id: p.id,
+                        numId: numId,
+                        isMale: !!p.isMale,
+                        height: p.height || 1.7,
+                        shirtColor: p.shirtColor,
+                        pantsColor: p.pantsColor,
+                        skinColor: p.skinColor,
+                        hairColor: p.hairColor,
+                        shoeColor: p.shoeColor
+                    });
+                }
+            }
+
+            for (const oldPedId of prevPedIds) {
+                if (!currentPedIds.has(oldPedId)) {
+                    removedPedestrianIds.push(oldPedId);
+                    pedNumIdMap.delete(oldPedId);
+                }
+            }
+
+            prevPedIds.clear();
+            for (const pid of currentPedIds) prevPedIds.add(pid);
+
+            const pFloatCount = pCount * 7;
             pBuffer = getRecycledPedBuffer(pFloatCount);
 
             for (let i = 0; i < pCount; i++) {
                 const p = peds[i];
-                const base = i * 6;
-                pBuffer[base] = i + 1;
+                const base = i * 7;
+                pBuffer[base] = getPedNumId(p.id);
                 pBuffer[base + 1] = p.x;
                 pBuffer[base + 2] = p.y;
                 pBuffer[base + 3] = p.angle || 0;
@@ -189,6 +237,7 @@ if (typeof importScripts === 'function') {
                 else if (p.state === 'WAITING_AT_ISLAND') stateCode = 2;
                 else if (p.state === 'FINISHED') stateCode = 3;
                 pBuffer[base + 5] = stateCode;
+                pBuffer[base + 6] = p.walkCycle || 0;
             }
         }
 
@@ -245,6 +294,8 @@ if (typeof importScripts === 'function') {
             lutiStats: lutiStats,
             pedCount: pCount,
             pedBuffer: pBuffer,
+            newPedestrians: newPedestrians,
+            removedPedestrianIds: removedPedestrianIds,
             stats: {
                 activeVehicleCount: vehicleCount,
                 avgSpeedKmh: avgSpeedKmh,
@@ -278,6 +329,9 @@ if (typeof importScripts === 'function') {
                     nextVehicleNumId = 1;
                     vehicleNumIdMap.clear();
                     prevVehicleIds.clear();
+                    nextPedNumId = 1;
+                    pedNumIdMap.clear();
+                    prevPedIds.clear();
 
                     self.postMessage({
                         type: 'INIT_SUCCESS',
@@ -287,6 +341,11 @@ if (typeof importScripts === 'function') {
                             trafficLightCount: simulation.trafficLights.length
                         }
                     });
+
+                    if (isRunning && !loopTimeoutId) {
+                        lastTimestamp = performance.now();
+                        tick();
+                    }
                 } catch (err) {
                     console.error('[SimWorker] Failed to init network:', err);
                     self.postMessage({
@@ -439,6 +498,9 @@ if (typeof importScripts === 'function') {
                 nextVehicleNumId = 1;
                 vehicleNumIdMap.clear();
                 prevVehicleIds.clear();
+                nextPedNumId = 1;
+                pedNumIdMap.clear();
+                prevPedIds.clear();
                 break;
             }
         }

@@ -171,6 +171,138 @@ function getLinkAngle(link, isEnd) {
     }
     global.getClosestPointOnPathWithDistance = getClosestPointOnPathWithDistance;
 
+    function getPointAtDistanceAlongPath(path, distance) {
+        if (!path || path.length < 2) return null;
+        let accumulatedLength = 0;
+        for (let i = 0; i < path.length - 1; i++) {
+            const p1 = path[i];
+            const p2 = path[i + 1];
+            const segmentLength = Geom.Vec.dist(p1, p2);
+            if (distance >= accumulatedLength && distance <= accumulatedLength + segmentLength) {
+                const ratio = segmentLength > 0 ? (distance - accumulatedLength) / segmentLength : 0;
+                const segmentVec = Geom.Vec.sub(p2, p1);
+                const point = Geom.Vec.add(p1, Geom.Vec.scale(segmentVec, ratio));
+                const normal = Geom.Vec.normalize(Geom.Vec.normal(segmentVec));
+                const angle = Geom.Vec.angle(segmentVec);
+                return { point, normal, angle };
+            }
+            accumulatedLength += segmentLength;
+        }
+        return null;
+    }
+    global.getPointAtDistanceAlongPath = getPointAtDistanceAlongPath;
+
+    function calculateCrosswalkLine(mark, netData) {
+        if (!mark || !netData) return null;
+        if (mark.isFree || mark.nodeId || (!mark.linkId && mark.x !== 0)) {
+            const cx = mark.x;
+            const cy = mark.y;
+            const rectWidth = mark.length || 3;
+            const rectHeight = mark.width || 10;
+            const rot = (mark.rotation || 0) * (Math.PI / 180);
+            const cos = Math.cos(rot);
+            const sin = Math.sin(rot);
+
+            const halfH = rectHeight / 2;
+            return {
+                p1: { x: cx + halfH * sin, y: cy - halfH * cos },
+                p2: { x: cx - halfH * sin, y: cy + halfH * cos },
+                width: rectWidth,
+                roadAngle: rot
+            };
+        }
+
+        const link = netData.links ? netData.links[mark.linkId] : null;
+        if (!link || !link.lanes) return null;
+        const lanes = Object.values(link.lanes).sort((a, b) => a.index - b.index);
+        if (lanes.length === 0) return null;
+
+        const posData = getPointAtDistanceAlongPath(lanes[0].path, mark.position);
+        if (!posData) return null;
+
+        const getStrokePoint = (targetLink, strokeIdx, refPt) => {
+            let stroke = targetLink.strokes[strokeIdx];
+            if (!stroke) stroke = (strokeIdx <= 0) ? targetLink.strokes[0] : targetLink.strokes[targetLink.strokes.length - 1];
+            let minDist = Infinity; let bestPt = refPt;
+            for (let i = 0; i < stroke.points.length - 1; i++) {
+                const proj = Geom.Utils.getClosestPointOnSegment(refPt, stroke.points[i], stroke.points[i + 1]);
+                const d = Geom.Vec.dist(refPt, proj);
+                if (d < minDist) { minDist = d; bestPt = proj; }
+            }
+            return bestPt;
+        };
+
+        const isLaneBased = link.geometryType === 'lane-based' && link.strokes && link.strokes.length >= 2;
+        let p1, p2, roadCenter, halfWidth;
+
+        if (isLaneBased) {
+            p1 = getStrokePoint(link, 0, posData.point);
+            p2 = getStrokePoint(link, link.strokes.length - 1, posData.point);
+            roadCenter = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+            halfWidth = Geom.Vec.dist(p1, p2) / 2;
+        } else {
+            let totalWidth = 0; lanes.forEach(l => totalWidth += l.width);
+            halfWidth = totalWidth / 2;
+            const lane0Offset = -totalWidth / 2 + lanes[0].width / 2;
+            roadCenter = Geom.Vec.add(posData.point, Geom.Vec.scale(posData.normal, -lane0Offset));
+            p1 = Geom.Vec.add(roadCenter, Geom.Vec.scale(posData.normal, halfWidth));
+            p2 = Geom.Vec.add(roadCenter, Geom.Vec.scale(posData.normal, -halfWidth));
+        }
+
+        if (mark.spanToLinkId && netData.links[mark.spanToLinkId]) {
+            const targetLink = netData.links[mark.spanToLinkId];
+            const tLanes = Object.values(targetLink.lanes).sort((a, b) => a.index - b.index);
+
+            if (tLanes.length > 0) {
+                let bestDist = Infinity;
+                let refTargetPoint = null;
+                const path = tLanes[0].path;
+                for (let i = 0; i < path.length - 1; i++) {
+                    const closest = Geom.Utils.getClosestPointOnSegment(roadCenter, path[i], path[i + 1]);
+                    const d = Geom.Vec.dist(roadCenter, closest);
+                    if (d < bestDist) { bestDist = d; refTargetPoint = closest; }
+                }
+
+                if (refTargetPoint) {
+                    let targetCenter, targetHalfWidth;
+
+                    if (targetLink.geometryType === 'lane-based' && targetLink.strokes && targetLink.strokes.length >= 2) {
+                        const tp1 = getStrokePoint(targetLink, 0, refTargetPoint);
+                        const tp2 = getStrokePoint(targetLink, targetLink.strokes.length - 1, refTargetPoint);
+                        targetCenter = { x: (tp1.x + tp2.x) / 2, y: (tp1.y + tp2.y) / 2 };
+                        targetHalfWidth = Geom.Vec.dist(tp1, tp2) / 2;
+                    } else {
+                        let tTotalWidth = 0; tLanes.forEach(l => tTotalWidth += l.width);
+                        targetHalfWidth = tTotalWidth / 2;
+                        const tLane0Offset = -tTotalWidth / 2 + tLanes[0].width / 2;
+
+                        let tNormal = { x: 0, y: 0 };
+                        for (let i = 0; i < path.length - 1; i++) {
+                            const d = Geom.Vec.dist(refTargetPoint, path[i]);
+                            if (d < 5.0) {
+                                const v = Geom.Vec.normalize(Geom.Vec.sub(path[i + 1], path[i]));
+                                tNormal = { x: -v.y, y: v.x };
+                                break;
+                            }
+                        }
+                        targetCenter = Geom.Vec.add(refTargetPoint, Geom.Vec.scale(tNormal, -tLane0Offset));
+                    }
+
+                    const spanVec = Geom.Vec.sub(targetCenter, roadCenter);
+                    const dist = Geom.Vec.len(spanVec);
+
+                    if (dist > 0.1) {
+                        const spanDir = Geom.Vec.normalize(spanVec);
+                        p1 = Geom.Vec.add(roadCenter, Geom.Vec.scale(spanDir, -halfWidth));
+                        p2 = Geom.Vec.add(targetCenter, Geom.Vec.scale(spanDir, targetHalfWidth));
+                    }
+                }
+            }
+        }
+        return { p1, p2, width: mark.length || 3, roadAngle: posData.angle };
+    }
+    global.calculateCrosswalkLine = calculateCrosswalkLine;
+
     // =================================================================
     // ★★★ [新增] Lane-Based 標線樣式與幾何生成輔助 ★★★
     // =================================================================
@@ -1855,9 +1987,10 @@ class PedestrianSimManager {
 
         // 收集所有標線斑馬線
         const allCrosswalks = [];
+        const calcCwFn = (typeof calculateCrosswalkLine === "function") ? calculateCrosswalkLine : ((typeof window !== "undefined" && window.calculateCrosswalkLine) ? window.calculateCrosswalkLine : ((typeof self !== "undefined" && self.calculateCrosswalkLine) ? self.calculateCrosswalkLine : null));
         this.network.roadMarkings.forEach(mark => {
             if (mark.type === 'crosswalk' || mark.type === 'diagonal_crosswalk') {
-                const lineData = (typeof window !== "undefined" && window.calculateCrosswalkLine) ? window.calculateCrosswalkLine(mark, this.network) : null;
+                const lineData = calcCwFn ? calcCwFn(mark, this.network) : null;
                 if (lineData) {
                     const midX = (lineData.p1.x + lineData.p2.x) / 2;
                     const midY = (lineData.p1.y + lineData.p2.y) / 2;
@@ -1906,7 +2039,8 @@ class PedestrianSimManager {
             });
 
             if (minDist <= 500) {
-                const existing = this.spawners.find(s => s.nodeId === item.nodeId && s.isLuti);
+                const spawnerNodeId = item.nodeId || `luti_node_${item.mark.id}`;
+                const existing = this.spawners.find(s => s.nodeId === spawnerNodeId && s.isLuti);
                 if (existing) {
                     if (!existing.crosswalks.some(c => c.id === item.cw.id)) {
                         existing.crosswalks.push(item.cw);
@@ -1917,7 +2051,7 @@ class PedestrianSimManager {
                 // 換算微觀小時發出人數 (保持微觀模擬自然流暢)
                 const baseVolume = Math.max(30, Math.min(220, Math.round(walkTrips * scaleFactor * (1 - minDist / 650) * 1.5)));
                 const spawner = {
-                    nodeId: item.nodeId || `luti_node_${item.mark.id}`,
+                    nodeId: spawnerNodeId,
                     isLuti: true,
                     nearestZoneId: nearestZone ? nearestZone.id : null,
                     distanceToZone: minDist,
@@ -2026,7 +2160,8 @@ class PedestrianSimManager {
                 }
 
                 if (belongsToNode) {
-                    const lineData = (typeof window !== "undefined" && window.calculateCrosswalkLine) ? window.calculateCrosswalkLine(mark, this.network) : null;
+                    const calcCwFn = (typeof calculateCrosswalkLine === "function") ? calculateCrosswalkLine : ((typeof window !== "undefined" && window.calculateCrosswalkLine) ? window.calculateCrosswalkLine : ((typeof self !== "undefined" && self.calculateCrosswalkLine) ? self.calculateCrosswalkLine : null));
+                    const lineData = calcCwFn ? calcCwFn(mark, this.network) : null;
                     if (lineData) {
                         let turnGroupId = null;
                         let invertSignal = false; // ★ 修正：將變數提早到最外層宣告，解決 ReferenceError
@@ -6677,7 +6812,9 @@ const SimCore = {
     PedestrianSimManager,
     Simulation,
     computeNetworkConflicts,
-    getUpstreamAllowedLanes
+    getUpstreamAllowedLanes,
+    calculateCrosswalkLine,
+    getPointAtDistanceAlongPath
 };
 
 if (typeof window !== 'undefined') {
@@ -6692,6 +6829,8 @@ if (typeof window !== 'undefined') {
     window.Simulation = Simulation;
     window.computeNetworkConflicts = computeNetworkConflicts;
     window.getUpstreamAllowedLanes = getUpstreamAllowedLanes;
+    window.calculateCrosswalkLine = calculateCrosswalkLine;
+    window.getPointAtDistanceAlongPath = getPointAtDistanceAlongPath;
 }
 if (typeof self !== 'undefined') {
     self.SimCore = SimCore;
@@ -6706,6 +6845,8 @@ if (typeof self !== 'undefined') {
     self.Simulation = Simulation;
     self.computeNetworkConflicts = computeNetworkConflicts;
     self.getUpstreamAllowedLanes = getUpstreamAllowedLanes;
+    self.calculateCrosswalkLine = calculateCrosswalkLine;
+    self.getPointAtDistanceAlongPath = getPointAtDistanceAlongPath;
 }
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = SimCore;

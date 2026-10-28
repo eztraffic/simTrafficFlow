@@ -791,6 +791,45 @@ document.addEventListener('DOMContentLoaded', () => {
                 const newMode = e.target.checked;
                 simBridge.useMultiThreading = newMode;
 
+                if (networkData) {
+                    if (isRunning) {
+                        isRunning = false;
+                        simBridge.pause();
+                    }
+                    if (simulation && simulation.pedManager) {
+                        if (typeof simulation.pedManager.clear3DMeshes === 'function') {
+                            simulation.pedManager.clear3DMeshes();
+                        }
+                        if (simulation.pedManager.group3D && scene) {
+                            scene.remove(simulation.pedManager.group3D);
+                        }
+                    }
+                    simBridge.reset();
+                    vehicleMeshes.forEach(mesh => scene.remove(mesh));
+                    vehicleMeshes.clear();
+
+                    if (newMode && window.location.protocol !== 'file:') {
+                        simBridge.loadNetwork(networkData);
+                        simulation = simBridge;
+                    } else {
+                        simulation = new Simulation(networkData);
+                    }
+                    window.simulation = simulation;
+
+                    if (scene && simulation && simulation.pedManager && simulation.pedManager.group3D) {
+                        const oldPedGroup = scene.getObjectByName("PedestriansGroup");
+                        if (oldPedGroup) scene.remove(oldPedGroup);
+                        scene.add(simulation.pedManager.group3D);
+                    }
+                    if (typeof optimizerController !== 'undefined') optimizerController.setSimulation(simulation);
+                    if (typeof lutiHudController !== 'undefined') lutiHudController.setSimulation(simulation);
+                    simTimeSpan.textContent = "0.00";
+                    lastLoggedIntegerTime = 0;
+                    updateButtonText();
+                    if (isDisplay2D) redraw2D();
+                    if (isDisplay3D) update3DScene();
+                }
+
                 if (newMode) {
                     if (workerText) workerText.textContent = '多執行緒 (Worker)';
                     alert('已勾選「多執行緒 Worker 模式」：IDM/MOBIL 物理運算獨立於背景執行緒，3D 渲染維持恆定 60 FPS！\n（若已載入路網，請重新點擊開始模擬以套用）');
@@ -5355,8 +5394,12 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // ★ 將行人 3D 群組加入場景
-        if (simulation && simulation.pedManager && simulation.pedManager.group3D) {
-            scene.add(simulation.pedManager.group3D);
+        if (scene) {
+            const oldPedGroup = scene.getObjectByName("PedestriansGroup");
+            if (oldPedGroup) scene.remove(oldPedGroup);
+            if (simulation && simulation.pedManager && simulation.pedManager.group3D) {
+                scene.add(simulation.pedManager.group3D);
+            }
         }
 
         update3DVisibility();
@@ -8258,6 +8301,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function stopSimulation() {
         isRunning = false;
+        if (simulation && simulation.pedManager) {
+            if (typeof simulation.pedManager.clear3DMeshes === 'function') {
+                simulation.pedManager.clear3DMeshes();
+            }
+            if (simulation.pedManager.group3D && scene) {
+                scene.remove(simulation.pedManager.group3D);
+            }
+        }
+        if (scene) {
+            const oldPedGroup = scene.getObjectByName("PedestriansGroup");
+            if (oldPedGroup) scene.remove(oldPedGroup);
+        }
         if (window.simBridge && simulation === simBridge) {
             simBridge.reset();
         }

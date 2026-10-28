@@ -17,6 +17,11 @@ class SimulationBridge {
         this.vehiclesByNumId = new Map();
         this.vehiclesByStrId = new Map();
 
+        // Active pedestrian manager & proxies
+        this.pedManager = null;
+        this.pedestriansByNumId = new Map();
+        this.pedestriansByStrId = new Map();
+
         // Traffic lights proxies
         this.trafficLights = [];
         this.trafficLightMap = new Map();
@@ -53,7 +58,7 @@ class SimulationBridge {
         return new Promise((resolve, reject) => {
             try {
                 // 1. Try direct Worker instantiation
-                const worker = new Worker('sim_worker.js');
+                const worker = new Worker('sim_worker.js?v=20261028_2');
                 worker.onerror = (err) => {
                     console.warn('[SimBridge] Direct Worker failed, trying Blob Worker fallback...', err);
                     this.initBlobWorker().then(resolve).catch(reject);
@@ -73,8 +78,8 @@ class SimulationBridge {
      */
     initBlobWorker() {
         return Promise.all([
-            fetch('sim_engine_core.js').then(r => r.text()),
-            fetch('sim_worker.js').then(r => r.text())
+            fetch('sim_engine_core.js?v=20261028_2').then(r => r.text()),
+            fetch('sim_worker.js?v=20261028_2').then(r => r.text())
         ]).then(([coreCode, workerCode]) => {
             const combinedCode = coreCode + '\n;\n' + workerCode;
             const blob = new Blob([combinedCode], { type: 'application/javascript' });
@@ -100,6 +105,9 @@ class SimulationBridge {
                 case 'INIT_SUCCESS':
                     this.isWorkerReady = true;
                     console.log('[SimBridge] Simulation Worker is READY.');
+                    if (this.isRunning) {
+                        worker.postMessage({ type: 'START' });
+                    }
                     break;
 
                 case 'FRAME_SNAPSHOT':
@@ -137,7 +145,15 @@ class SimulationBridge {
             links: netData.links,
             nodes: netData.nodes,
             spawners: netData.spawners,
-            trafficLights: netData.trafficLights,
+            trafficLights: netData.trafficLights ? netData.trafficLights.map(t => ({
+                nodeId: t.nodeId,
+                schedule: t.schedule,
+                lights: t.lights,
+                timeShift: t.timeShift || 0,
+                advancedConfig: t.advancedConfig,
+                allGroupIds: t.allGroupIds || [],
+                groupNameMap: t.groupNameMap || {}
+            })) : [],
             staticVehicles: netData.staticVehicles,
             speedMeters: netData.speedMeters ? netData.speedMeters.map(m => ({
                 id: m.id, linkId: m.linkId, name: m.name, position: m.position,
@@ -169,13 +185,22 @@ class SimulationBridge {
         this.vehicles = [];
         this.vehiclesByNumId.clear();
         this.vehiclesByStrId.clear();
+        this.pedestriansByNumId.clear();
+        this.pedestriansByStrId.clear();
         this.time = 0;
+
+        if (this.pedManager && typeof this.pedManager.clear3DMeshes === 'function') {
+            this.pedManager.clear3DMeshes();
+        }
 
         // Initialize Traffic Light proxies
         this.trafficLights = [];
         this.trafficLightMap.clear();
         if (netData.trafficLights) {
             netData.trafficLights.forEach(tflConfig => {
+                const initStates = (tflConfig.schedule && tflConfig.schedule.length > 0 && tflConfig.schedule[0].signals)
+                    ? { ...tflConfig.schedule[0].signals }
+                    : {};
                 const proxy = {
                     nodeId: tflConfig.nodeId,
                     schedule: tflConfig.schedule || [],
@@ -185,7 +210,7 @@ class SimulationBridge {
                     groupNameMap: tflConfig.groupNameMap || {},
                     timeShift: tflConfig.timeShift || 0,
                     cycleDuration: (tflConfig.schedule || []).reduce((sum, p) => sum + p.duration, 0),
-                    turnGroupStates: {},
+                    turnGroupStates: initStates,
                     getSignalForTurnGroup: (turnGroupId) => {
                         const actualId = proxy.groupNameMap[turnGroupId] || turnGroupId;
                         return proxy.turnGroupStates[actualId] || 'Green';
@@ -367,6 +392,18 @@ class SimulationBridge {
         this.sectionMeters = (netData.sectionMeters || []).map(m => ({ ...m, completedVehicles: [], maxAvgSpeed: 0, lastAvgSpeed: null }));
         this.spawners = netData.spawners || [];
 
+        // Initialize Pedestrian proxy manager for 3D and 2D rendering
+        if (typeof window !== 'undefined' && window.PedestrianManagerSim) {
+            const prevGroup = (this.pedManager && this.pedManager.group3D) ? this.pedManager.group3D : null;
+            this.pedManager = new window.PedestrianManagerSim(this, netData);
+            this.pedManager.pedestrians = [];
+            if (prevGroup && prevGroup.parent && this.pedManager.group3D) {
+                const parentScene = prevGroup.parent;
+                parentScene.remove(prevGroup);
+                parentScene.add(this.pedManager.group3D);
+            }
+        }
+
         if (this.useMultiThreading) {
             return this.initWorker().then(worker => {
                 const cleanData = this.sanitizeNetworkData(netData);
@@ -395,6 +432,12 @@ class SimulationBridge {
             this.vehicles = this.localSimulation.vehicles;
             this.trafficLights = this.localSimulation.trafficLights;
             this.lutiEngine = this.localSimulation.lutiEngine;
+            if (this.localSimulation.pedManager) {
+                if (this.pedManager && this.pedManager.group3D && this.pedManager.group3D.parent) {
+                    this.localSimulation.pedManager.group3D = this.pedManager.group3D;
+                }
+                this.pedManager = this.localSimulation.pedManager;
+            }
             if (typeof window !== 'undefined') {
                 window.simulation = this.localSimulation;
                 window.lutiEngine = this.localSimulation.lutiEngine;
@@ -416,6 +459,9 @@ class SimulationBridge {
             this.trafficLights = this.localSimulation.trafficLights;
             if (this.localSimulation.lutiEngine) {
                 this.lutiEngine = this.localSimulation.lutiEngine;
+            }
+            if (this.localSimulation.pedManager) {
+                this.pedManager = this.localSimulation.pedManager;
             }
         }
     }
@@ -505,6 +551,76 @@ class SimulationBridge {
                 const tfl = this.trafficLightMap.get(nodeId);
                 if (tfl) {
                     tfl.turnGroupStates = groupStates;
+                }
+            }
+        }
+
+        // 4.5 Update pedestrians and 3D walking animations from Worker snapshot
+        if (this.pedManager) {
+            if (msg.removedPedestrianIds && msg.removedPedestrianIds.length > 0) {
+                for (let i = 0; i < msg.removedPedestrianIds.length; i++) {
+                    const pid = msg.removedPedestrianIds[i];
+                    const pProxy = this.pedestriansByStrId.get(pid);
+                    if (pProxy) {
+                        if (typeof this.pedManager.removePedestrianMesh === 'function') {
+                            this.pedManager.removePedestrianMesh(pProxy);
+                        } else if (pProxy.mesh && this.pedManager.group3D) {
+                            this.pedManager.group3D.remove(pProxy.mesh);
+                        }
+                        this.pedestriansByNumId.delete(pProxy.numId);
+                        this.pedestriansByStrId.delete(pid);
+                    }
+                }
+                this.pedManager.pedestrians = Array.from(this.pedestriansByStrId.values());
+            }
+
+            if (msg.newPedestrians && msg.newPedestrians.length > 0) {
+                for (let i = 0; i < msg.newPedestrians.length; i++) {
+                    const np = msg.newPedestrians[i];
+                    if (!this.pedestriansByStrId.has(np.id)) {
+                        const pProxy = {
+                            id: np.id,
+                            numId: np.numId,
+                            isMale: np.isMale,
+                            height: np.height || 1.7,
+                            shirtColor: np.shirtColor,
+                            pantsColor: np.pantsColor,
+                            skinColor: np.skinColor,
+                            hairColor: np.hairColor,
+                            shoeColor: np.shoeColor,
+                            x: 0,
+                            y: 0,
+                            angle: 0,
+                            speed: 0,
+                            state: 'WAITING',
+                            walkCycle: 0,
+                            mesh: null
+                        };
+                        this.pedestriansByNumId.set(np.numId, pProxy);
+                        this.pedestriansByStrId.set(np.id, pProxy);
+                        this.pedManager.pedestrians.push(pProxy);
+                    }
+                }
+            }
+
+            if (pedBuffer && pedCount > 0) {
+                for (let i = 0; i < pedCount; i++) {
+                    const base = i * 7;
+                    const numId = pedBuffer[base];
+                    const pProxy = this.pedestriansByNumId.get(numId);
+                    if (pProxy) {
+                        pProxy.x = pedBuffer[base + 1];
+                        pProxy.y = pedBuffer[base + 2];
+                        pProxy.angle = pedBuffer[base + 3];
+                        pProxy.speed = pedBuffer[base + 4];
+                        const stateCode = pedBuffer[base + 5];
+                        pProxy.state = stateCode === 1 ? 'CROSSING' : (stateCode === 2 ? 'WAITING_AT_ISLAND' : (stateCode === 3 ? 'FINISHED' : 'WAITING'));
+                        pProxy.walkCycle = pedBuffer[base + 6];
+
+                        if (typeof this.pedManager.update3DMesh === 'function') {
+                            this.pedManager.update3DMesh(pProxy);
+                        }
+                    }
                 }
             }
         }
@@ -658,6 +774,14 @@ class SimulationBridge {
         this.vehicles = [];
         this.vehiclesByNumId.clear();
         this.vehiclesByStrId.clear();
+        if (this.pedManager) {
+            if (typeof this.pedManager.clear3DMeshes === 'function') {
+                this.pedManager.clear3DMeshes();
+            }
+            this.pedManager.pedestrians = [];
+        }
+        this.pedestriansByNumId.clear();
+        this.pedestriansByStrId.clear();
         if (this.useMultiThreading && this.worker) {
             this.worker.postMessage({ type: 'RESET' });
         }

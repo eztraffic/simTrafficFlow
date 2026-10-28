@@ -264,7 +264,8 @@ class PedestrianSimManager {
             });
 
             if (minDist <= 500) {
-                const existing = this.spawners.find(s => s.nodeId === item.nodeId && s.isLuti);
+                const spawnerNodeId = item.nodeId || `luti_node_${item.mark.id}`;
+                const existing = this.spawners.find(s => s.nodeId === spawnerNodeId && s.isLuti);
                 if (existing) {
                     if (!existing.crosswalks.some(c => c.id === item.cw.id)) {
                         existing.crosswalks.push(item.cw);
@@ -275,7 +276,7 @@ class PedestrianSimManager {
                 // 換算微觀小時發出人數 (保持微觀模擬自然流暢)
                 const baseVolume = Math.max(30, Math.min(220, Math.round(walkTrips * scaleFactor * (1 - minDist / 650) * 1.5)));
                 const spawner = {
-                    nodeId: item.nodeId || `luti_node_${item.mark.id}`,
+                    nodeId: spawnerNodeId,
                     isLuti: true,
                     nearestZoneId: nearestZone ? nearestZone.id : null,
                     distanceToZone: minDist,
@@ -320,8 +321,8 @@ class PedestrianSimManager {
             sp.interval = 3600 / Math.max(1, targetVol);
         });
 
-        // 若當前行人過少且切換時段，立即觸發首發行人提供即時視覺回饋
-        if (this.spawners.some(s => s.isLuti) && this.pedestrians.length < 3) {
+        // 若當前行人過少且切換時段，立即觸發首發行人提供即時視覺回饋 (多執行緒模式下由 Worker 負責生成並同步)
+        if (!(this.simulation && this.simulation.useMultiThreading) && this.spawners.some(s => s.isLuti) && this.pedestrians.length < 3) {
             const sp = this.spawners.find(s => s.isLuti);
             if (sp && sp.crosswalks.length > 0) {
                 const cw = sp.crosswalks[0];
@@ -557,23 +558,50 @@ class PedestrianSimManager {
         // 3. 清理已完成的行人與其 3D 資源
         this.pedestrians = this.pedestrians.filter(ped => {
             if (ped.state === 'FINISHED') {
-                if (ped.mesh) {
-                    if (this.group3D) this.group3D.remove(ped.mesh);
-                    ped.mesh.traverse(child => {
-                        if (child.isMesh) {
-                            if (child.geometry) child.geometry.dispose();
-                            if (child.material) {
-                                child.material.disposed = true;
-                                if (Array.isArray(child.material)) child.material.forEach(m => m.dispose());
-                                else child.material.dispose();
-                            }
-                        }
-                    });
-                }
+                this.removePedestrianMesh(ped);
                 return false;
             }
             return true;
         });
+    }
+
+    removePedestrianMesh(ped) {
+        if (ped && ped.mesh) {
+            if (this.group3D) this.group3D.remove(ped.mesh);
+            ped.mesh.traverse(child => {
+                if (child.isMesh) {
+                    if (child.geometry) child.geometry.dispose();
+                    if (child.material) {
+                        child.material.disposed = true;
+                        if (Array.isArray(child.material)) child.material.forEach(m => m.dispose());
+                        else child.material.dispose();
+                    }
+                }
+            });
+            ped.mesh = null;
+        }
+    }
+
+    clear3DMeshes() {
+        if (this.pedestrians) {
+            this.pedestrians.forEach(ped => this.removePedestrianMesh(ped));
+        }
+        if (this.group3D) {
+            while (this.group3D.children.length > 0) {
+                const child = this.group3D.children[0];
+                this.group3D.remove(child);
+                child.traverse(c => {
+                    if (c.isMesh) {
+                        if (c.geometry) c.geometry.dispose();
+                        if (c.material) {
+                            c.material.disposed = true;
+                            if (Array.isArray(c.material)) c.material.forEach(m => m.dispose());
+                            else c.material.dispose();
+                        }
+                    }
+                });
+            }
+        }
     }
 
     draw2D(ctx, worldToScreen2D, scale) {
