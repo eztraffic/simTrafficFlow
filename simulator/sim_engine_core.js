@@ -2833,11 +2833,33 @@ if (typeof window !== 'undefined') window.PedestrianManagerSim = PedestrianSimMa
                 this.targetLateralOffset = 0; // 汽車預設維持置中
             }
 
+            // 更新出路口後的橫向包絡線平滑收斂 (僅在車輛前進時收斂，防止靜止時改變邊界造成橫移)
+            if (this.state === 'onLink' && this.postIntersectionEnvelope > 0) {
+                if (this.speed > 0.05) {
+                    this.postIntersectionEnvelope = Math.max(0, this.postIntersectionEnvelope - dt * (this.speed * 0.45 + 0.25));
+                }
+            } else if (this.state !== 'onLink') {
+                this.postIntersectionEnvelope = 0;
+            }
+
+            // 更新路口防鎖死計時器 (排除正常兩段式待轉停等)
+            if (this.state === 'inIntersection' && (!this.twoStageState || this.twoStageState === 'none')) {
+                if (this.speed < 0.3) {
+                    this.intersectionStuckTimer = (this.intersectionStuckTimer || 0) + dt;
+                } else if (this.speed > 1.5) {
+                    this.intersectionStuckTimer = Math.max(0, (this.intersectionStuckTimer || 0) - dt * 2.0);
+                }
+            } else {
+                this.intersectionStuckTimer = 0;
+            }
+
             // ★★★ [修正 1] 如果正在換道，應以當前「真實偏移量」作為避障雷達的偵測基準
             let originalTarget = this.laneChangeState ? this.lateralOffset : this.targetLateralOffset;
 
             this.coneForcedLaneChange = false;
             this.coneBlockingGap = Infinity;
+            this.coneSpeedLimit = Infinity;
+            this.isDodgingCone = false;
             // =================================================================
             // ★★★[終極修正] 槽化線嚴格避障與防穿模 (基於未來軌跡多邊形碰撞) ★★★
             // =================================================================
@@ -2856,10 +2878,8 @@ if (typeof window !== 'undefined') window.PedestrianManagerSim = PedestrianSimMa
                         if (checkDist <= this.currentPathLength) {
                             if (this.state === 'inIntersection' && this.currentPath && this.currentPath.length >= 4) {
                                 const t = checkDist / this.currentPathLength;
-                                const pt = Geom.Bezier.getPoint(t, this.currentPath[0], this.currentPath[1], this.currentPath[2], this.currentPath[3]);
-                                ptX = pt.x; ptY = pt.y;
-                                const tg = Geom.Bezier.getTangent(t, this.currentPath[0], this.currentPath[1], this.currentPath[2], this.currentPath[3]);
-                                ptAngle = Math.atan2(tg.y, tg.x);
+                                const mData = this.getMorphedBezierData(t);
+                                ptX = mData.x; ptY = mData.y; ptAngle = mData.angle;
                             } else if (this.currentPath && this.currentPath.length >= 2) {
                                 const posData = this.getPositionOnPath(this.currentPath, checkDist);
                                 if (posData) { ptX = posData.x; ptY = posData.y; ptAngle = posData.angle; }
@@ -2921,25 +2941,25 @@ if (typeof window !== 'undefined') window.PedestrianManagerSim = PedestrianSimMa
             // 輔助函式：合併重疊的障礙物區間 (Merge Intervals)
             const mergeIntervals = (intervals) => {
                 if (intervals.length === 0) return [];
-                intervals.sort((a, b) => a.min - b.min);
-                const merged = [intervals[0]];
-                for (let i = 1; i < intervals.length; i++) {
+                const sorted = intervals.slice().sort((a, b) => a.min - b.min);
+                const merged = [{ ...sorted[0] }];
+                for (let i = 1; i < sorted.length; i++) {
                     const last = merged[merged.length - 1];
-                    const curr = intervals[i];
+                    const curr = sorted[i];
                     if (curr.min <= last.max) {
                         last.max = Math.max(last.max, curr.max);
                         last.fwdDist = Math.min(last.fwdDist, curr.fwdDist);
                         last.physicalMin = Math.min(last.physicalMin, curr.physicalMin);
                         last.physicalMax = Math.max(last.physicalMax, curr.physicalMax);
                     } else {
-                        merged.push(curr);
+                        merged.push({ ...curr });
                     }
                 }
                 return merged;
             };
 
             // -------------------------------------------------------------
-            // 情境 1：直行路段 (On Link)
+            // 情境 1：直行路段 (On Link) + 入路口前跨界預判
             // -------------------------------------------------------------
             if (this.state === 'onLink') {
                 const link = network.links[this.currentLinkId];
@@ -2948,7 +2968,7 @@ if (typeof window !== 'undefined') window.PedestrianManagerSim = PedestrianSimMa
                     const myHalfWidth = this.width / 2;
                     const coneRadius = 0.25;
 
-                    const racingBuffer = this.isMotorcycle ? 0.4 : 0.8;
+                    const racingBuffer = this.isMotorcycle ? 0.35 : 0.65;
                     const requiredClearance = myHalfWidth + coneRadius + racingBuffer;
                     const physicalClearance = myHalfWidth + coneRadius + 0.15;
 
@@ -2985,7 +3005,8 @@ if (typeof window !== 'undefined') window.PedestrianManagerSim = PedestrianSimMa
                         const blockingInterval = mergedIntervals.find(inv => originalTarget >= inv.min && originalTarget <= inv.max);
 
                         if (blockingInterval) {
-                            const overshoot = this.isMotorcycle ? 0.2 : 0.4;
+                            this.isDodgingCone = true;
+                            const overshoot = this.isMotorcycle ? 0.2 : 0.35;
                             const leftOffset = blockingInterval.min - overshoot;
                             const rightOffset = blockingInterval.max + overshoot;
                             const maxAllowedOffset = (laneWidth / 2) - myHalfWidth + 0.4;
@@ -3022,15 +3043,22 @@ if (typeof window !== 'undefined') window.PedestrianManagerSim = PedestrianSimMa
                                 if (needsBrake) {
                                     if (!this.isMotorcycle) this.coneForcedLaneChange = true;
 
-                                    // ★★★ [修正 2] 移除 !this.laneChangeState 限制，換道中若被擋住也要強制煞車！
-                                    const stopGap = blockingInterval.fwdDist - (this.length / 2) - coneRadius - 1.0;
-                                    this.coneBlockingGap = Math.min(this.coneBlockingGap, Math.max(0.1, stopGap));
+                                    if (isImpassable) {
+                                        const stopGap = blockingInterval.fwdDist - (this.length / 2) - coneRadius - 1.0;
+                                        this.coneBlockingGap = Math.min(this.coneBlockingGap, Math.max(0.1, stopGap));
 
-                                    // ★★★ [修正 3] 若正在換道卻發現撞上實體障礙(槽化線)，強制取消換道並退回
-                                    if (this.laneChangeState && stopGap < 5.0) {
-                                        this.laneChangeState = null;
-                                        this.laneChangeCooldown = 2.0;
-                                        this.targetLateralOffset = 0; // 回正
+                                        if (this.laneChangeState && stopGap < 5.0) {
+                                            this.laneChangeState = null;
+                                            this.laneChangeCooldown = 2.0;
+                                            this.targetLateralOffset = 0;
+                                        }
+                                    } else {
+                                        // 可從車道內繞過時：採用平滑減速控速，避免完全定桿卡死
+                                        const availFwd = Math.max(0.5, blockingInterval.fwdDist - (this.length / 2) - coneRadius);
+                                        const distToSlide = Math.max(0.1, Math.abs(clampedOffset - this.lateralOffset));
+                                        const latRate = this.isMotorcycle ? 2.6 : 1.8;
+                                        const desiredSpeed = Math.max(2.0, Math.min(this.maxSpeed, availFwd / (distToSlide / latRate + 0.3)));
+                                        this.coneSpeedLimit = Math.min(this.coneSpeedLimit, desiredSpeed);
                                     }
                                 }
                             }
@@ -3043,6 +3071,7 @@ if (typeof window !== 'undefined') window.PedestrianManagerSim = PedestrianSimMa
                                 (this.lateralOffset <= inv.max && originalTarget >= inv.min)
                             );
                             if (pathBlocked && pathBlocked.fwdDist > -1.0) {
+                                this.isDodgingCone = true;
                                 if (this.lateralOffset > pathBlocked.max) {
                                     this.targetLateralOffset = pathBlocked.max + 0.1;
                                 } else if (this.lateralOffset < pathBlocked.min) {
@@ -3052,158 +3081,331 @@ if (typeof window !== 'undefined') window.PedestrianManagerSim = PedestrianSimMa
                         }
                     }
                 }
+
+                // ★★★ [新增] 入路口前跨界預判：掃描即將進入之貝茲軌跡前段的自由交通錐 ★★★
+                const distToLinkEnd = this.currentPathLength - this.distanceOnPath;
+                const freeConesPre = this.getExpandedFreeCones(network);
+                if (link && distToLinkEnd < 24.0 && freeConesPre.length > 0 && !this.isPreparingForTwoStageTurn(network)) {
+                    const nextLinkIdx = this.currentLinkIndex + 1;
+                    if (nextLinkIdx < this.route.length) {
+                        const nextLinkId = this.route[nextLinkIdx];
+                        const destNode = network.nodes[link.destination];
+                        let upcomingTrans = null;
+                        if (destNode && destNode.transitions) {
+                            upcomingTrans = destNode.transitions.find(t =>
+                                t.sourceLinkId === this.currentLinkId &&
+                                t.sourceLaneIndex === this.currentLaneIndex &&
+                                t.destLinkId === nextLinkId
+                            ) || destNode.transitions.find(t =>
+                                t.sourceLinkId === this.currentLinkId &&
+                                t.destLinkId === nextLinkId
+                            );
+                        }
+                        if (upcomingTrans && upcomingTrans.bezier && upcomingTrans.bezier.points && upcomingTrans.bezier.points.length >= 4) {
+                            const bPts = upcomingTrans.bezier.points;
+                            const bLen = Math.max(1.0, upcomingTrans.bezier.length || 15.0);
+                            const scanInTrans = Math.min(bLen, 14.0);
+                            const myHalfWidth = this.width / 2;
+                            const coneRadius = 0.25;
+                            const reqClear = myHalfWidth + coneRadius + (this.isMotorcycle ? 0.30 : 0.45);
+                            const physClear = myHalfWidth + coneRadius + 0.12;
+                            const laneWidth = link.lanes[this.currentLaneIndex] ? link.lanes[this.currentLaneIndex].width : 3.5;
+                            const maxPreBias = Math.max(0, (laneWidth / 2) - myHalfWidth - 0.2);
+
+                            const preIntervals = [];
+                            for (const cone of freeConesPre) {
+                                const cRadius = cone.radius || coneRadius;
+                                const dx = cone.x - this.x;
+                                const dy = cone.y - this.y;
+                                if (dx * dx + dy * dy > 30 * 30) continue;
+
+                                let minDistSq = Infinity;
+                                let bestS = 0;
+                                let bestSign = 0;
+                                for (let s = 0; s <= scanInTrans; s += 0.5) {
+                                    const t = s / bLen;
+                                    const pt = Geom.Bezier.getPoint(t, bPts[0], bPts[1], bPts[2], bPts[3]);
+                                    const cDx = cone.x - pt.x;
+                                    const cDy = cone.y - pt.y;
+                                    const dSq = cDx * cDx + cDy * cDy;
+                                    if (dSq < minDistSq) {
+                                        minDistSq = dSq;
+                                        bestS = s;
+                                        const tg = Geom.Bezier.getTangent(t, bPts[0], bPts[1], bPts[2], bPts[3]);
+                                        const tgLen = Math.hypot(tg.x, tg.y);
+                                        if (tgLen > 0) {
+                                            bestSign = cDx * (-tg.y / tgLen) + cDy * (tg.x / tgLen);
+                                        }
+                                    }
+                                }
+                                if (minDistSq < 16.0) {
+                                    const effSign = bestSign < 0 ? -1 : 1;
+                                    const sideDist = effSign * Math.sqrt(minDistSq);
+                                    const totalFwd = distToLinkEnd + bestS;
+                                    const adjReq = reqClear - coneRadius + cRadius;
+                                    const adjPhys = physClear - coneRadius + cRadius;
+                                    preIntervals.push({
+                                        min: sideDist - adjReq,
+                                        max: sideDist + adjReq,
+                                        fwdDist: totalFwd,
+                                        physicalMin: sideDist - adjPhys,
+                                        physicalMax: sideDist + adjPhys
+                                    });
+                                }
+                            }
+                            if (preIntervals.length > 0) {
+                                const mergedPre = mergeIntervals(preIntervals);
+                                const blockPre = mergedPre.find(inv => originalTarget >= inv.min && originalTarget <= inv.max);
+                                if (blockPre) {
+                                    this.isDodgingCone = true;
+                                    const leftCand = blockPre.min - 0.2;
+                                    const rightCand = blockPre.max + 0.2;
+                                    const costL = Math.abs(leftCand - this.lateralOffset) + (Math.abs(leftCand) > 3.5 ? 500 : 0);
+                                    const costR = Math.abs(rightCand - this.lateralOffset) + (Math.abs(rightCand) > 3.5 ? 500 : 0);
+                                    const desiredPre = this.pickDodgeSideWithHysteresis(costL, costR, leftCand, rightCand);
+                                    // 在車道允許範圍內提前預偏，讓進入路口時已具備有利角度與偏移
+                                    if (!this.coneForcedLaneChange && !this.laneChangeState) {
+                                        this.targetLateralOffset = Math.max(-maxPreBias, Math.min(maxPreBias, desiredPre));
+                                    }
+                                    // 接近路口入口的障礙錐時，提前平滑降速至安全過彎閃避速度
+                                    if (blockPre.fwdDist < 16.0) {
+                                        const entrySafeSpeed = this.isMotorcycle ? 5.5 : 4.2;
+                                        const interp = Math.max(0, Math.min(1, (blockPre.fwdDist - 3.0) / 13.0));
+                                        const allowedSpd = entrySafeSpeed + (this.maxSpeed - entrySafeSpeed) * interp;
+                                        this.coneSpeedLimit = Math.min(this.coneSpeedLimit, allowedSpd);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
             // -------------------------------------------------------------
-            // 情境 2：路口內部 (In Intersection) - 貝茲曲線跟隨
+            // 情境 2：路口內部 (In Intersection) - 變形貝茲曲線精準跟隨與真實避障
             // -------------------------------------------------------------
             else if (this.state === 'inIntersection' && this.currentPath && this.currentPath.length >= 4) {
-                const freeCones = network.freeRoadSigns ? network.freeRoadSigns.filter(s => s.signType === 'traffic_cone') : [];
+                const freeCones = this.getExpandedFreeCones(network);
 
                 if (freeCones.length > 0) {
                     const myHalfWidth = this.width / 2;
                     const coneRadius = 0.25;
 
-                    const racingBuffer = this.isMotorcycle ? 0.5 : 1.0;
+                    // ★ 真實化安全間距：取代過大的 1.0m + 0.6m，避免動輒超界觸發死鎖
+                    const racingBuffer = this.isMotorcycle ? 0.30 : 0.45;
                     const requiredClearance = myHalfWidth + coneRadius + racingBuffer;
-                    const physicalClearance = myHalfWidth + coneRadius + 0.15;
+                    const physicalClearance = myHalfWidth + coneRadius + 0.12;
 
-                    const lookaheadTime = this.isMotorcycle ? 2.0 : 3.0;
-                    const dynamicLookahead = Math.max(15.0, this.speed * lookaheadTime);
+                    const lookaheadTime = this.isMotorcycle ? 2.2 : 2.8;
+                    const dynamicLookahead = Math.max(16.0, this.speed * lookaheadTime);
 
-                    let isDodging = false;
-
-                    // [改善 1] 縮小步距，提高貝茲曲線投影精度，消弭目標跳動
-                    const step = 0.5;
+                    const step = 0.4;
                     const distToEnd = this.currentPathLength - this.distanceOnPath;
                     const searchEnd = Math.min(this.currentPathLength, this.distanceOnPath + dynamicLookahead);
-
-                    // [改善 2] 搜尋起點稍微往後退，避免車輛剛越過交通錐瞬間，投影點被迫往前跳躍
-                    const searchStart = Math.max(0, this.distanceOnPath - 3.0);
+                    const rearBound = -(this.length / 2) - coneRadius - 0.4;
+                    const searchStart = Math.max(0, this.distanceOnPath + rearBound - 0.5);
 
                     let rawIntervals = [];
+                    const maxSearchRadSq = (dynamicLookahead + 6.0) ** 2;
 
                     for (const cone of freeCones) {
                         const dx = cone.x - this.x;
                         const dy = cone.y - this.y;
-                        if (dx * dx + dy * dy > dynamicLookahead * dynamicLookahead) continue;
+                        if (dx * dx + dy * dy > maxSearchRadSq) continue;
 
+                        const cRadius = cone.radius || coneRadius;
                         let minConeDistSq = Infinity;
                         let bestS = searchStart;
-                        let bestSign = 0;
 
+                        // 1. 粗搜尋 (步長 0.4m)，使用真實變形貝茲曲線 (Morphed Bezier)
                         for (let s = searchStart; s <= searchEnd; s += step) {
                             const t = s / this.currentPathLength;
-                            const pt = Geom.Bezier.getPoint(t, this.currentPath[0], this.currentPath[1], this.currentPath[2], this.currentPath[3]);
-
-                            const cDx = cone.x - pt.x;
-                            const cDy = cone.y - pt.y;
+                            const mPt = this.getMorphedBezierData(t);
+                            const cDx = cone.x - mPt.x;
+                            const cDy = cone.y - mPt.y;
                             const cDistSq = cDx * cDx + cDy * cDy;
 
                             if (cDistSq < minConeDistSq) {
                                 minConeDistSq = cDistSq;
                                 bestS = s;
-                                const tg = Geom.Bezier.getTangent(t, this.currentPath[0], this.currentPath[1], this.currentPath[2], this.currentPath[3]);
-                                const tgLen = Math.hypot(tg.x, tg.y);
-                                if (tgLen > 0) {
-                                    const normalX = -tg.y / tgLen;
-                                    const normalY = tg.x / tgLen;
-                                    bestSign = (cDx * normalX + cDy * normalY);
-                                }
+                            }
+                        }
+
+                        // 2. 局部精細搜尋 (步長 0.08m)，徹底消除曲線投影跳動
+                        const fineStart = Math.max(searchStart, bestS - step);
+                        const fineEnd = Math.min(searchEnd, bestS + step);
+                        let bestSign = 0;
+                        for (let s = fineStart; s <= fineEnd; s += 0.08) {
+                            const t = s / this.currentPathLength;
+                            const mPt = this.getMorphedBezierData(t);
+                            const cDx = cone.x - mPt.x;
+                            const cDy = cone.y - mPt.y;
+                            const cDistSq = cDx * cDx + cDy * cDy;
+                            if (cDistSq <= minConeDistSq) {
+                                minConeDistSq = cDistSq;
+                                bestS = s;
+                                const normalX = -mPt.ty;
+                                const normalY = mPt.tx;
+                                bestSign = cDx * normalX + cDy * normalY;
                             }
                         }
 
                         const fwdDist = bestS - this.distanceOnPath;
-                        // [改善 3] 放寬後方判定範圍至 -3.0，確保車尾完全通過前，避障目標不會突變消失
-                        // [改善 3] 放寬後方判定範圍至 -3.0，確保車尾完全通過前，避障目標不會突變消失
-                        if (fwdDist > -3.0 && fwdDist < dynamicLookahead) {
-                            const effectiveSign = bestSign < 0 ? -1 : 1; // 避免 sign(0) 導致歸零
+                        if (fwdDist > rearBound && fwdDist < dynamicLookahead && minConeDistSq < 36.0) {
+                            const effectiveSign = bestSign < 0 ? -1 : 1;
                             const sideDist = effectiveSign * Math.sqrt(minConeDistSq);
+                            const adjReq = requiredClearance - coneRadius + cRadius;
+                            const adjPhys = physicalClearance - coneRadius + cRadius;
                             rawIntervals.push({
-                                min: sideDist - requiredClearance,
-                                max: sideDist + requiredClearance,
+                                min: sideDist - adjReq,
+                                max: sideDist + adjReq,
                                 fwdDist: fwdDist,
-                                physicalMin: sideDist - physicalClearance,
-                                physicalMax: sideDist + physicalClearance
+                                physicalMin: sideDist - adjPhys,
+                                physicalMax: sideDist + adjPhys,
+                                sideDist: sideDist
                             });
                         }
                     }
 
-                    const mergedIntervals = mergeIntervals(rawIntervals);
+                    // ★ 縱向分群視窗過濾：避免遠處彎道上的交通錐與眼前的交通錐錯誤融合成「幽靈隱形牆」
+                    let activeIntervals = rawIntervals;
+                    if (rawIntervals.length > 1) {
+                        rawIntervals.sort((a, b) => a.fwdDist - b.fwdDist);
+                        const nearestBlocking = rawIntervals.find(inv =>
+                            (originalTarget >= inv.min && originalTarget <= inv.max) ||
+                            (this.lateralOffset >= inv.min && this.lateralOffset <= inv.max)
+                        ) || rawIntervals[0];
+                        const horizonMaxFwd = Math.max(nearestBlocking.fwdDist, 0) + this.length + 4.5;
+                        activeIntervals = rawIntervals.filter(inv => inv.fwdDist <= horizonMaxFwd);
+                    }
+
+                    const mergedIntervals = mergeIntervals(activeIntervals);
 
                     if (mergedIntervals.length > 0) {
                         const blockingInterval = mergedIntervals.find(inv => originalTarget >= inv.min && originalTarget <= inv.max);
 
                         if (blockingInterval) {
-                            isDodging = true;
+                            this.isDodgingCone = true;
 
-                            const overshoot = this.isMotorcycle ? 0.3 : 0.6;
-                            const leftOffset = blockingInterval.min - overshoot;
-                            const rightOffset = blockingInterval.max + overshoot;
-                            const limit = this.isMotorcycle ? 2.5 : 3.5;
+                            const overshoot = this.isMotorcycle ? 0.15 : 0.25;
+                            const limit = this.isMotorcycle ? 3.0 : (this.width > 2.2 ? 4.5 : 3.8);
 
-                            // ★ 建立路口動態代價系統：綜合評估待轉區與待轉車輛
+                            // 預先計算障礙處的基準曲線點與單位法向量，供候選點世界座標評估
+                            const evalS = Math.min(this.currentPathLength, Math.max(this.distanceOnPath, this.distanceOnPath + Math.max(0, blockingInterval.fwdDist)));
+                            const evalCurve = this.getMorphedBezierData(evalS / this.currentPathLength);
+                            const evalNx = -Math.sin(evalCurve.angle);
+                            const evalNy = Math.cos(evalCurve.angle);
+
+                            // ★ 建立路口多維度動態代價系統：綜合評估錐群、待轉區、鄰近行進車輛與槽化線
                             const evaluateCost = (offset) => {
-                                let cost = Math.abs(offset - this.lateralOffset);
-                                if (Math.abs(offset) > limit) cost += 1000;
-                                if (mergedIntervals.some(inv => offset > inv.physicalMin && offset < inv.physicalMax)) cost += 5000;
+                                let cost = Math.abs(offset - this.lateralOffset) * 1.15 + Math.abs(offset - originalTarget) * 0.3;
+                                if (Math.abs(offset) > limit) {
+                                    cost += 1000 + (Math.abs(offset) - limit) * 600;
+                                }
+                                // 實體碰撞重罰 vs 舒適緩衝輕罰 (允許極窄空間下選擇緊湊通過而非死鎖)
+                                for (const inv of mergedIntervals) {
+                                    if (offset > inv.physicalMin && offset < inv.physicalMax) {
+                                        const depth = Math.min(offset - inv.physicalMin, inv.physicalMax - offset);
+                                        cost += 8000 + depth * 2000;
+                                    } else if (offset > inv.min && offset < inv.max) {
+                                        cost += 120;
+                                    }
+                                }
 
                                 // 預判車輛偏移後的真實世界座標
-                                const nx = -Math.sin(this.angle);
-                                const ny = Math.cos(this.angle);
-                                const projX = this.x + nx * (offset - this.lateralOffset);
-                                const projY = this.y + ny * (offset - this.lateralOffset);
+                                const projX = evalCurve.x + evalNx * offset;
+                                const projY = evalCurve.y + evalNy * offset;
 
-                                // 懲罰：閃避路線太靠近待轉格子
+                                // 懲罰 1：閃避路線進入槽化線多邊形
+                                if (network.channelizationPolygons) {
+                                    for (const poly of network.channelizationPolygons) {
+                                        if (Geom.Utils.isPointInPolygon({ x: projX, y: projY }, poly)) {
+                                            cost += 3500;
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                // 懲罰 2：閃避路線太靠近待轉格子
                                 if (network.twoStageBoxMap) {
                                     for (const nodeId in network.twoStageBoxMap) {
                                         for (const box of network.twoStageBoxMap[nodeId]) {
                                             const distSq = (projX - box.x) ** 2 + (projY - box.y) ** 2;
-                                            if (distSq < 25) cost += (25 - Math.sqrt(distSq)) * 20;
+                                            if (distSq < 20) cost += (Math.sqrt(20) - Math.sqrt(distSq)) * 25;
                                         }
                                     }
                                 }
-                                // 懲罰：閃避路線太靠近正在待轉的機車
+
+                                // 懲罰 3：閃避路線太靠近待轉機車或路口內鄰近行進車輛
                                 for (const other of allVehicles) {
                                     if (other.id === this.id) continue;
                                     if (other.twoStageState === 'waiting' || other.twoStageState === 'moving_to_box') {
                                         const distSq = (projX - other.x) ** 2 + (projY - other.y) ** 2;
-                                        if (distSq < 25) cost += (25 - Math.sqrt(distSq)) * 30; // 5米半徑雷達
+                                        if (distSq < 25) cost += (5.0 - Math.sqrt(distSq)) * 35;
+                                    } else if (other.state === 'inIntersection') {
+                                        const distSq = (projX - other.x) ** 2 + (projY - other.y) ** 2;
+                                        const safeSide = (this.width + other.width) / 2 + 1.2;
+                                        if (distSq < safeSide * safeSide) {
+                                            cost += (safeSide - Math.sqrt(distSq)) * 45;
+                                        }
                                     }
                                 }
                                 return cost;
                             };
 
-                            const costLeft = evaluateCost(leftOffset);
-                            const costRight = evaluateCost(rightOffset);
-                            let expectedOffset = this.pickDodgeSideWithHysteresis(costLeft, costRight, leftOffset, rightOffset);
+                            // ★ 多段式候選偏移搜尋 (Comfortable -> Tight Squeeze -> Multi-Interval Gaps)
+                            const leftCandidates = [
+                                blockingInterval.min - overshoot,
+                                blockingInterval.min - 0.05,
+                                blockingInterval.physicalMin - 0.12
+                            ];
+                            const rightCandidates = [
+                                blockingInterval.max + overshoot,
+                                blockingInterval.max + 0.05,
+                                blockingInterval.physicalMax + 0.12
+                            ];
+                            // 加入相鄰錐群之間的縫隙中心候選點
+                            for (let i = 0; i < mergedIntervals.length - 1; i++) {
+                                const gapL = mergedIntervals[i].physicalMax;
+                                const gapR = mergedIntervals[i + 1].physicalMin;
+                                if (gapR - gapL >= 0.2) {
+                                    const mid = (gapL + gapR) * 0.5;
+                                    if (mid <= originalTarget) leftCandidates.push(mid);
+                                    else rightCandidates.push(mid);
+                                }
+                            }
 
+                            let bestLeft = leftCandidates[0];
+                            let minCostLeft = Infinity;
+                            for (const cand of leftCandidates) {
+                                const c = evaluateCost(cand);
+                                if (c < minCostLeft) { minCostLeft = c; bestLeft = cand; }
+                            }
+
+                            let bestRight = rightCandidates[0];
+                            let minCostRight = Infinity;
+                            for (const cand of rightCandidates) {
+                                const c = evaluateCost(cand);
+                                if (c < minCostRight) { minCostRight = c; bestRight = cand; }
+                            }
+
+                            let expectedOffset = this.pickDodgeSideWithHysteresis(minCostLeft, minCostRight, bestLeft, bestRight);
                             const clampedOffset = Math.max(-limit, Math.min(limit, expectedOffset));
 
-                            const isImpassable = mergedIntervals.some(inv => clampedOffset > inv.physicalMin && clampedOffset < inv.physicalMax);
                             const currentlyHitting = mergedIntervals.some(inv => this.lateralOffset > inv.physicalMin && this.lateralOffset < inv.physicalMax);
 
-                            // ★ 動態煞車：橫移需要時間，如果來不及橫移完畢就撞上，必須踩煞車減速！
-                            if (blockingInterval.fwdDist > 0) {
-                                let needsBrake = false;
-                                if (isImpassable) {
-                                    needsBrake = true;
-                                } else if (currentlyHitting) {
-                                    const distToSlide = Math.abs(clampedOffset - this.lateralOffset);
-                                    const latSpeed = this.isMotorcycle ? 3.0 : 2.0;
-                                    const safeFwdDist = (distToSlide / latSpeed) * this.speed + 1.0;
-                                    if (blockingInterval.fwdDist < safeFwdDist) needsBrake = true;
-                                }
-
-                                if (needsBrake) {
-                                    // ★★★[修正 4] 取消換道限制，路口內觸碰槽化線嚴格煞車
-                                    const stopGap = blockingInterval.fwdDist - (this.length / 2) - coneRadius - 0.5;
-                                    this.coneBlockingGap = Math.min(this.coneBlockingGap, Math.max(0.1, stopGap));
-
-                                    // 路口內若有未完成的換道意圖被阻擋，也予以取消
-                                    if (this.laneChangeState && stopGap < 5.0) {
-                                        this.laneChangeState = null;
-                                        this.laneChangeCooldown = 2.0;
-                                    }
+                            // ★ 動態閃避控速 (Maneuvering Speed Modulation)：
+                            //   取代舊版將 coneBlockingGap 壓為 0.1 導致車速歸零永久死鎖的做法，
+                            //   讓車輛根據所需橫移量與剩餘距離平滑降速，保持前進動力完成自然繞錐弧線
+                            if (blockingInterval.fwdDist > -(this.length * 0.35)) {
+                                const distToSlide = Math.abs(clampedOffset - this.lateralOffset);
+                                if (currentlyHitting || distToSlide > 0.25) {
+                                    const availFwd = Math.max(0.4, blockingInterval.fwdDist - (this.length / 2) - coneRadius);
+                                    const latRate = this.isMotorcycle ? 2.6 : 1.9;
+                                    const timeNeeded = Math.max(0.2, distToSlide / latRate);
+                                    const minCreepSpeed = this.isMotorcycle ? 2.2 : 1.8;
+                                    const maxDodgeSpeed = this.isMotorcycle ? 6.5 : 5.0;
+                                    const desiredSpeed = Math.max(minCreepSpeed, Math.min(maxDodgeSpeed, availFwd / (timeNeeded + 0.25)));
+                                    this.coneSpeedLimit = Math.min(this.coneSpeedLimit, desiredSpeed);
                                 }
                             }
 
@@ -3213,21 +3415,30 @@ if (typeof window !== 'undefined') window.PedestrianManagerSim = PedestrianSimMa
                                 (this.lateralOffset >= inv.min && originalTarget <= inv.max) ||
                                 (this.lateralOffset <= inv.max && originalTarget >= inv.min)
                             );
-                            if (pathBlocked && pathBlocked.fwdDist > -1.0) {
-                                isDodging = true;
+                            if (pathBlocked && pathBlocked.fwdDist > rearBound) {
+                                this.isDodgingCone = true;
                                 if (this.lateralOffset > pathBlocked.max) {
-                                    this.targetLateralOffset = pathBlocked.max + 0.2;
+                                    this.targetLateralOffset = pathBlocked.max + 0.15;
                                 } else if (this.lateralOffset < pathBlocked.min) {
-                                    this.targetLateralOffset = pathBlocked.min - 0.2;
+                                    this.targetLateralOffset = pathBlocked.min - 0.15;
                                 }
                             }
                         }
                     }
 
-                    // [改善 4] 強制收斂機制優化：不論有沒有在 Dodge，只要快出路口就將 Target 平滑壓回 0
+                    // [改善 4] 避障優先的出口收斂機制：僅當收斂路線不會擦撞未通過之交通錐時，才平滑壓回 0
                     if (distToEnd < 6.0) {
                         const decayFactor = Math.pow(distToEnd / 6.0, 2);
-                        this.targetLateralOffset = originalTarget + (this.targetLateralOffset - originalTarget) * decayFactor;
+                        const decayedTarget = originalTarget + (this.targetLateralOffset - originalTarget) * decayFactor;
+                        const wouldHitRemainingCone = mergedIntervals.some(inv =>
+                            inv.fwdDist > -(this.length / 2 + 0.2) &&
+                            ((this.lateralOffset >= inv.physicalMax && decayedTarget < inv.physicalMax + 0.15) ||
+                             (this.lateralOffset <= inv.physicalMin && decayedTarget > inv.physicalMin - 0.15) ||
+                             (decayedTarget > inv.physicalMin && decayedTarget < inv.physicalMax))
+                        );
+                        if (!wouldHitRemainingCone) {
+                            this.targetLateralOffset = decayedTarget;
+                        }
                     }
                 }
             }
@@ -3541,15 +3752,33 @@ if (typeof window !== 'undefined') window.PedestrianManagerSim = PedestrianSimMa
             }
 
             // =================================================================
+            // ★★★ [新增] 交通錐漸進減速與防死鎖推進邏輯 ★★★
+            // =================================================================
+            if (this.coneSpeedLimit !== undefined && this.coneSpeedLimit < Infinity) {
+                if (this.speed > this.coneSpeedLimit) {
+                    const coneDecel = Math.min(4.5, Math.max(1.5, (this.speed - this.coneSpeedLimit) * 2.2));
+                    this.accel = Math.min(this.accel, -coneDecel);
+                } else if (this.state === 'inIntersection' && this.isDodgingCone && !leader && gap > 2.2 && this.speed < Math.min(2.2, this.coneSpeedLimit)) {
+                    // 路口內繞錐且前方無阻擋時，保持最低蠕行推進力，防止定桿卡在錐旁
+                    this.accel = Math.max(this.accel, 1.0);
+                }
+            }
+
+            if (this.state === 'inIntersection' && (this.intersectionStuckTimer || 0) > 2.5 && gap > 0.35) {
+                this.accel = Math.max(this.accel, 1.2);
+            }
+
+            // =================================================================
             // ★★★ [修復] 同車道煞停穿模：運動學煞停計算 + 動態防護膜 ★★★
             // =================================================================
             if (leader) {
                 const speedDiff = this.speed - leader.speed;
-                const criticalGap = this.minGap + 0.3; // 臨界安全距離
+                const effectiveMinGap = this._isCrossLeader ? 0.45 : this.minGap;
+                const criticalGap = effectiveMinGap + 0.3; // 臨界安全距離
 
                 // 當間距逼近安全極限且正在接近時，觸發運動學煞停
                 if (gap <= criticalGap && speedDiff > 0) {
-                    const distAvailable = Math.max(0.01, gap - this.minGap);
+                    const distAvailable = Math.max(0.01, gap - effectiveMinGap);
                     const targetSpeed = Math.max(0, leader.speed);
                     // v^2 = u^2 + 2as => a = (v_target^2 - v_self^2) / (2 * dist)
                     const reqDecel = (this.speed * this.speed - targetSpeed * targetSpeed) / (2 * distAvailable);
@@ -3561,6 +3790,13 @@ if (typeof window !== 'undefined') window.PedestrianManagerSim = PedestrianSimMa
             // 1. 先根據加速度更新速度
             this.speed += this.accel * dt;
             if (this.speed < 0) this.speed = 0;
+
+            if (this.coneSpeedLimit !== undefined && this.coneSpeedLimit < Infinity && this.speed > this.coneSpeedLimit) {
+                this.speed = Math.max(this.coneSpeedLimit, this.speed - 3.5 * dt);
+            }
+            if (this.state === 'inIntersection' && (this.intersectionStuckTimer || 0) > 2.5 && gap > 0.35) {
+                this.speed = Math.max(this.speed, 1.2);
+            }
 
             const oldDistanceOnPath = this.distanceOnPath;
             let moveDist = this.speed * dt;
@@ -3576,12 +3812,13 @@ if (typeof window !== 'undefined') window.PedestrianManagerSim = PedestrianSimMa
                 // ★ 動態防護膜：依據當前速度與時間步長自動調整緩衝，消除離散誤差
                 const dynamicBuffer = 0.02 + Math.min(0.15, this.speed * 0.008);
                 const safeThreshold = Math.max(0.02, gap - dynamicBuffer);
+                const stopThresh = this._isCrossLeader ? 0.45 : (this.minGap + 0.12);
 
                 if (moveDist > safeThreshold) {
                     moveDist = safeThreshold;
 
-                    // ★ 核心防穿模：若已貼近至 minGap 容差內，直接定桿，徹底消除後車擠入
-                    if (gap <= this.minGap + 0.12) {
+                    // ★ 核心防穿模：若已貼近至安全容差內，直接定桿，徹底消除後車擠入
+                    if (gap <= stopThresh) {
                         this.speed = 0;
                         moveDist = 0; // 本幀停止移動
                     } else {
@@ -3878,36 +4115,42 @@ if (typeof window !== 'undefined') window.PedestrianManagerSim = PedestrianSimMa
                 if (link && link.lanes[this.currentLaneIndex]) {
                     // ★ 穿模修復：邊界保留 0.3m 緩衝（涵蓋後照鏡/方向燈視覺外凸），
                     //   確保貼邊機車與鄰車道居中汽車的邏輯足跡不接觸
-                    maxLimit = Math.max(0, (link.lanes[this.currentLaneIndex].width / 2) - (this.width / 2) - 0.3);
+                    const baseLimit = Math.max(0, (link.lanes[this.currentLaneIndex].width / 2) - (this.width / 2) - 0.3);
+                    maxLimit = Math.max(baseLimit, this.postIntersectionEnvelope || 0);
                 }
             } else if (this.state === 'inIntersection') {
-                maxLimit = 4.0;
+                maxLimit = this.width > 2.2 ? 4.5 : 4.0;
+            }
+
+            // ==========================================
+            // ★ 非完整約束 (Non-holonomic Constraint) 修復：
+            // 靜止時 (speed < 0.05) 禁止原地螃蟹橫移與原地自轉；
+            // 低速蠕行時按真實車速比例提供輔助轉向動力。
+            // ==========================================
+            if (this.speed < 0.05) {
+                this.lateralVelocity = 0;
+                this.currentYawBias = this.yawBias;
+                return;
             }
 
             const diff0 = this.targetLateralOffset - this.lateralOffset;
             const L = Math.max(1.0, this.length * 0.65); // 軸距
 
-            // ==========================================
-            // 敏捷度提升 1：提高最低虛擬動力
-            // 當車輛被交通錐擋住而降速時，保證有足夠的動力把車頭「推」出去
-            // ==========================================
             let kinSpeed = this.speed;
-            if (Math.abs(diff0) > 0.1 && this.speed < 2.0) {
-                // 原本是 0.5，提升到 2.0，確保低速閃避依然俐落
-                kinSpeed = 2.0;
+            if (Math.abs(diff0) > 0.1 && this.speed < 2.2) {
+                kinSpeed = Math.min(2.2, this.speed * 1.8 + 0.25);
             }
 
             // ==========================================
-            // ★ 蛇行修復：提高機車阻尼、微降增益
-            // 舊參數 kd=0.6 對短軸距機車阻尼不足，閉迴路處於欠阻尼狀態，
-            // 疊加顯式歐拉積分在大 dt 時會繞目標左右震盪 = 蛇行。
+            // ★ 蛇行修復與自然轉向角限制：
+            // 限制最大偏角為自然範圍 (汽車約 24 度，機車約 28.6 度)，消除誇張 45 度橫切
             // ==========================================
-            const kp = this.isMotorcycle ? 2.1 : 1.8;   // 對橫向誤差的反應強度
-            const kd = this.isMotorcycle ? 1.3 : 0.9;   // 阻尼：防止切太快衝過頭
-            const maxHeading = this.isMotorcycle ? 0.85 : 0.75; // 最大車頭偏角
-            const steerGain = this.isMotorcycle ? 3.0 : 2.5;    // 方向盤跟隨目標角度的強度
-            const maxSteer = this.isMotorcycle ? 0.8 : 0.65;    // 方向盤極限打角
-            const steerSpeed = this.isMotorcycle ? 15.0 : 10.0; // 方向盤轉動速度
+            const kp = this.isMotorcycle ? 2.0 : 1.65;  // 對橫向誤差的反應強度
+            const kd = this.isMotorcycle ? 1.35 : 1.05; // 阻尼：防止切太快衝過頭
+            const maxHeading = this.isMotorcycle ? 0.50 : 0.42; // 最大車頭偏角
+            const steerGain = this.isMotorcycle ? 2.8 : 2.3;    // 方向盤跟隨目標角度的強度
+            const maxSteer = this.isMotorcycle ? 0.65 : 0.52;   // 方向盤極限打角
+            const steerSpeed = this.isMotorcycle ? 14.0 : 9.5;  // 方向盤轉動速度
 
             // ==========================================
             // ★ 蛇行修復：固定子步長積分 (每步 ≤ 20ms)
@@ -4796,10 +5039,13 @@ if (typeof window !== 'undefined') window.PedestrianManagerSim = PedestrianSimMa
             this.currentTransition = null;
             this.nextSignIndex = 0;
             // ===========================================
-            // ★★★ [新增] 重置路口補償狀態 ★★★
+            // ★★★ [新增] 重置路口補償狀態與記錄出彎橫向包絡線 ★★★
             // ===========================================
             this.startCorrection = null;
             this.endCorrection = null;
+            this.postIntersectionEnvelope = Math.max(0, Math.abs(this.lateralOffset));
+            this.intersectionStuckTimer = 0;
+            this.coneSpeedLimit = Infinity;
             // ===========================================
 
             // ★ 新增：更新進入時間
@@ -5264,6 +5510,7 @@ if (typeof window !== 'undefined') window.PedestrianManagerSim = PedestrianSimMa
 
             let leader = null;
             let gap = Infinity;
+            this._isCrossLeader = false;
             const distanceToEndOfCurrentPath = this.currentPathLength - this.distanceOnPath;
 
             // 輔助函式：計算絕對橫向位置
@@ -5669,6 +5916,13 @@ if (typeof window !== 'undefined') window.PedestrianManagerSim = PedestrianSimMa
                                         distInNext = -(transitionLen - other.distanceOnPath);
                                     }
                                 }
+                                // 2b. 對方從同一入口車道剛進入路口，但因閃避路口交通錐或禮讓而在路口起點減速/停滯
+                                else if (other.state === 'inIntersection' && other.currentTransition?.sourceLinkId === this.currentLinkId && other.currentTransition?.sourceLaneIndex === finalLane) {
+                                    if (!(other.twoStageState && other.twoStageState !== 'none') && other.distanceOnPath < 10.0 && other.speed < 2.0) {
+                                        minTargetDist = Math.min(minTargetDist, 0);
+                                        tailVehicleSpeed = Math.min(tailVehicleSpeed, other.speed);
+                                    }
+                                }
                                 // =================================================================
                                 // ★★★ [新增] 3. 預判匯流：對方跟我一樣還在等紅燈，但目的地車道重疊！ ★★★
                                 // =================================================================
@@ -5808,6 +6062,7 @@ if (typeof window !== 'undefined') window.PedestrianManagerSim = PedestrianSimMa
                         if (lookaheadGap > -1.0 && lookaheadGap < gap) {
                             gap = Math.max(0.1, lookaheadGap);
                             leader = other;
+                            this._isCrossLeader = false;
                         }
                         continue; // 已在出口車道，交由上述處理即可
                     }
@@ -5825,6 +6080,7 @@ if (typeof window !== 'undefined') window.PedestrianManagerSim = PedestrianSimMa
                             if (mergeGap > -1.0 && mergeGap < gap) {
                                 gap = Math.max(0.1, mergeGap);
                                 leader = other;
+                                this._isCrossLeader = false;
                             }
                         }
                     }
@@ -5840,22 +6096,30 @@ if (typeof window !== 'undefined') window.PedestrianManagerSim = PedestrianSimMa
 
                         // 只掃描半徑 15米 內的車輛
                         if (distSq < 225) {
+                            // 使用抑制部分暫態閃避偏角 (currentYawBias) 後的參考方向，防止繞錐轉向時雷達掃射到鄰車道造成假互鎖
+                            const refAngleA = this.angle - (this.currentYawBias || 0) * 0.55;
+                            const refAngleB = other.angle - (other.currentYawBias || 0) * 0.55;
+
                             // --- 本車視角 (A看B) ---
-                            const fwdA = dx * Math.cos(this.angle) + dy * Math.sin(this.angle);
-                            const sideA = Math.abs(-dx * Math.sin(this.angle) + dy * Math.cos(this.angle));
+                            const fwdA = dx * Math.cos(refAngleA) + dy * Math.sin(refAngleA);
+                            const sideA = Math.abs(-dx * Math.sin(refAngleA) + dy * Math.cos(refAngleA));
 
                             // --- 他車視角 (B看A) ---
-                            const fwdB = -dx * Math.cos(other.angle) - dy * Math.sin(other.angle);
-                            const sideB = Math.abs(dx * Math.sin(other.angle) - dy * Math.cos(other.angle));
+                            const fwdB = -dx * Math.cos(refAngleB) - dy * Math.sin(refAngleB);
+                            const sideB = Math.abs(dx * Math.sin(refAngleB) - dy * Math.cos(refAngleB));
 
                             // --- 動態計算 OBB 投影碰撞寬度 ---
-                            const angleDiff = other.angle - this.angle;
-                            const effWidthB = Math.abs(Math.cos(angleDiff)) * other.width + Math.abs(Math.sin(angleDiff)) * other.length;
-                            const effLengthB = Math.abs(Math.sin(angleDiff)) * other.width + Math.abs(Math.cos(angleDiff)) * other.length;
-                            const effWidthA = Math.abs(Math.cos(angleDiff)) * this.width + Math.abs(Math.sin(angleDiff)) * this.length;
+                            const angleDiff = refAngleB - refAngleA;
+                            const sinDiff = Math.abs(Math.sin(angleDiff));
+                            const cosDiff = Math.abs(Math.cos(angleDiff));
+                            // 若兩車近似同向且縱向已拉開，折減車長對橫向寬度的膨脹效應，避免 12m 大車微轉向時封死鄰道
+                            const latLenFactor = (sinDiff < 0.45 && fwdA > (this.length + other.length) * 0.52) ? (sinDiff * 0.35) : sinDiff;
+                            const effWidthB = cosDiff * other.width + latLenFactor * other.length;
+                            const effLengthB = sinDiff * other.width + cosDiff * other.length;
+                            const effWidthA = cosDiff * this.width + latLenFactor * this.length;
 
-                            const hitMarginA = (this.width / 2) + (effWidthB / 2) + 0.3; // A 撞 B 的橫向容許值
-                            const hitMarginB = (other.width / 2) + (effWidthA / 2) + 0.3; // B 撞 A 的橫向容許值
+                            const hitMarginA = (this.width / 2) + (effWidthB / 2) + 0.22; // A 撞 B 的橫向容許值
+                            const hitMarginB = (other.width / 2) + (effWidthA / 2) + 0.22; // B 撞 A 的橫向容許值
 
                             // 判定是否在彼此的「正前方撞擊區」
                             const AisHittingB = (fwdA > 0 && sideA < hitMarginA);
@@ -5863,35 +6127,34 @@ if (typeof window !== 'undefined') window.PedestrianManagerSim = PedestrianSimMa
 
                             if (AisHittingB) {
                                 let shouldYield = false;
+                                const physGap = fwdA - (this.length / 2) - (effLengthB / 2) - 0.15;
 
                                 if (BisHittingA) {
-                                    // 【情況 1：互相衝向對方 (X型交叉)】-> 啟動路權分數打破死結
-                                    const myScore = (this.distanceOnPath / this.currentPathLength) + (this.speed * 0.05) + (this.id > other.id ? 0.01 : -0.01);
-                                    let otherScore = 0;
-
-                                    if (other.state === 'inIntersection') {
-                                        otherScore = (other.distanceOnPath / other.currentPathLength) + (other.speed * 0.05);
-                                    } else {
-                                        otherScore = 999; // 已經在直行路段上的車具有絕對路權
-                                    }
+                                    // 【情況 1：互相衝向對方 (X型交叉)】-> 啟動嚴格對稱路權分數打破死結
+                                    const myScore = this.getIntersectionPriorityScore();
+                                    const otherScore = other.getIntersectionPriorityScore();
 
                                     if (myScore < otherScore) {
                                         shouldYield = true; // 我分數低，我讓
                                     }
                                 } else {
                                     // 【情況 2：單方面阻擋 (T型側撞 / 追尾)】
-                                    // 我快撞到對方了，但對方並沒有衝向我 (例如汽車停在路口，機車從側面靠近)
-                                    // 無視分數，我絕對必須踩煞車！對方不會踩煞車，完美破除死結！
                                     shouldYield = true;
+                                }
+
+                                // 死鎖突破機制：若本車已在路口卡住超過 2.5s，且對方也幾乎靜止但卡住時間比本車短，且仍有 >0.35m 物理空隙，允許緩慢蠕行脫困
+                                const myStuck = this.intersectionStuckTimer || 0;
+                                const otherStuck = other.intersectionStuckTimer || 0;
+                                if (myStuck > 2.5 && myStuck > otherStuck + 0.4 && physGap > 0.35 && other.speed < 0.5) {
+                                    shouldYield = false;
                                 }
 
                                 // 執行煞車計算
                                 if (shouldYield) {
-                                    // 計算車頭到對方車體的距離
-                                    const physGap = fwdA - (this.length / 2) - (effLengthB / 2) - 0.2;
                                     if (physGap > -1.0 && physGap < gap) {
                                         gap = Math.max(0.1, physGap);
                                         leader = other;
+                                        this._isCrossLeader = true;
                                     }
                                 }
                             }
@@ -6384,14 +6647,95 @@ if (typeof window !== 'undefined') window.PedestrianManagerSim = PedestrianSimMa
             return null;
         }
 
+        getNumericId() {
+            if (typeof this._numericId === 'number') return this._numericId;
+            if (typeof this.id === 'number') {
+                this._numericId = this.id;
+            } else if (typeof this.id === 'string') {
+                const m = this.id.match(/\d+/);
+                this._numericId = m ? parseInt(m[0], 10) : 0;
+            } else {
+                this._numericId = 0;
+            }
+            return this._numericId;
+        }
+
+        getIntersectionPriorityScore() {
+            if (this.state !== 'inIntersection') return 999;
+            const pathRatio = (this.currentPathLength > 0.01) ? (this.distanceOnPath / this.currentPathLength) : 0;
+            const stuckBonus = Math.min(0.6, (this.intersectionStuckTimer || 0) * 0.12);
+            const idTieBreaker = (this.getNumericId() % 10000) * 1e-6;
+            return pathRatio + (this.speed * 0.05) + stuckBonus + idTieBreaker;
+        }
+
+        getExpandedFreeCones(network) {
+            if (!network || !network.freeRoadSigns) return [];
+            const rawCones = network.freeRoadSigns.filter(s => s.signType === 'traffic_cone' || s.type === 'traffic_cone');
+            if (rawCones.length <= 1) return rawCones;
+
+            // 將距離 < 3.0m 的相鄰交通錐連線(連桿)插值為虛擬障礙點，防止車輛從兩錐連桿中間穿模
+            const expanded = [...rawCones];
+            for (let i = 0; i < rawCones.length; i++) {
+                for (let j = i + 1; j < rawCones.length; j++) {
+                    const c1 = rawCones[i];
+                    const c2 = rawCones[j];
+                    const dist = Math.hypot(c2.x - c1.x, c2.y - c1.y);
+                    if (dist > 0.4 && dist < 3.0) {
+                        const steps = Math.max(1, Math.floor(dist / 0.55));
+                        for (let s = 1; s < steps; s++) {
+                            const r = s / steps;
+                            expanded.push({
+                                x: c1.x + (c2.x - c1.x) * r,
+                                y: c1.y + (c2.y - c1.y) * r,
+                                signType: 'traffic_cone',
+                                type: 'traffic_cone',
+                                isVirtualRod: true
+                            });
+                        }
+                    }
+                }
+            }
+            return expanded;
+        }
+
+        getMorphedBezierData(t, path = this.currentPath, startCorr = this.startCorrection, endCorr = this.endCorrection) {
+            if (!path || path.length < 4) return null;
+            const [p0, p1, p2, p3] = path;
+            const safeT = Math.max(0, Math.min(1.0, t));
+            const pos = Geom.Bezier.getPoint(safeT, p0, p1, p2, p3);
+            const tangent = Geom.Bezier.getTangent(safeT, p0, p1, p2, p3);
+            let tx = tangent.x;
+            let ty = tangent.y;
+
+            if (startCorr && endCorr) {
+                const t2 = safeT * safeT;
+                const t3 = t2 * safeT;
+                const weightStart = 1.0 - 3.0 * t2 + 2.0 * t3;
+                const weightEnd = 3.0 * t2 - 2.0 * t3;
+                pos.x += startCorr.dx * weightStart + endCorr.dx * weightEnd;
+                pos.y += startCorr.dy * weightStart + endCorr.dy * weightEnd;
+
+                const derivStart = -6.0 * safeT + 6.0 * t2;
+                const derivEnd = 6.0 * safeT - 6.0 * t2;
+                tx += startCorr.dx * derivStart + endCorr.dx * derivEnd;
+                ty += startCorr.dy * derivStart + endCorr.dy * derivEnd;
+            }
+            const tLen = Math.hypot(tx, ty) || 1.0;
+            tx /= tLen;
+            ty /= tLen;
+            const angle = Math.atan2(ty, tx);
+            return { x: pos.x, y: pos.y, angle, tx, ty };
+        }
+
         updateDrawingPosition(network) {
             if (this.state === 'onLink') {
                 const link = network.links[this.currentLinkId];
                 const currentLane = link.lanes[this.currentLaneIndex];
                 if (!currentLane) return;
 
-                // ★ 穿模修復：與 updateLateralPosition 邊界一致 (0.3m 緩衝)
-                const limit = Math.max(0, (currentLane.width / 2) - (this.width / 2) - 0.3);
+                // ★ 穿模修復：與 updateLateralPosition 邊界一致 (0.3m 緩衝)，並支援進出彎包絡線平滑收斂
+                const baseLimit = Math.max(0, (currentLane.width / 2) - (this.width / 2) - 0.3);
+                const limit = Math.max(baseLimit, this.postIntersectionEnvelope || 0);
                 if (this.lateralOffset > limit) this.lateralOffset = limit;
                 if (this.lateralOffset < -limit) this.lateralOffset = -limit;
 
@@ -6493,43 +6837,19 @@ if (typeof window !== 'undefined') window.PedestrianManagerSim = PedestrianSimMa
 
                 } else if (this.currentPath.length >= 4) {
                     const t = this.distanceOnPath / this.currentPathLength;
-                    const [p0, p1, p2, p3] = this.currentPath;
-
                     const safeT = Math.max(0, Math.min(1.0, t));
+                    const morphed = this.getMorphedBezierData(safeT);
+                    if (morphed) {
+                        const angle = morphed.angle;
+                        const nx = -Math.sin(angle);
+                        const ny = Math.cos(angle);
 
-                    const pos = Geom.Bezier.getPoint(safeT, p0, p1, p2, p3);
-                    const tangent = Geom.Bezier.getTangent(safeT, p0, p1, p2, p3);
+                        this.x = morphed.x + nx * this.lateralOffset;
+                        this.y = morphed.y + ny * this.lateralOffset;
 
-                    let trueTangentX = tangent.x;
-                    let trueTangentY = tangent.y;
-
-                    if (this.startCorrection && this.endCorrection) {
-                        const t2 = safeT * safeT;
-                        const t3 = t2 * safeT;
-
-                        const weightStart = 1.0 - 3.0 * t2 + 2.0 * t3;
-                        const weightEnd = 3.0 * t2 - 2.0 * t3;
-
-                        pos.x += this.startCorrection.dx * weightStart + this.endCorrection.dx * weightEnd;
-                        pos.y += this.startCorrection.dy * weightStart + this.endCorrection.dy * weightEnd;
-
-                        const derivStart = -6.0 * safeT + 6.0 * t2;
-                        const derivEnd = 6.0 * safeT - 6.0 * t2;
-
-                        trueTangentX += this.startCorrection.dx * derivStart + this.endCorrection.dx * derivEnd;
-                        trueTangentY += this.startCorrection.dy * derivStart + this.endCorrection.dy * derivEnd;
+                        // === [修改] 貝茲曲線(彎道避障)也要加上偏轉角 ===
+                        this.angle = angle + (this.currentYawBias || 0);
                     }
-
-                    const angle = Math.atan2(trueTangentY, trueTangentX);
-
-                    const nx = -Math.sin(angle);
-                    const ny = Math.cos(angle);
-
-                    this.x = pos.x + nx * this.lateralOffset;
-                    this.y = pos.y + ny * this.lateralOffset;
-
-                    // === [修改] 貝茲曲線(彎道避障)也要加上偏轉角 ===
-                    this.angle = angle + (this.currentYawBias || 0);
                 }
             }
         }

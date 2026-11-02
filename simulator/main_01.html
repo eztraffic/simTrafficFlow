@@ -205,6 +205,10 @@
                         <input type="checkbox" id="nightToggle">
                         <span class="switch-label" data-i18n="lblNight">夜景</span>
                     </label>
+                    <label class="mini-switch" title="Signal Timing Comparison (時制比較)">
+                        <input type="checkbox" id="timingCompareToggle">
+                        <span class="switch-label" data-i18n="lblTimingCompare">時制比較</span>
+                    </label>
                     <label class="mini-switch" id="lutiHudToggleContainer" style="display: none;"
                         title="都市規劃與交通指標儀表板 (LUTI Analytics HUD)">
                         <input type="checkbox" id="lutiHudToggle">
@@ -688,6 +692,8 @@
     <script src="script_report.js"></script>
     <!-- ★★★ 多執行緒微觀交通模擬通訊代理 (Architecture A: Simulation Bridge) ★★★ -->
     <script src="script_sim_bridge.js?v=20261028_2"></script>
+    <!-- ★★★ 時制比較與同步雙視窗控制器 (Signal Timing Comparison) ★★★ -->
+    <script src="script_timing_compare.js?v=20261030_1"></script>
     <script src="script02.js?v=20261028_2"></script>
     <script>
         window.ENABLE_LEFT_TURN_YIELD = true;

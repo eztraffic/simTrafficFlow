@@ -58,7 +58,8 @@ document.addEventListener('DOMContentLoaded', () => {
             lblPoint: '定點',    // 或 'Point'
             lblSection: '區間',  // 或 'Section'
             lblDetector: '偵測器', // 或 'Detectors'
-            lblNight: '夜景'
+            lblNight: '夜景',
+            lblTimingCompare: '時制比較'
         },
         'en': {
             appTitle: 'simTrafficFlow (2D/3D)',
@@ -118,7 +119,8 @@ document.addEventListener('DOMContentLoaded', () => {
             lblPoint: 'Point',
             lblSection: 'Section',
             lblDetector: 'Detector',
-            lblNight: 'Night View'
+            lblNight: 'Night View',
+            lblTimingCompare: 'Timing Compare'
         }
     };
 
@@ -306,6 +308,58 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function render3DScene() {
         if (!renderer || !scene || !camera) return;
+        if (typeof timingCompareController !== 'undefined' && timingCompareController.isActive && timingCompareController.baselineSim && timingCompareController.adjustedSim) {
+            const w = Math.max(2, container3D.clientWidth || canvasContainer.clientWidth);
+            const h = Math.max(1, container3D.clientHeight || canvasContainer.clientHeight);
+            const halfW = Math.floor(w / 2);
+
+            camera.aspect = Math.max(0.1, halfW / h);
+            camera.updateProjectionMatrix();
+
+            const mainPedGroup = (simulation && simulation.pedManager) ? simulation.pedManager.group3D : null;
+            const basePedGroup = (timingCompareController.baselineSim && timingCompareController.baselineSim.pedManager)
+                ? timingCompareController.baselineSim.pedManager.group3D : null;
+            const adjPedGroup = (timingCompareController.adjustedSim && timingCompareController.adjustedSim.pedManager)
+                ? timingCompareController.adjustedSim.pedManager.group3D : null;
+
+            if (mainPedGroup && mainPedGroup !== basePedGroup && mainPedGroup !== adjPedGroup) {
+                mainPedGroup.visible = false;
+            }
+            if (basePedGroup && !basePedGroup.parent) scene.add(basePedGroup);
+            if (adjPedGroup && !adjPedGroup.parent) scene.add(adjPedGroup);
+
+            const prevScissor = renderer.getScissorTest ? renderer.getScissorTest() : false;
+            renderer.setScissorTest(true);
+
+            // Pass 1: Left Viewport (Baseline / 未調整原始時制)
+            vehicleMeshes.forEach(m => { m.visible = true; });
+            adjustedVehiclesGroup.visible = false;
+            if (basePedGroup) basePedGroup.visible = true;
+            if (adjPedGroup) adjPedGroup.visible = false;
+            if (showTurnPaths) update3DSignals(timingCompareController.baselineSim);
+
+            renderer.setViewport(0, 0, halfW, h);
+            renderer.setScissor(0, 0, halfW, h);
+            renderer.render(scene, camera);
+
+            // Pass 2: Right Viewport (Adjusted / 調整後時制)
+            vehicleMeshes.forEach(m => { m.visible = false; });
+            adjustedVehiclesGroup.visible = true;
+            if (basePedGroup) basePedGroup.visible = false;
+            if (adjPedGroup) adjPedGroup.visible = true;
+            if (showTurnPaths) update3DSignals(timingCompareController.adjustedSim);
+
+            renderer.setViewport(halfW, 0, w - halfW, h);
+            renderer.setScissor(halfW, 0, w - halfW, h);
+            renderer.render(scene, camera);
+
+            renderer.setScissorTest(prevScissor);
+            renderer.setViewport(0, 0, w, h);
+            vehicleMeshes.forEach(m => { m.visible = true; });
+            camera.aspect = Math.max(0.1, w / h);
+            camera.updateProjectionMatrix();
+            return;
+        }
         if (window.Visual3D && typeof Visual3D.render === 'function') {
             Visual3D.render(scene, camera);
         } else {
@@ -314,6 +368,13 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function applyDisplayState() {
+        if (typeof timingCompareController !== 'undefined' && timingCompareController.isActive) {
+            if (isDisplay2D && isDisplay3D) {
+                isDisplay3D = false;
+            }
+            timingCompareController.syncViewModeButtons(isDisplay3D);
+        }
+
         if (!isDisplay2D && !isDisplay3D) {
             isDisplay2D = true;
         }
@@ -547,6 +608,9 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- 3D View Variables ---
     let scene, camera, renderer, controls;
     let vehicleMeshes = new Map();
+    let adjustedVehicleMeshes = new Map();
+    let adjustedVehiclesGroup = new THREE.Group();
+    let compareVehicleColors = new Map();
     let networkGroup = new THREE.Group();
     let debugGroup = new THREE.Group();
     let signalPathsGroup = new THREE.Group();
@@ -705,6 +769,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (display2DBtn) {
         display2DBtn.addEventListener('click', () => {
+            if (typeof timingCompareController !== 'undefined' && timingCompareController.isActive) {
+                isDisplay2D = true;
+                isDisplay3D = false;
+                applyDisplayState();
+                return;
+            }
             const next = !isDisplay2D;
             if (!next && !isDisplay3D) return;
             isDisplay2D = next;
@@ -714,6 +784,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (display3DBtn) {
         display3DBtn.addEventListener('click', () => {
+            if (typeof timingCompareController !== 'undefined' && timingCompareController.isActive) {
+                isDisplay3D = true;
+                isDisplay2D = false;
+                applyDisplayState();
+                return;
+            }
             const next = !isDisplay3D;
             if (!next && !isDisplay2D) return;
             isDisplay3D = next;
@@ -912,6 +988,13 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
 
+        // ★★★ 時制比較模式：點擊地圖選取號誌路口 ★★★
+        if (typeof timingCompareController !== 'undefined' && timingCompareController.isActive) {
+            if (timingCompareController.handleMapClick(worldX, worldY)) {
+                if (!isRunning) redraw2D();
+            }
+        }
+
         // ★★★ 優先檢查：是否點擊了 AI 資訊浮窗？ (這部分維持原樣) ★★★
         if (aiController && aiController.isActive) {
             // 如果點到了浮窗，handleMouseDown 會回傳 true
@@ -1038,6 +1121,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (active) {
                 // 互斥邏輯：關閉其他模式
+                if (timingCompareToggle && timingCompareToggle.checked) { timingCompareToggle.checked = false; timingCompareToggle.dispatchEvent(new Event('change')); }
                 if (aiToggle) { aiToggle.checked = false; aiController.setActive(false); }
                 if (driveToggle) driveToggle.checked = false;
                 if (driveController) driveController.reset();
@@ -1071,6 +1155,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // 互斥邏輯
             if (active) {
+                if (timingCompareToggle && timingCompareToggle.checked) { timingCompareToggle.checked = false; timingCompareToggle.dispatchEvent(new Event('change')); }
                 if (aiToggle) { aiToggle.checked = false; aiController.setActive(false); }
                 if (flyoverToggle) flyoverToggle.checked = false;
                 setFlyoverMode(false);
@@ -1145,6 +1230,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (active) {
                 // 互斥：關閉其他模式
+                if (timingCompareToggle && timingCompareToggle.checked) { timingCompareToggle.checked = false; timingCompareToggle.dispatchEvent(new Event('change')); }
                 if (policeToggle) { policeToggle.checked = false; policeController.setActive(false); }
                 if (driveToggle) { driveToggle.checked = false; if (driveController) driveController.reset(); }
                 if (hudElement) hudElement.style.display = 'none';
@@ -1172,6 +1258,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (active) {
                 // 互斥邏輯：關閉 AI、員警、駕駛等模式
+                if (timingCompareToggle && timingCompareToggle.checked) { timingCompareToggle.checked = false; timingCompareToggle.dispatchEvent(new Event('change')); }
                 if (aiToggle) { aiToggle.checked = false; aiController.setActive(false); }
                 if (policeToggle) { policeToggle.checked = false; policeController.setActive(false); }
                 if (driveToggle) { driveToggle.checked = false; if (driveController) driveController.reset(); }
@@ -1216,6 +1303,108 @@ document.addEventListener('DOMContentLoaded', () => {
     if (nightToggle) {
         nightToggle.addEventListener('change', (e) => {
             setNightMode(e.target.checked);
+        });
+    }
+
+    // --- 時制比較模式 (Signal Timing Comparison) ---
+    const timingCompareToggle = document.getElementById('timingCompareToggle');
+
+    function clearAdjusted3DMeshes() {
+        for (const [, mesh] of adjustedVehicleMeshes) {
+            adjustedVehiclesGroup.remove(mesh);
+            mesh.traverse((child) => {
+                if (child.isMesh) {
+                    if (child.geometry) child.geometry.dispose();
+                    if (child.material) {
+                        if (Array.isArray(child.material)) child.material.forEach(mat => mat.dispose());
+                        else child.material.dispose();
+                    }
+                }
+            });
+        }
+        adjustedVehicleMeshes.clear();
+        adjustedVehiclesGroup.clear();
+        compareVehicleColors.clear();
+    }
+
+    window.triggerTimingCompareRedraw = function () {
+        if (isDisplay2D) redraw2D();
+        if (isDisplay3D) update3DScene();
+    };
+
+    window.onTimingCompareRestart = function () {
+        clearAdjusted3DMeshes();
+        vehicleMeshes.forEach(mesh => scene.remove(mesh));
+        vehicleMeshes.clear();
+        if (scene) {
+            scene.children.slice().forEach(ch => {
+                if (ch && ch.name === 'PedestriansGroup') scene.remove(ch);
+            });
+        }
+        if (simTimeSpan) simTimeSpan.textContent = "0.00";
+        if (isDisplay2D) redraw2D();
+        if (isDisplay3D) update3DScene();
+        if (!isRunning && startStopButton && !startStopButton.disabled) {
+            toggleSimulation();
+        }
+    };
+
+    if (timingCompareToggle) {
+        timingCompareToggle.addEventListener('change', (e) => {
+            const active = e.target.checked;
+            if (active) {
+                if (!simulation || !networkData) {
+                    alert("請先載入路網檔案！");
+                    e.target.checked = false;
+                    return;
+                }
+                if (!networkData.trafficLights || networkData.trafficLights.length === 0) {
+                    alert("此路網無號誌路口可供時制比較！");
+                    e.target.checked = false;
+                    return;
+                }
+
+                // 互斥關閉其他控制模式
+                if (aiToggle && aiToggle.checked) { aiToggle.checked = false; aiController.setActive(false); }
+                if (policeToggle && policeToggle.checked) { policeToggle.checked = false; policeController.setActive(false); }
+                if (driveToggle && driveToggle.checked) { driveToggle.checked = false; if (driveController) driveController.reset(); }
+                if (optToggle && optToggle.checked) { optToggle.checked = false; if (typeof optimizerController !== 'undefined') optimizerController.setActive(false); }
+                if (hudElement) hudElement.style.display = 'none';
+
+                clearAdjusted3DMeshes();
+                vehicleMeshes.forEach(mesh => scene.remove(mesh));
+                vehicleMeshes.clear();
+
+                if (typeof timingCompareController !== 'undefined') {
+                    timingCompareController.setActive(true, networkData);
+                }
+                applyDisplayState();
+                if (simTimeSpan) simTimeSpan.textContent = "0.00";
+                if (isDisplay2D) redraw2D();
+                if (isDisplay3D) update3DScene();
+            } else {
+                if (typeof timingCompareController !== 'undefined') {
+                    if (timingCompareController.baselineSim && timingCompareController.baselineSim.pedManager && timingCompareController.baselineSim.pedManager.group3D && scene) {
+                        scene.remove(timingCompareController.baselineSim.pedManager.group3D);
+                    }
+                    if (timingCompareController.adjustedSim && timingCompareController.adjustedSim.pedManager && timingCompareController.adjustedSim.pedManager.group3D && scene) {
+                        scene.remove(timingCompareController.adjustedSim.pedManager.group3D);
+                    }
+                    timingCompareController.setActive(false);
+                }
+                clearAdjusted3DMeshes();
+                vehicleMeshes.forEach(mesh => scene.remove(mesh));
+                vehicleMeshes.clear();
+                if (simulation && simulation.pedManager && simulation.pedManager.group3D) {
+                    simulation.pedManager.group3D.visible = true;
+                    if (scene && !simulation.pedManager.group3D.parent) {
+                        scene.add(simulation.pedManager.group3D);
+                    }
+                }
+                applyDisplayState();
+                if (isDisplay2D) redraw2D();
+                if (isDisplay3D) update3DScene();
+            }
         });
     }
 
@@ -1951,6 +2140,20 @@ document.addEventListener('DOMContentLoaded', () => {
         const mouseX = event.clientX - rect.left;
         const mouseY = event.clientY - rect.top;
 
+        if (typeof timingCompareController !== 'undefined' && timingCompareController.isActive) {
+            const halfW = canvas2D.width / 2;
+            const localMouseX = mouseX >= halfW ? (mouseX - halfW) : mouseX;
+            const effectivePanX = panX - canvas2D.width / 4;
+            const worldX = (localMouseX - effectivePanX) / scale;
+            const worldY = (mouseY - panY) / scale;
+            scale *= zoom;
+            panX = (localMouseX - worldX * scale) + canvas2D.width / 4;
+            panY = mouseY - worldY * scale;
+            sync3DFrom2D();
+            if (!isRunning) redraw2D();
+            return;
+        }
+
         const worldX = (mouseX - panX) / scale;
         const worldY = (mouseY - panY) / scale;
 
@@ -2004,6 +2207,53 @@ document.addEventListener('DOMContentLoaded', () => {
     function redraw2D() {
         if (!isDisplay2D) return;
         ctx2D.clearRect(0, 0, canvas2D.width, canvas2D.height);
+
+        // ★★★ 時制比較模式：左右雙 2D 視窗同步渲染 ★★★
+        if (typeof timingCompareController !== 'undefined' && timingCompareController.isActive && timingCompareController.baselineSim && timingCompareController.adjustedSim) {
+            const w = canvas2D.width;
+            const h = canvas2D.height;
+            const halfW = Math.floor(w / 2);
+            const leftPanX = panX - w / 4;
+            const rightPanX = leftPanX + halfW;
+            const prevSim = simulation;
+
+            // 1. 左視窗：未調整 (Baseline)
+            ctx2D.save();
+            ctx2D.beginPath();
+            ctx2D.rect(0, 0, halfW, h);
+            ctx2D.clip();
+            ctx2D.translate(leftPanX, panY);
+            ctx2D.scale(scale, scale);
+            if (viewRotation2D !== 0 && networkCenter2D) {
+                ctx2D.translate(networkCenter2D.x, networkCenter2D.y);
+                ctx2D.rotate(viewRotation2D);
+                ctx2D.translate(-networkCenter2D.x, -networkCenter2D.y);
+            }
+            simulation = timingCompareController.baselineSim;
+            drawNetwork2D(simulation.network, simulation.vehicles);
+            timingCompareController.drawSelectedNodeHighlight2D(ctx2D, simulation, scale, false);
+            ctx2D.restore();
+
+            // 2. 右視窗：調整後 (Adjusted)
+            ctx2D.save();
+            ctx2D.beginPath();
+            ctx2D.rect(halfW, 0, w - halfW, h);
+            ctx2D.clip();
+            ctx2D.translate(rightPanX, panY);
+            ctx2D.scale(scale, scale);
+            if (viewRotation2D !== 0 && networkCenter2D) {
+                ctx2D.translate(networkCenter2D.x, networkCenter2D.y);
+                ctx2D.rotate(viewRotation2D);
+                ctx2D.translate(-networkCenter2D.x, -networkCenter2D.y);
+            }
+            simulation = timingCompareController.adjustedSim;
+            drawNetwork2D(simulation.network, simulation.vehicles);
+            timingCompareController.drawSelectedNodeHighlight2D(ctx2D, simulation, scale, true);
+            ctx2D.restore();
+
+            simulation = prevSim;
+            return;
+        }
 
         // 1. 繪製地圖與車輛 (這部分有 transform)
         ctx2D.save();
@@ -2121,7 +2371,14 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function screenToWorld2D(screenX, screenY) {
-        let wx = (screenX - panX) / scale;
+        let effectiveScreenX = screenX;
+        let effectivePanX = panX;
+        if (typeof timingCompareController !== 'undefined' && timingCompareController.isActive) {
+            const halfW = canvas2D.width / 2;
+            effectiveScreenX = screenX >= halfW ? (screenX - halfW) : screenX;
+            effectivePanX = panX - canvas2D.width / 4;
+        }
+        let wx = (effectiveScreenX - effectivePanX) / scale;
         let wy = (screenY - panY) / scale;
 
         if (viewRotation2D !== 0 && networkCenter2D) {
@@ -3600,6 +3857,7 @@ document.addEventListener('DOMContentLoaded', () => {
         scene.add(basemapGroup);
         scene.add(customModelsGroup);
         scene.add(cloudGroup);
+        scene.add(adjustedVehiclesGroup);
     }
 
     function onWindowResize() {
@@ -5527,13 +5785,14 @@ document.addEventListener('DOMContentLoaded', () => {
         trafficLightsGroup.visible = showTurnPaths;
     }
 
-    function update3DSignals() {
-        if (!simulation || !showTurnPaths) return;
+    function update3DSignals(simOverride) {
+        const activeSim = simOverride || simulation;
+        if (!activeSim || !showTurnPaths) return;
 
         // 1. 更新路徑線顏色 (保持原樣)
         signalPathsGroup.children.forEach(line => {
             const { nodeId, turnGroupId } = line.userData;
-            const tfl = simulation.trafficLights.find(t => t.nodeId === nodeId);
+            const tfl = activeSim.trafficLights.find(t => t.nodeId === nodeId);
             if (tfl) {
                 const signal = tfl.getSignalForTurnGroup(turnGroupId);
                 if (signal === 'Red') line.material.color.setHex(0xff0000);
@@ -5692,7 +5951,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             const yellowLamp = lamps[1];
                             if (yellowLamp.countdownMesh && typeof PedestrianManager !== 'undefined') {
                                 // 計算距離下一次直行綠燈的時間
-                                const remaining = tfl.getTimeToNextGreen(simulation.time, straightTurnGroups);
+                                const remaining = tfl.getTimeToNextGreen(activeSim.time, straightTurnGroups);
                                 const seconds = Math.max(0, Math.ceil(remaining));
                                 const numKey = Math.min(99, seconds);
 
@@ -5738,7 +5997,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // 執行更新
             trafficLightMeshes.forEach(poleData => {
                 const { nodeId, linkIdFront, linkIdBack, lampsFront, lampsBack } = poleData;
-                const tfl = simulation.trafficLights.find(t => t.nodeId === nodeId);
+                const tfl = activeSim.trafficLights.find(t => t.nodeId === nodeId);
                 const node = networkData.nodes[nodeId];
                 if (tfl && node) {
                     updateFace(linkIdFront, lampsFront, tfl, node);
@@ -5751,7 +6010,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (typeof PedestrianManager !== 'undefined' && pedestrianMeshes.length > 0) {
             pedestrianMeshes.forEach(pedData => {
                 const { mesh, nodeId } = pedData;
-                const tfl = simulation.trafficLights.find(t => t.nodeId === nodeId);
+                const tfl = activeSim.trafficLights.find(t => t.nodeId === nodeId);
                 const node = networkData.nodes[nodeId];
                 let stateStraight = 'Red';
                 let remaining = 0;
@@ -5809,7 +6068,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (explicitPedGroupId) {
                         // 採用新版：依照明確指定的行人時相群組顯示燈號
                         stateStraight = tfl.getSignalForTurnGroup(explicitPedGroupId);
-                        remaining = tfl.getPedestrianRemainingTime(simulation.time, explicitPedGroupId);
+                        remaining = tfl.getPedestrianRemainingTime(activeSim.time, explicitPedGroupId);
 
                     } else {
                         // 相容舊版：依賴「幾何平行」的車流直行號誌推算
@@ -5865,20 +6124,20 @@ document.addEventListener('DOMContentLoaded', () => {
 
                         if (isGreen) {
                             stateStraight = 'Green';
-                            remaining = tfl.getPedestrianRemainingTime(simulation.time, straightTurnGroups[0]);
+                            remaining = tfl.getPedestrianRemainingTime(activeSim.time, straightTurnGroups[0]);
                         } else if (isYellow) {
                             stateStraight = 'Yellow';
-                            remaining = tfl.getPedestrianRemainingTime(simulation.time, straightTurnGroups[0]);
+                            remaining = tfl.getPedestrianRemainingTime(activeSim.time, straightTurnGroups[0]);
                         } else {
                             stateStraight = 'Red';
-                            remaining = tfl.getTimeToNextGreen(simulation.time, straightTurnGroups);
+                            remaining = tfl.getTimeToNextGreen(activeSim.time, straightTurnGroups);
                         }
                     }
                     if (isNaN(remaining)) remaining = 0;
                 }
 
                 // 將狀態傳遞給視覺管理器
-                PedestrianManager.update(mesh, stateStraight, remaining, simulation.time);
+                PedestrianManager.update(mesh, stateStraight, remaining, activeSim.time);
             });
         }
     }
@@ -6200,21 +6459,28 @@ document.addEventListener('DOMContentLoaded', () => {
         return bikeGroup;
     }
 
-    function update3DScene() {
-        if (!simulation) { render3DScene(); return; }
-        if (showTurnPaths) update3DSignals();
-
-        const vehicles = simulation.vehicles;
+    function syncVehicles3DForTarget(vehicles, simTime, meshMap, parentContainer, useSharedColorMap) {
         const activeIds = new Set();
 
         vehicles.forEach(v => {
             activeIds.add(v.id);
-            let mesh = vehicleMeshes.get(v.id);
+            let mesh = meshMap.get(v.id);
 
             if (!mesh) {
-                const color = (window.Visual3D && Visual3D.pickVehicleColor)
-                    ? Visual3D.pickVehicleColor()
-                    : new THREE.Color().setHSL(Math.random(), 0.55, 0.48);
+                let color;
+                if (useSharedColorMap) {
+                    color = compareVehicleColors.get(v.id);
+                    if (!color) {
+                        color = (window.Visual3D && Visual3D.pickVehicleColor)
+                            ? Visual3D.pickVehicleColor()
+                            : new THREE.Color().setHSL(Math.random(), 0.55, 0.48);
+                        compareVehicleColors.set(v.id, color);
+                    }
+                } else {
+                    color = (window.Visual3D && Visual3D.pickVehicleColor)
+                        ? Visual3D.pickVehicleColor()
+                        : new THREE.Color().setHSL(Math.random(), 0.55, 0.48);
+                }
 
                 // [修改] 根據車寬判斷車種
                 // 如果寬度小於 1.0 (機車)，使用 createMotorcycleMesh
@@ -6231,8 +6497,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 mesh.traverse((child) => {
                     child.userData.vehicleId = v.id;
                 });
-                scene.add(mesh);
-                vehicleMeshes.set(v.id, mesh);
+                parentContainer.add(mesh);
+                meshMap.set(v.id, mesh);
             }
 
             // 更新位置與角度
@@ -6244,7 +6510,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // =========================================================
             if (mesh.userData.indicators) {
                 // 模擬真實閃爍頻率
-                const isBlinkOn = (simulation.time % 0.8) < 0.4;
+                const isBlinkOn = (simTime % 0.8) < 0.4;
 
                 const updateInds = (inds, isActive) => {
                     inds.forEach(ind => {
@@ -6301,10 +6567,9 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
 
-        // (後續移除消失車輛的代碼保持不變...)
-        for (const [id, mesh] of vehicleMeshes) {
+        for (const [id, mesh] of meshMap) {
             if (!activeIds.has(id)) {
-                scene.remove(mesh);
+                parentContainer.remove(mesh);
                 mesh.traverse((child) => {
                     if (child.isMesh) {
                         if (child.geometry) child.geometry.dispose();
@@ -6314,9 +6579,23 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
                     }
                 });
-                vehicleMeshes.delete(id);
+                meshMap.delete(id);
             }
         }
+    }
+
+    function update3DScene() {
+        if (typeof timingCompareController !== 'undefined' && timingCompareController.isActive && timingCompareController.baselineSim && timingCompareController.adjustedSim) {
+            syncVehicles3DForTarget(timingCompareController.baselineSim.vehicles, timingCompareController.baselineSim.time, vehicleMeshes, scene, true);
+            syncVehicles3DForTarget(timingCompareController.adjustedSim.vehicles, timingCompareController.adjustedSim.time, adjustedVehicleMeshes, adjustedVehiclesGroup, true);
+            render3DScene();
+            return;
+        }
+
+        if (!simulation) { render3DScene(); return; }
+        if (showTurnPaths) update3DSignals();
+
+        syncVehicles3DForTarget(simulation.vehicles, simulation.time, vehicleMeshes, scene, false);
 
         if (isChaseActive) updateChaseCamera();
         render3DScene();
@@ -8217,6 +8496,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 lutiHudController.setSimulation(simulation);
             }
 
+            // [時制比較] 若目前已開啟時制比較，載入新路網後自動重建雙模擬環境
+            if (typeof timingCompareController !== 'undefined' && timingCompareController.isActive) {
+                clearAdjusted3DMeshes();
+                if (networkData.trafficLights && networkData.trafficLights.length > 0) {
+                    timingCompareController.setActive(true, networkData);
+                } else {
+                    if (timingCompareToggle) timingCompareToggle.checked = false;
+                    timingCompareController.setActive(false);
+                }
+            }
+
             autoCenter2D(networkData.bounds);
             networkCenter2D = {
                 x: (networkData.bounds.minX + networkData.bounds.maxX) / 2,
@@ -8346,6 +8636,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         vehicleMeshes.forEach(mesh => scene.remove(mesh));
         vehicleMeshes.clear();
+        clearAdjusted3DMeshes();
         networkGroup.clear();
         debugGroup.clear();
         signalPathsGroup.clear();
@@ -8406,52 +8697,57 @@ document.addEventListener('DOMContentLoaded', () => {
             const realDt = (timestamp - lastTimestamp) / 1000.0;
             const simulationDt = Math.min(realDt, 0.1) * simulationSpeed;
 
-            // ★★★ [Architecture A: Web Worker 多執行緒模擬核心] ★★★
-            if (window.simBridge && simulation === simBridge && simBridge.useMultiThreading) {
-                // 多執行緒模式：IDM、跟車、換道與號誌推演在背景 Worker 執行，主線程不再被重度物理計算卡死！
-                if (policeController && policeToggle && policeToggle.checked) {
-                    policeController.update(simulationDt);
-                    if (policeController.selectedNodeId) {
-                        const tfl = simulation.trafficLights.find(t => t.nodeId === policeController.selectedNodeId);
-                        if (tfl) simBridge.sendPoliceOverride(policeController.selectedNodeId, undefined, tfl.timeShift);
+            if (typeof timingCompareController !== 'undefined' && timingCompareController.isActive && timingCompareController.baselineSim && timingCompareController.adjustedSim) {
+                timingCompareController.update(simulationDt);
+                simTimeSpan.textContent = timingCompareController.baselineSim.time.toFixed(2);
+            } else {
+                // ★★★ [Architecture A: Web Worker 多執行緒模擬核心] ★★★
+                if (window.simBridge && simulation === simBridge && simBridge.useMultiThreading) {
+                    // 多執行緒模式：IDM、跟車、換道與號誌推演在背景 Worker 執行，主線程不再被重度物理計算卡死！
+                    if (policeController && policeToggle && policeToggle.checked) {
+                        policeController.update(simulationDt);
+                        if (policeController.selectedNodeId) {
+                            const tfl = simulation.trafficLights.find(t => t.nodeId === policeController.selectedNodeId);
+                            if (tfl) simBridge.sendPoliceOverride(policeController.selectedNodeId, undefined, tfl.timeShift);
+                        }
+                    }
+                } else {
+                    // 單執行緒後備模式：
+                    if (policeController && policeToggle && policeToggle.checked) {
+                        policeController.update(simulationDt);
+                    } else if (aiController && aiToggle && aiToggle.checked) {
+                        aiController.update(simulationDt);
+                    }
+                    simulation.update(simulationDt);
+                }
+
+                // 更新時間顯示
+                if (isDigitalTwinMode && typeof DigitalTwinLogic !== 'undefined') {
+                    simTimeSpan.textContent = DigitalTwinLogic.formatTime(); // 顯示 14:35:22 格式
+                } else {
+                    simTimeSpan.textContent = simulation.time.toFixed(2); // 顯示傳統秒數
+                }
+
+                // [新增] 優化器更新 (處理採樣計時器)
+                if (typeof optimizerController !== 'undefined') {
+                    optimizerController.update(simulationDt);
+
+                    // ★ 新增：更新迭代器 (計時與觸發)
+                    if (optimizerController.looper) {
+                        optimizerController.looper.update(simulationDt);
                     }
                 }
-            } else {
-                // 單執行緒後備模式：
-                if (policeController && policeToggle && policeToggle.checked) {
-                    policeController.update(simulationDt);
-                } else if (aiController && aiToggle && aiToggle.checked) {
-                    aiController.update(simulationDt);
+
+                // [Milestone 4] LUTI HUD 控制器即時統計與 24 小時動態演繹更新
+                if (typeof lutiHudController !== 'undefined') {
+                    lutiHudController.update(simulationDt);
                 }
-                simulation.update(simulationDt);
-            }
 
-            // 更新時間顯示
-            if (isDigitalTwinMode && typeof DigitalTwinLogic !== 'undefined') {
-                simTimeSpan.textContent = DigitalTwinLogic.formatTime(); // 顯示 14:35:22 格式
-            } else {
-                simTimeSpan.textContent = simulation.time.toFixed(2); // 顯示傳統秒數
-            }
-
-            // [新增] 優化器更新 (處理採樣計時器)
-            if (typeof optimizerController !== 'undefined') {
-                optimizerController.update(simulationDt);
-
-                // ★ 新增：更新迭代器 (計時與觸發)
-                if (optimizerController.looper) {
-                    optimizerController.looper.update(simulationDt);
+                const currentIntegerTime = Math.floor(simulation.time);
+                if (currentIntegerTime > lastLoggedIntegerTime) {
+                    updateStatistics(currentIntegerTime);
+                    lastLoggedIntegerTime = currentIntegerTime;
                 }
-            }
-
-            // [Milestone 4] LUTI HUD 控制器即時統計與 24 小時動態演繹更新
-            if (typeof lutiHudController !== 'undefined') {
-                lutiHudController.update(simulationDt);
-            }
-
-            const currentIntegerTime = Math.floor(simulation.time);
-            if (currentIntegerTime > lastLoggedIntegerTime) {
-                updateStatistics(currentIntegerTime);
-                lastLoggedIntegerTime = currentIntegerTime;
             }
         }
 
@@ -10665,53 +10961,62 @@ document.addEventListener('DOMContentLoaded', () => {
 
             this.trafficLights.forEach(tfl => tfl.update(this.time));
 
-            this.spawners.forEach(spawner => {
-                const newVehicle = spawner.update(dt, this.network, `v-spawned-${this.vehicleIdCounter}`, this.network.navigationMode);
-                if (newVehicle) {
-                    this.vehicles.push(newVehicle);
-                    this.vehicleIdCounter++;
-                }
-            });
+            const origRandom = Math.random;
+            try {
+                if (this.spawnRng) Math.random = this.spawnRng;
 
-            this.detectorSpawners.forEach(dsp => {
-                const newVehicle = dsp.update(dt, this.network, () => this.vehicleIdCounter++);
-                if (newVehicle) {
-                    this.vehicles.push(newVehicle);
-                }
-            });
+                this.spawners.forEach(spawner => {
+                    const newVehicle = spawner.update(dt, this.network, `v-spawned-${this.vehicleIdCounter}`, this.network.navigationMode);
+                    if (newVehicle) {
+                        this.vehicles.push(newVehicle);
+                        this.vehicleIdCounter++;
+                    }
+                });
 
-            // [Milestone 3] LUTI 旅次生成引擎微觀交通發布更新
-            if (this.lutiEngine) {
-                const lutiVehicles = this.lutiEngine.update(dt, this.network, () => this.vehicleIdCounter++);
-                if (lutiVehicles && lutiVehicles.length > 0) {
-                    for (const lv of lutiVehicles) {
-                        this.vehicles.push(lv);
+                this.detectorSpawners.forEach(dsp => {
+                    const newVehicle = dsp.update(dt, this.network, () => this.vehicleIdCounter++);
+                    if (newVehicle) {
+                        this.vehicles.push(newVehicle);
+                    }
+                });
+
+                // [Milestone 3] LUTI 旅次生成引擎微觀交通發布更新
+                if (this.lutiEngine) {
+                    const lutiVehicles = this.lutiEngine.update(dt, this.network, () => this.vehicleIdCounter++);
+                    if (lutiVehicles && lutiVehicles.length > 0) {
+                        for (const lv of lutiVehicles) {
+                            this.vehicles.push(lv);
+                        }
                     }
                 }
-            }
 
-            // ★★★ [修改處] 原本是：this.vehicles.forEach(vehicle => vehicle.update(dt, this.vehicles, this));
-            // 改為使用 SpatialGrid 只傳入周圍 80 公尺內的鄰車：
-            if (this.spatialGrid) {
-                this.spatialGrid.clear();
-                for (let i = 0; i < this.vehicles.length; i++) {
-                    this.spatialGrid.insert(this.vehicles[i]);
+                if (this.simRng) Math.random = this.simRng;
+
+                // ★★★ [修改處] 原本是：this.vehicles.forEach(vehicle => vehicle.update(dt, this.vehicles, this));
+                // 改為使用 SpatialGrid 只傳入周圍 80 公尺內的鄰車：
+                if (this.spatialGrid) {
+                    this.spatialGrid.clear();
+                    for (let i = 0; i < this.vehicles.length; i++) {
+                        this.spatialGrid.insert(this.vehicles[i]);
+                    }
+                    for (let i = 0; i < this.vehicles.length; i++) {
+                        const v = this.vehicles[i];
+                        const nearby = this.spatialGrid.getNearby(v.x, v.y, 80);
+                        v.update(dt, nearby, this);
+                    }
+                } else {
+                    this.vehicles.forEach(vehicle => vehicle.update(dt, this.vehicles, this));
                 }
-                for (let i = 0; i < this.vehicles.length; i++) {
-                    const v = this.vehicles[i];
-                    const nearby = this.spatialGrid.getNearby(v.x, v.y, 80);
-                    v.update(dt, nearby, this);
+                // ★★★ [修改結束] ★★★
+
+                this.vehicles = this.vehicles.filter(v => !v.finished);
+
+                // 更新行人
+                if (this.pedManager) {
+                    this.pedManager.update(dt);
                 }
-            } else {
-                this.vehicles.forEach(vehicle => vehicle.update(dt, this.vehicles, this));
-            }
-            // ★★★ [修改結束] ★★★
-
-            this.vehicles = this.vehicles.filter(v => !v.finished);
-
-            // 更新行人
-            if (this.pedManager) {
-                this.pedManager.update(dt);
+            } finally {
+                Math.random = origRandom;
             }
         }
     }
@@ -10941,6 +11246,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
     }
+    window.TrafficLightController = TrafficLightController;
     class Spawner {
         constructor(config, pathfinder) { this.originNodeId = config.originNodeId; this.periods = config.periods || []; this.pathfinder = pathfinder; this.currentPeriodIndex = -1; this.timeInPeriod = 0; this.active = false; this.spawnInterval = Infinity; this.spawnTimer = 0; this.currentConfig = null; this._switchToNextPeriod(); }
         _switchToNextPeriod() { this.currentPeriodIndex++; if (this.currentPeriodIndex >= this.periods.length) { this.active = false; this.currentConfig = null; return; } this.active = true; this.timeInPeriod = 0; this.currentConfig = this.periods[this.currentPeriodIndex]; this.spawnInterval = this.currentConfig.numVehicles > 0 ? this.currentConfig.duration / this.currentConfig.numVehicles : Infinity; this.spawnTimer = this.spawnInterval; }
